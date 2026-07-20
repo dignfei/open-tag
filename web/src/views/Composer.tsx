@@ -123,7 +123,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
               onMouseEnter={() => setAtSel(i)} onMouseDown={(e) => { e.preventDefault(); pick(c); }}>
               <Avatar seed={c.name} url={avFor(c.avatarUrl)} size={22} />
               <span className="grow">{c.label} <span className="mk-name">@{c.name}</span></span>
-              <span className="mk">{c.kind === "agent" ? "agent" : t("chat.memberKind")}</span>
+              <span className="mk">{c.kind === "agent" ? t("chat.agentKind") : t("chat.memberKind")}</span>
             </button>
           ))}
         </div>

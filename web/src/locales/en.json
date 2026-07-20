@@ -160,7 +160,80 @@
     "resetDesc": "Clear the running session and restart; workspace files (MEMORY.md, notes/) are preserved.",
     "fullResetDesc": "Clear the session and delete all workspace files, starting fresh.",
     "nameLabel": "Name *",
-    "namePlaceholder": "e.g. ada"
+    "namePlaceholder": "e.g. ada",
+    "scopeGroup": {
+      "Notifications": "Notifications",
+      "Server": "Server",
+      "Channels": "Channels",
+      "Threads": "Threads",
+      "Messages": "Messages",
+      "Attachments": "Attachments",
+      "Tasks": "Tasks",
+      "Knowledge": "Knowledge",
+      "Action": "Action"
+    },
+    "scopeLabel": {
+      "inbox_receive": "Receive inbox events",
+      "server_read": "Read workspace info",
+      "channel_read": "View channel members",
+      "channel_join": "Join channels",
+      "channel_leave": "Leave channels",
+      "thread_unfollow": "Unfollow threads",
+      "message_read": "Read messages",
+      "message_send": "Send messages",
+      "attachment_upload": "Upload attachments",
+      "attachment_view": "View attachments",
+      "task_read": "Read tasks",
+      "task_write": "Write tasks",
+      "knowledge_read": "Read knowledge",
+      "action_prepare": "Prepare action cards"
+    },
+    "scopeDesc": {
+      "inbox_receive": "Receive new inbox events; get woken by others'/agents' activity.",
+      "server_read": "List channels, members, and agents (basic workspace info).",
+      "channel_read": "View members of joined channels.",
+      "channel_join": "Join visible public channels.",
+      "channel_leave": "Leave joined channels.",
+      "thread_unfollow": "Stop receiving deliveries from a thread.",
+      "message_read": "View, read, search, and resolve messages.",
+      "message_send": "Send messages to channels, DMs, and threads.",
+      "attachment_upload": "Upload files as message attachments.",
+      "attachment_view": "Download and view attachments.",
+      "task_read": "List tasks on channel task boards.",
+      "task_write": "Create, claim, release, and update tasks.",
+      "knowledge_read": "Fetch topics from the agent knowledge base.",
+      "action_prepare": "Allow the agent to prepare quick-commit action cards."
+    },
+    "personalityTitle": "Personality",
+    "personalityEmpty": "No personality file — agent uses the description field.",
+    "personalityUpload": "Upload .md",
+    "uploading": "Uploading…",
+    "personalitySaved": "Personality saved",
+    "personalitySaveFailed": "Personality save failed: {{error}}",
+    "personalityDeleteTitle": "Delete personality",
+    "personalityDeleteMessage": "Remove the personality.md file and restore the agent's default description?",
+    "personalityDeleted": "Personality deleted",
+    "personalityDeleteFailed": "Personality delete failed: {{error}}",
+    "skillUploadFailed": "Skill upload failed: {{error}}",
+    "skillUploaded": "Skill \"{{name}}\" uploaded",
+    "skillDeleteTitle": "Delete skill \"{{name}}\"",
+    "skillDeleteMessage": "Remove this skill from the agent's workspace?",
+    "skillDeleted": "Skill \"{{name}}\" deleted",
+    "skillDeleteFailed": "Skill delete failed: {{error}}",
+    "skillAdd": "+ Skill",
+    "skillDeleteFromWorkspace": "Delete from workspace",
+    "modelDetecting": "Detecting models…",
+    "modelDefault": "Default",
+    "filePreview": "Preview",
+    "fileRaw": "Raw",
+    "createdAgents": "Created Agents",
+    "restartOptReset": "Reset Session & Restart",
+    "restartOptFull": "Full Reset & Restart",
+    "roles": {
+      "owner": "owner",
+      "admin": "admin",
+      "member": "member"
+    }
   },
   "misc": {
     "tasksScope": "Scope",
@@ -288,7 +361,13 @@
     "relTimeJustNow": "just now",
     "relTimeMinutes": "{{count}}m ago",
     "relTimeHours": "{{count}}h ago",
-    "relTimeDays": "{{count}}d ago"
+    "relTimeDays": "{{count}}d ago",
+    "computersOs": "OS",
+    "computersBudget": "Agent budget",
+    "computersBudgetValue": "{{mem}} free · CPU {{cpu}}% free",
+    "computersRunning": "Running",
+    "computersRunningAgents": "{{count}} agents",
+    "computersQueue": "Queue"
   },
   "chat": {
     "close": "Close",
@@ -374,11 +453,16 @@
     "retryLoad": "Retry",
     "jumpToMessage": "Jump to original message",
     "download": "Download",
-    "asTask": "As Task"
+    "asTask": "As Task",
+    "agentKind": "agent",
+    "userKind": "user",
+    "memberBadge": "member",
+    "threadNew": "{{count}} new"
   },
   "showcase": {
     "title": "showcase",
-    "subtitle": "Read-only — four real collaboration sessions across engineering, research, security, and growth."
+    "subtitle": "Read-only — four real collaboration sessions across engineering, research, security, and growth.",
+    "you": "you"
   },
   "auth": {
     "createAccount": "Create account",
@@ -508,6 +592,26 @@
     "created": "Created",
     "hostname": "Hostname",
     "reasoning": "Reasoning",
-    "membersCount": "{{count}} members"
+    "membersCount": "{{count}} members",
+    "dismiss": "Dismiss",
+    "describeSelfPlaceholder": "Describe yourself for other humans and agents in this server"
+  },
+  "md": {
+    "alertNote": "Note",
+    "alertTip": "Tip",
+    "alertImportant": "Important",
+    "alertWarning": "Warning",
+    "alertCaution": "Caution",
+    "copyCode": "Copy code",
+    "copiedCode": "Copied code",
+    "copied": "Copied"
+  },
+  "avatar": {
+    "change": "Change avatar",
+    "choose": "Choose avatar",
+    "close": "Close",
+    "useThis": "Use this avatar",
+    "shuffle": "Shuffle",
+    "upload": "Upload image"
   }
 }

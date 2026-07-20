@@ -160,7 +160,80 @@
     "resetDesc": "清除运行 session 后重启,工作区文件(MEMORY.md、notes/)保留。",
     "fullResetDesc": "清除 session、删除所有工作区文件,从零重启。",
     "nameLabel": "名称 *",
-    "namePlaceholder": "如 ada"
+    "namePlaceholder": "如 ada",
+    "scopeGroup": {
+      "Notifications": "通知",
+      "Server": "工作区",
+      "Channels": "频道",
+      "Threads": "线程",
+      "Messages": "消息",
+      "Attachments": "附件",
+      "Tasks": "任务",
+      "Knowledge": "知识库",
+      "Action": "操作"
+    },
+    "scopeLabel": {
+      "inbox_receive": "接收收件箱事件",
+      "server_read": "读取工作区信息",
+      "channel_read": "查看频道成员",
+      "channel_join": "加入频道",
+      "channel_leave": "退出频道",
+      "thread_unfollow": "取消关注线程",
+      "message_read": "读取消息",
+      "message_send": "发送消息",
+      "attachment_upload": "上传附件",
+      "attachment_view": "查看附件",
+      "task_read": "读取任务",
+      "task_write": "写入任务",
+      "knowledge_read": "读取知识库",
+      "action_prepare": "准备操作卡片"
+    },
+    "scopeDesc": {
+      "inbox_receive": "接收新的收件箱事件;可被他人/agent 的活动唤醒。",
+      "server_read": "列出频道、成员和 agent(工作区基础信息)。",
+      "channel_read": "查看已加入频道的成员。",
+      "channel_join": "加入可见的公开频道。",
+      "channel_leave": "退出已加入的频道。",
+      "thread_unfollow": "停止接收某个线程的消息投递。",
+      "message_read": "查看、读取、搜索和确认消息。",
+      "message_send": "向频道、私信和线程发送消息。",
+      "attachment_upload": "将文件作为消息附件上传。",
+      "attachment_view": "下载并查看附件。",
+      "task_read": "列出频道任务看板上的任务。",
+      "task_write": "创建、认领、释放和更新任务。",
+      "knowledge_read": "从 agent 知识库获取主题。",
+      "action_prepare": "允许 agent 准备快速提交的操作卡片。"
+    },
+    "personalityTitle": "个性设定",
+    "personalityEmpty": "没有 personality.md 文件——agent 使用描述字段。",
+    "personalityUpload": "上传 .md",
+    "uploading": "上传中…",
+    "personalitySaved": "个性设定已保存",
+    "personalitySaveFailed": "个性设定保存失败: {{error}}",
+    "personalityDeleteTitle": "删除个性设定",
+    "personalityDeleteMessage": "移除 personality.md 文件并恢复 agent 的默认描述?",
+    "personalityDeleted": "个性设定已删除",
+    "personalityDeleteFailed": "个性设定删除失败: {{error}}",
+    "skillUploadFailed": "Skill 上传失败: {{error}}",
+    "skillUploaded": "Skill「{{name}}」已上传",
+    "skillDeleteTitle": "删除 skill「{{name}}」",
+    "skillDeleteMessage": "从 agent 的工作区移除此 skill?",
+    "skillDeleted": "Skill「{{name}}」已删除",
+    "skillDeleteFailed": "Skill 删除失败: {{error}}",
+    "skillAdd": "+ Skill",
+    "skillDeleteFromWorkspace": "从工作区删除",
+    "modelDetecting": "检测模型中…",
+    "modelDefault": "默认",
+    "filePreview": "预览",
+    "fileRaw": "原文",
+    "createdAgents": "创建的 agent",
+    "restartOptReset": "重置会话并重启",
+    "restartOptFull": "完全重置并重启",
+    "roles": {
+      "owner": "所有者",
+      "admin": "管理员",
+      "member": "成员"
+    }
   },
   "misc": {
     "tasksScope": "范围",
@@ -288,7 +361,13 @@
     "relTimeJustNow": "刚刚",
     "relTimeMinutes": "{{count}}分钟前",
     "relTimeHours": "{{count}}小时前",
-    "relTimeDays": "{{count}}天前"
+    "relTimeDays": "{{count}}天前",
+    "computersOs": "操作系统",
+    "computersBudget": "Agent 预算",
+    "computersBudgetValue": "{{mem}} 空闲 · CPU {{cpu}}% 空闲",
+    "computersRunning": "运行中",
+    "computersRunningAgents": "{{count}} 个 agent",
+    "computersQueue": "队列"
   },
   "chat": {
     "close": "关闭",
@@ -374,11 +453,16 @@
     "retryLoad": "重试",
     "jumpToMessage": "跳到原消息",
     "download": "下载",
-    "asTask": "作为任务"
+    "asTask": "作为任务",
+    "agentKind": "agent",
+    "userKind": "用户",
+    "memberBadge": "成员",
+    "threadNew": "{{count}} 条新"
   },
   "showcase": {
     "title": "案例展示",
-    "subtitle": "只读——工程、研究、安全、增长四个领域的真实协作实录。"
+    "subtitle": "只读——工程、研究、安全、增长四个领域的真实协作实录。",
+    "you": "你"
   },
   "auth": {
     "createAccount": "创建账号",
@@ -508,6 +592,26 @@
     "created": "创建时间",
     "hostname": "主机名",
     "reasoning": "推理",
-    "membersCount": "{{count}} 个成员"
+    "membersCount": "{{count}} 个成员",
+    "dismiss": "关闭",
+    "describeSelfPlaceholder": "介绍一下你自己,给这个工作区里的其他人和 agent 看"
+  },
+  "md": {
+    "alertNote": "备注",
+    "alertTip": "提示",
+    "alertImportant": "重要",
+    "alertWarning": "警告",
+    "alertCaution": "注意",
+    "copyCode": "复制代码",
+    "copiedCode": "已复制代码",
+    "copied": "已复制"
+  },
+  "avatar": {
+    "change": "更换头像",
+    "choose": "选择头像",
+    "close": "关闭",
+    "useThis": "使用这个头像",
+    "shuffle": "换一批",
+    "upload": "上传图片"
   }
 }

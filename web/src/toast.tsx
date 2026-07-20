@@ -3,6 +3,7 @@
 // strings (the toast layer stays i18n-agnostic). Used for one-shot operation feedback (e.g. start/create an
 // agent while its machine is offline) where an inline banner would not fit.
 import { createContext, useContext, useState, useCallback, useMemo, useRef, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 type ToastKind = "error" | "info";
 interface ToastItem { id: number; kind: ToastKind; msg: string }
@@ -14,6 +15,7 @@ export const useToast = () => useContext(Ctx);
 const TTL_MS = 5000; // auto-dismiss; also dismissable by click
 
 export function ToastProvider({ children }: { children: ReactNode }) {
+  const { t } = useTranslation(); // messages arrive pre-translated from callers; only the layer's own × button label is translated here
   const [items, setItems] = useState<ToastItem[]>([]);
   const idRef = useRef(0);
   const remove = useCallback((id: number) => setItems((xs) => xs.filter((x) => x.id !== id)), []);
@@ -32,7 +34,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           {items.map((it) => (
             <div key={it.id} className={"toast toast-" + it.kind} onClick={() => remove(it.id)}>
               <span className="toast-msg">{it.msg}</span>
-              <button className="toast-x" aria-label="dismiss" onClick={(e) => { e.stopPropagation(); remove(it.id); }}>×</button>
+              <button className="toast-x" aria-label={t("common.dismiss")} onClick={(e) => { e.stopPropagation(); remove(it.id); }}>×</button>
             </div>
           ))}
         </div>

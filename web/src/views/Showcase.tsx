@@ -69,14 +69,15 @@ function ShowcaseMsg({ line, task, attachment, replyCount, onOpenThread }: {
 }) {
   const { t } = useTranslation();
   const isYou = line.agent === null;
-  const senderName = isYou ? "you" : line.agent!;
+  const senderName = isYou ? "you" : line.agent!; // stays "you" as the avatar seed — the seed must not change with the locale
+  const displayName = isYou ? t("showcase.you") : line.agent!;
   const { role, title } = isYou ? { role: "", title: "" } : roleOf(senderName);
   return (
     <div className="msg">
       <Avatar seed={senderName} size={36} />
       <div className="msg-col">
         <div className="msg-head">
-          <span className="who" title={title || undefined}>{senderName}</span>
+          <span className="who" title={title || undefined}>{displayName}</span>
           {role ? <span className="msg-role" title={title}>{role}</span> : <span className="member-badge">{t("chat.memberKind")}</span>}
         </div>
         {!!line.content && <div className="mbody"><MessageContent content={line.content} mentions={[]} channels={[]} nav={noNav} /></div>}
