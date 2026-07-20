@@ -314,13 +314,16 @@ export class AgentManager {
     };
 
     // No await between set and runtime.start (single-threaded event loop), so deliver cannot interleave and read an empty session.
-    // Deliveries that arrived earlier during workspace preparation are flushed just below, except
-    // one-shot runtimes where the wakeup prompt itself is the concrete "check then send" turn.
+    // Deliveries queued during workspace preparation are consumed by the wake nudge itself: every
+    // initial prompt (STARTUP/RESUME/ONE_SHOT) already instructs an inbox check, so re-delivering
+    // them as an inbox notice would drive a second turn on the same message (agents visibly
+    // double-replied on cold start). Messages are persisted server-side — the nudge turn's
+    // `message check` pulls them; only the reply preview needs the queued metadata.
     const pendingDeliverItems = this.pendingDelivers.get(agentId)?.items ?? [];
     const pendingDeliveryCount = pendingDeliverItems.length;
     const useOneShotWakeNudge = !!runtime.oneShotWake && pendingDeliveryCount > 0;
     this.agents.set(agentId, running);
-    if (useOneShotWakeNudge) {
+    if (pendingDeliveryCount > 0) {
       const latest = pendingDeliverItems[pendingDeliverItems.length - 1];
       if (latest) this.startReplyPreview(agentId, running, latest.target, latest.meta.streamId);
     }
@@ -334,11 +337,9 @@ export class AgentManager {
     this.send({ type: "agent:activity", agentId, activity: "working", detail: "starting" });
     this.log.info("agent started", { agentId, runtime: runtime.name, model: config.model ?? "(default)", resume: !!config.sessionId, experimental: runtime.experimental ?? false });
     this.resetIdle(agentId);
-    if (useOneShotWakeNudge) {
+    if (pendingDeliveryCount > 0) {
       this.clearPendingDeliver(agentId);
-      this.log.debug("pending deliver consumed by one-shot wake nudge", { agentId, runtime: runtime.name, count: pendingDeliveryCount });
-    } else {
-      this.flushPendingDeliver(agentId);
+      this.log.debug("pending deliver consumed by wake nudge", { agentId, runtime: runtime.name, count: pendingDeliveryCount });
     }
   }
 
@@ -362,14 +363,6 @@ export class AgentManager {
     if (!q) return;
     clearTimeout(q.timer);
     this.pendingDelivers.delete(agentId);
-  }
-
-  private flushPendingDeliver(agentId: string): void {
-    const q = this.pendingDelivers.get(agentId);
-    if (!q) return;
-    this.clearPendingDeliver(agentId);
-    this.log.debug("pending deliver -> agent", { agentId, count: q.items.length });
-    for (const item of q.items) this.deliver(agentId, item.from, item.target, item.mentioned, item.meta);
   }
 
   private debounceMsFor(r: Running): number {

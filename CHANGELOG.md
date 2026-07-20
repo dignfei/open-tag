@@ -9,6 +9,20 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-07-20
+
+### Fixed
+
+- **Agents no longer double-reply on cold-start wake**: a message that woke a sleeping/stopped
+  agent used to drive **two** turns — the wake nudge (STARTUP/RESUME) drove one, and the deliver
+  that had queued during workspace preparation was re-flushed as a `[inbox notice]` ~3 s later,
+  driving a second turn on the same (already-handled) message. Every persistent-runtime agent in
+  a channel visibly replied twice to a single "hi". Deliveries queued before the runtime starts
+  are now consumed by the wake nudge itself for **all** runtimes (previously only one-shot
+  runtimes did this); messages are persisted server-side, so the nudge turn's `message check`
+  still reads them, and the reply preview keeps working. Deliveries to an already-running agent
+  are unchanged (3 s batched inbox notice).
+
 ## [0.10.1] — 2026-07-19
 
 ### Fixed
