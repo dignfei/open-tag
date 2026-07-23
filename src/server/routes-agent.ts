@@ -102,7 +102,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     for (const cm of cms) {
       const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, cm.channelId)))[0];
       if (!ch || ch.deletedAt) continue;
-      const msgs = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, cm.channelId), gt(schema.messages.seq, cm.lastReadSeq))).orderBy(asc(schema.messages.seq)).limit(100);
+      const msgs = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, cm.channelId), ne(schema.messages.messageType, "agent_activity_receipt"), gt(schema.messages.seq, cm.lastReadSeq))).orderBy(asc(schema.messages.seq)).limit(100);
       const fresh = msgs.filter((m) => m.senderId !== agent.id);
       if (fresh.length) {
         const target = await addressableTarget(ch, agent.id);
@@ -141,7 +141,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     // Freshness-hold: new messages arrived since agent last read (not self / not system) → save draft + surface bounded context, do not post immediately (prevents agent↔agent duplicate replies)
     const cm = (await db.select().from(schema.channelMembers).where(and(eq(schema.channelMembers.channelId, tgt.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id))))[0];
     const lastRead = cm?.lastReadSeq ?? 0;
-    const newer = (await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, tgt.channelId), gt(schema.messages.seq, lastRead))).orderBy(asc(schema.messages.seq)).limit(20)).filter((m) => m.senderId !== agent.id && m.senderType !== "system");
+    const newer = (await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, tgt.channelId), ne(schema.messages.messageType, "agent_activity_receipt"), gt(schema.messages.seq, lastRead))).orderBy(asc(schema.messages.seq)).limit(20)).filter((m) => m.senderId !== agent.id && m.senderType !== "system");
     if (newer.length && cm) {
       drafts.set(draftKey, { content: b.content || "", attachmentIds: atts });
       await db.update(schema.channelMembers).set({ lastReadSeq: newer[newer.length - 1]!.seq }).where(and(eq(schema.channelMembers.channelId, tgt.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id))); // Mark this batch as read → next send won't hold again unless further new messages arrive
@@ -202,7 +202,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const tstr = ch ? await addressableTarget(ch, agent.id) : target;
     // Anchor (--before/--after/--around): value = message id (short or full) or numeric seq; no anchor = latest limit messages
     const anchorParam = url.searchParams.get("around") ?? url.searchParams.get("before") ?? url.searchParams.get("after");
-    const cid = eq(schema.messages.channelId, tgt.channelId);
+    const cid = and(eq(schema.messages.channelId, tgt.channelId), ne(schema.messages.messageType, "agent_activity_receipt"));
     let rows: (typeof schema.messages.$inferSelect)[];
     if (anchorParam) {
       let anchorSeq = /^\d+$/.test(anchorParam) ? Number(anchorParam) : null;
@@ -386,7 +386,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const th = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.type, "thread"), eq(schema.channels.parentMessageId, parent.id))))[0];
     const tstr = `thread:${parent.id.slice(0, 8)}`;
     if (!th) return (sendJson(res, 200, { parent: { senderName: parent.senderName, content: parent.content }, messages: [] }), true);
-    const msgs = await db.select().from(schema.messages).where(eq(schema.messages.channelId, th.id)).orderBy(asc(schema.messages.seq)).limit(100);
+    const msgs = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, th.id), ne(schema.messages.messageType, "agent_activity_receipt"))).orderBy(asc(schema.messages.seq)).limit(100);
     return (sendJson(res, 200, { parent: { senderName: parent.senderName, content: parent.content }, messages: msgs.map((m) => ({ ...serialize(m), text: fmt(m, tstr) })) }), true);
   }
   // Full-text search (agent self-queries context): searches only channels the agent belongs to, ilike substring match

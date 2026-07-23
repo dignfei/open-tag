@@ -132,7 +132,7 @@ export function Showcase() {
     <>
       <ChatSidebar />
       {/* Flex row: the channel column + (when a pill is clicked) the thread panel. The showcase route is not
-          a /channel path, so the app shell never gets has-traj's 4th grid column — this wrapper IS the single
+          a /channel path, so the app shell never opens a contextual 4th grid column — this wrapper IS the single
           grid cell and lays its own "main + thread" columns out, so a closed thread leaves no empty strip. */}
       <div className="showcase-shell">
         <main className="content-col">

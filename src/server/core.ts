@@ -10,6 +10,7 @@ import { createLogger } from "../log.js";
 import { canUserReadChannel } from "./channelAccess.js";
 import { canAutoJoinMentionedMembers, isWakeable } from "./agentWakePolicy.js";
 import { UUID_RE } from "./util.js";
+import { assignActivityRows, claimPendingAgentActivity, pendingActivityForStream, startAgentActivityRun, type AgentActivityItem } from "./agentActivity.js";
 
 const log = createLogger("server:core");
 const PORT = Number(process.env.PORT ?? 7777);
@@ -165,6 +166,7 @@ export function serializeMsg(msg: typeof schema.messages.$inferSelect, mentions:
     id: msg.id, seq: msg.seq, channelId: msg.channelId, threadId: msg.threadId,
     senderType: msg.senderType, senderId: msg.senderId, senderName: msg.senderName, senderMembershipStatus: "active",
     messageType: msg.messageType, content: msg.content, actionMetadata: msg.actionMetadata ?? null,
+    agentActivity: msg.agentActivity ?? [], agentActivityStreamId: msg.agentActivityStreamId ?? null, agentActivityState: msg.agentActivityState ?? null,
     taskStatus: msg.taskStatus, taskNumber: msg.taskNumber,
     taskAssigneeType: msg.taskAssigneeType, taskAssigneeId: msg.taskAssigneeId,
     taskClaimedAt: msg.taskClaimedAt, taskCompletedAt: msg.taskCompletedAt,
@@ -340,7 +342,24 @@ export async function createMessage(opts: {
   senderType: "user" | "agent" | "system"; senderId: string | null; senderName: string;
   content: string; messageType?: string; threadId?: string | null; asTask?: boolean; attachmentIds?: string[];
   actionMetadata?: unknown; // action-card and other platform action payloads (slice09)
+  agentActivity?: AgentActivityItem[]; agentActivityStreamId?: string | null; agentActivityState?: "running" | "handled" | "error" | null;
 }) {
+  const claimedActivity = opts.senderType === "agent" && opts.senderId && opts.messageType !== "agent_activity_receipt" && !opts.agentActivityStreamId
+    ? await claimPendingAgentActivity(opts.serverId, opts.senderId, opts.channelId)
+    : null;
+  const closedActivitySegments = claimedActivity
+    ? await db.update(schema.messages).set({ agentActivityState: "handled" }).where(and(
+      eq(schema.messages.serverId, opts.serverId),
+      eq(schema.messages.channelId, opts.channelId),
+      eq(schema.messages.senderId, opts.senderId!),
+      eq(schema.messages.agentActivityStreamId, claimedActivity.streamId),
+      eq(schema.messages.agentActivityState, "running"),
+    )).returning({ id: schema.messages.id })
+    : [];
+  for (const segment of closedActivitySegments) {
+    const updated = await serializeMessageById(segment.id);
+    if (updated) await publish(opts.serverId, { type: "message:updated", message: updated });
+  }
   const seq = await nextSeq(opts.serverId);
   // Channel row fetched once; its type drives task-number scope (per-DM vs per-server), thread auto-follow, mention auto-join, and wake routing below.
   const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, opts.channelId)))[0];
@@ -350,9 +369,13 @@ export async function createMessage(opts: {
     senderType: opts.senderType, senderId: opts.senderId, senderName: opts.senderName,
     messageType: opts.messageType ?? "chat", content: opts.content,
     actionMetadata: opts.actionMetadata ?? null,
+    agentActivity: opts.agentActivity ?? claimedActivity?.items ?? [],
+    agentActivityStreamId: opts.agentActivityStreamId ?? claimedActivity?.streamId ?? null,
+    agentActivityState: opts.agentActivityState ?? (claimedActivity ? "running" : null),
     threadId: opts.threadId ?? null, searchText: opts.content,
     taskStatus: opts.asTask ? "todo" : null, taskNumber,
   }).returning();
+  if (claimedActivity) await assignActivityRows(claimedActivity.rows, msg!.id);
 
   // auto-follow: reply to thread → sender auto-joins; replying after done clears done and brings thread back to inbox
   if (opts.senderId && opts.senderType !== "system" && ch?.type === "thread") {
@@ -403,6 +426,7 @@ export async function createMessage(opts: {
 
   // Agent-side wake: only wake agents @-mentioned (in channel), or agent members in a DM.
   const isDm = ch?.type === "dm";
+  const suppressAgentWake = opts.messageType === "agent_activity_receipt"; // human observability row, never collaboration input
   // Message in thread channel → broadcast thread:updated (parentMessageId + replyCount + participantIds)
   await publishThreadUpdated(opts.serverId, ch, opts.senderId, opts.senderType);
   const mentionedAgents = new Set(mentions.filter((m) => m.type === "agent").map((m) => m.id));
@@ -412,6 +436,7 @@ export async function createMessage(opts: {
   const woken: string[] = [];
   for (const mem of members) {
     if (mem.type !== "agent" || mem.id === opts.senderId) continue;
+    if (suppressAgentWake) continue;
     const mentioned = mentionedAgents.has(mem.id);
     // Channel messages delivered to all agent members (not limited to @; wake even without @, model decides whether to reply).
     // Ambient wake without @ requires inbox:receive scope; @-mentioned or DM always delivers.
@@ -425,11 +450,13 @@ export async function createMessage(opts: {
       continue;
     }
     const replyStreamId = agentReplyStreamId(msg!.id, mem.id);
-    await publish(opts.serverId, { type: "agent:reply", agentId: mem.id, channelId: opts.channelId, streamId: replyStreamId, name: mem.displayName || mem.name, triggerMessageId: msg!.id, op: "start" });
+    const runStart = await startAgentActivityRun(opts.serverId, mem.id, opts.channelId, replyStreamId);
+    await publish(opts.serverId, { type: "agent:reply", agentId: mem.id, channelId: opts.channelId, streamId: replyStreamId, name: mem.displayName || mem.name, triggerMessageId: msg!.id, op: "start", entries: [runStart] });
     const startSent = sendAgentStart(opts.serverId, target, mem.id);
     const deliverSent = startSent && sendAgentDeliver(opts.serverId, target, { agentId: mem.id, seq, from: opts.senderName, target: opts.channelId, targetName, msgShort, isTask: !!opts.asTask, message: { content: opts.content }, mentioned, streamId: replyStreamId });
     if (!deliverSent) {
       await publish(opts.serverId, { type: "agent:reply", agentId: mem.id, channelId: opts.channelId, streamId: replyStreamId, name: mem.displayName || mem.name, op: "error", text: "machine offline" });
+      await finalizeAgentActivityRun(opts.serverId, mem.id, opts.channelId, replyStreamId, mem.displayName || mem.name, "error");
       await markAgentUnavailable(opts.serverId, mem.id, "machine offline");
       continue;
     }
@@ -441,6 +468,29 @@ export async function createMessage(opts: {
     wakeAgents: woken,
   });
   return msg!;
+}
+
+export async function finalizeAgentActivityRun(serverId: string, agentId: string, channelId: string, streamId: string, agentName: string, state: "handled" | "error"): Promise<void> {
+  const pending = await pendingActivityForStream(serverId, agentId, channelId, streamId);
+  const [last] = await db.select().from(schema.messages).where(and(
+    eq(schema.messages.serverId, serverId),
+    eq(schema.messages.channelId, channelId),
+    eq(schema.messages.senderId, agentId),
+    eq(schema.messages.agentActivityStreamId, streamId),
+  )).orderBy(desc(schema.messages.seq)).limit(1);
+  if (last) {
+    const merged = [...(last.agentActivity ?? []), ...pending.items];
+    await db.update(schema.messages).set({ agentActivity: merged, agentActivityState: state, updatedAt: new Date() }).where(eq(schema.messages.id, last.id));
+    await assignActivityRows(pending.rows, last.id);
+    const updated = await serializeMessageById(last.id);
+    if (updated) await publish(serverId, { type: "message:updated", message: updated });
+    return;
+  }
+  await createMessage({
+    serverId, channelId, senderType: "agent", senderId: agentId, senderName: agentName,
+    content: "", messageType: "agent_activity_receipt",
+    agentActivity: pending.items, agentActivityStreamId: streamId, agentActivityState: state,
+  });
 }
 
 /** Target resolution: #name / dm:@name / thread #name:shortid or dm:@name:shortid.

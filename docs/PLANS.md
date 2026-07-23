@@ -34,6 +34,7 @@ their verified end state is recorded in `FEATURES.md`:
 - **02 Saved Messages** ✅ (FEATURES P3)
 - **03 / 03b Tasks end-to-end + interaction rework** ✅ (FEATURES P4 — board move UX, layout toggle, DM tasks, handoff)
 - **04 Message rendering** ✅ (markdown + structured-mention links + no-raw-HTML invariant, `web/src/messageRender.tsx`; ARCHITECTURE §III)
+- **Inline Agent Activity** ✅ — channel/DM/thread runs now keep their status, thinking, and tool calls in durable per-message disclosures; no-message runs leave a quiet handled/error receipt; the permanent Live Trace column is gone. [Execution plan](./exec-plans/completed/inline-agent-activity.md).
 - Early fixed bugs: double message delivery (StrictMode double-socket) / Chinese IME Enter mis-send → tech-debt I9/I10
 
 ## Roadmap (index only — ground truth is the code + `FEATURES.md`)

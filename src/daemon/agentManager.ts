@@ -29,7 +29,7 @@ interface Running { session: RuntimeSession; config: AgentConfig; sessionId: str
 interface QueuedStart { agentId: string; config: AgentConfig; enqueuedAt: number; }
 interface PendingDeliver { from: string; target: string; mentioned: boolean; meta: DeliverMeta; }
 interface PendingDeliverQueue { items: PendingDeliver[]; timer: ReturnType<typeof setTimeout>; }
-interface ActiveReplyPreview { channelId: string; streamId: string; name: string; }
+interface ActiveReplyPreview { channelId: string; streamId: string; name: string; eventSeq: number; }
 interface AgentManagerOptions {
   dataDir?: string;
   binDir?: string;
@@ -125,16 +125,16 @@ export class AgentManager {
     this.startQueue.splice(idx, 1);
     this.budget.queueLength = this.startQueue.length;
     this.send({ type: "agent:status", agentId, status: "inactive" });
-    this.send({ type: "agent:activity", agentId, activity: "offline", detail: "dequeued" });
+    this.sendAgentActivity(agentId, "offline", "dequeued");
     this.log.info("dequeued", { agentId });
   }
 
   // Tear down process: clear timers + remove from map first (critical: deletion before session.stop() lets the onExit has() guard recognize this as an intentional stop, suppressing unexpected sleeping status) + stop runtime. Returns whether the agent was found.
   private teardown(agentId: string): boolean { this.clearPendingDeliver(agentId); this.finishReplyPreview(agentId); const r = this.agents.get(agentId); if (!r) return false; if (r.idleTimer) clearTimeout(r.idleTimer); if (r.deliverBuf) clearTimeout(r.deliverBuf.timer); this.agents.delete(agentId); this.tryDequeue(); r.session.stop(); return true; }
   // User-initiated stop: emits inactive/offline
-  stop(agentId: string): void { if (!this.teardown(agentId)) return; this.send({ type: "agent:status", agentId, status: "inactive" }); this.send({ type: "agent:activity", agentId, activity: "offline", detail: "" }); }
+  stop(agentId: string): void { if (!this.teardown(agentId)) return; this.send({ type: "agent:status", agentId, status: "inactive" }); this.sendAgentActivity(agentId, "offline"); }
   // Idle sleep: emits sleeping/sleeping (activity also set to sleeping so the frontend activity+status dual mapping stays consistent; session is preserved for --resume on next wake)
-  sleep(agentId: string): void { if (!this.teardown(agentId)) return; this.log.info("sleep", { agentId }); this.send({ type: "agent:status", agentId, status: "sleeping" }); this.send({ type: "agent:activity", agentId, activity: "sleeping", detail: "" }); }
+  sleep(agentId: string): void { if (!this.teardown(agentId)) return; this.log.info("sleep", { agentId }); this.send({ type: "agent:status", agentId, status: "sleeping" }); this.sendAgentActivity(agentId, "sleeping"); }
   /** Try to start the next queued agent if budget allows. */
   private tryDequeue(): void {
     if (this.startQueue.length === 0) return;
@@ -161,7 +161,7 @@ export class AgentManager {
       catch (e) { this.log.warn("clearMemory failed", { agentId, detail: String(e) }); }
     }
     this.send({ type: "agent:status", agentId, status: "inactive" });
-    this.send({ type: "agent:activity", agentId, activity: "offline", detail: "reset" });
+    this.sendAgentActivity(agentId, "offline", "reset");
     this.log.info("agent reset", { agentId, wipeWorkspace, clearMemory });
   }
   /** Profile changed on the server (displayName/description) — surgically sync the workspace MEMORY.md
@@ -200,18 +200,21 @@ export class AgentManager {
       channelId,
       streamId: streamId ?? `${Date.now()}-${++this.replySeq}`,
       name: r.config.displayName || r.config.name || agentId,
+      eventSeq: 0,
     };
     this.activeReplyPreviews.set(agentId, preview);
     this.send({ type: "agent:reply", agentId, channelId: preview.channelId, streamId: preview.streamId, name: preview.name, op: "start" });
   }
 
-  private sendReplyPreviewDelta(agentId: string, entries: { kind?: string; text?: string }[]): void {
+  private sendAgentActivity(agentId: string, activity: string, detail = ""): void {
     const preview = this.activeReplyPreviews.get(agentId);
-    if (!preview) return;
-    for (const e of entries) {
-      if (e.kind !== "text" || !e.text) continue;
-      this.send({ type: "agent:reply", agentId, channelId: preview.channelId, streamId: preview.streamId, name: preview.name, op: "delta", text: e.text });
-    }
+    this.send({ type: "agent:activity", agentId, activity, detail, channelId: preview?.channelId, streamId: preview?.streamId, runSeq: preview ? ++preview.eventSeq : undefined });
+  }
+
+  private sendAgentTrajectory(agentId: string, entries: { kind?: string; text?: string; toolName?: string; toolInput?: string }[]): void {
+    const preview = this.activeReplyPreviews.get(agentId);
+    const contextual = preview ? entries.map((entry) => ({ ...entry, runSeq: ++preview.eventSeq })) : entries;
+    this.send({ type: "agent:trajectory", agentId, entries: contextual, channelId: preview?.channelId, streamId: preview?.streamId });
   }
 
   private finishReplyPreview(agentId: string, op: "done" | "error" = "done"): void {
@@ -250,7 +253,7 @@ export class AgentManager {
     this.startQueue.push({ agentId, config, enqueuedAt: Date.now() });
     this.budget.queueLength = this.startQueue.length;
     this.send({ type: "agent:status", agentId, status: "queued" });
-    this.send({ type: "agent:activity", agentId, activity: "offline", detail: "queued" });
+    this.sendAgentActivity(agentId, "offline", "queued");
     this.log.info("queued (memory pressure)", { agentId });
   }
 
@@ -259,7 +262,7 @@ export class AgentManager {
     const runtime = this.runtimeResolver(config.runtime ?? "claude");
     if (!runtime) {
       this.log.error("no runtime", { runtime: config.runtime });
-      this.send({ type: "agent:activity", agentId, activity: "offline", detail: `no runtime: ${config.runtime}` });
+      this.sendAgentActivity(agentId, "offline", `no runtime: ${config.runtime}`);
       return;
     }
     if (runtime.experimental) this.log.warn("experimental runtime", { runtime: runtime.name });
@@ -294,10 +297,10 @@ export class AgentManager {
       onSession: (sid) => { running.sessionId = sid; this.send({ type: "agent:session", agentId, sessionId: sid }); },
       onActivity: (activity, detail) => {
         this.resetIdle(agentId);
-        this.send({ type: "agent:activity", agentId, activity, detail: detail ?? "" });
+        this.sendAgentActivity(agentId, activity, detail ?? "");
         if (activity === "online" || activity === "sleeping" || activity === "offline" || activity === "error") this.finishReplyPreview(agentId, activity === "error" ? "error" : "done");
       },
-      onTrajectory: (entries) => { this.send({ type: "agent:trajectory", agentId, entries }); this.sendReplyPreviewDelta(agentId, entries); },
+      onTrajectory: (entries) => this.sendAgentTrajectory(agentId, entries),
       onExit: (code) => {
         this.log.info("agent exited", { agentId, code });
         if (!this.agents.has(agentId)) return; // intentional stop/sleep/reset already called teardown (removed from map) — they sent their own status, don't overwrite
@@ -308,7 +311,7 @@ export class AgentManager {
         const crashed = code !== 0;
         this.finishReplyPreview(agentId, crashed ? "error" : "done");
         this.send({ type: "agent:status", agentId, status: "sleeping" });
-        this.send({ type: "agent:activity", agentId, activity: crashed ? "error" : "sleeping", detail: crashed ? `crashed (exit ${code ?? "signal"})` : "" });
+        this.sendAgentActivity(agentId, crashed ? "error" : "sleeping", crashed ? `crashed (exit ${code ?? "signal"})` : "");
       },
       log: this.log,
     };
@@ -334,7 +337,7 @@ export class AgentManager {
     running.pid = running.session.pid ?? 0;
 
     this.send({ type: "agent:status", agentId, status: "active" });
-    this.send({ type: "agent:activity", agentId, activity: "working", detail: "starting" });
+    this.sendAgentActivity(agentId, "working", "starting");
     this.log.info("agent started", { agentId, runtime: runtime.name, model: config.model ?? "(default)", resume: !!config.sessionId, experimental: runtime.experimental ?? false });
     this.resetIdle(agentId);
     if (pendingDeliveryCount > 0) {

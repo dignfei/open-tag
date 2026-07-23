@@ -129,6 +129,9 @@ export const messages = pgTable("messages", {
   messageType: text("message_type").default("text").notNull(), // text | action | system
   content: text("content").notNull(),
   actionMetadata: jsonb("action_metadata"),       // system / platform action payload
+  agentActivity: jsonb("agent_activity").$type<{ timestamp: number; kind: string; activity?: string | null; detail?: string | null; text?: string | null; toolName?: string | null; toolInput?: string | null }[]>().default([]).notNull(),
+  agentActivityStreamId: text("agent_activity_stream_id"), // reply stream/run that produced this message or receipt
+  agentActivityState: text("agent_activity_state"), // running | handled | error
   threadId: uuid("thread_id"),                    // owning thread channel
   // —— Task fields (a message can be promoted to a task) ——
   taskStatus: text("task_status"),                // null | todo | in_progress | in_review | done | closed (claiming is tracked via taskAssigneeId/taskClaimedAt, not status value)
@@ -224,7 +227,15 @@ export const agentActivityLog = pgTable("agent_activity_log", {
   text: text("text"),                                  // kind=text: model output
   toolName: text("tool_name"),                         // kind=tool_start
   toolInput: text("tool_input"),
-}, (t) => ({ byAgent: index("activity_agent_idx").on(t.agentId, t.ts) }));
+  channelId: uuid("channel_id").references(() => channels.id),
+  streamId: text("stream_id"),
+  runSeq: integer("run_seq"),                         // stable ordering within one reply stream
+  messageId: uuid("message_id").references(() => messages.id), // segment owner after a real message/receipt claims the row
+}, (t) => ({
+  byAgent: index("activity_agent_idx").on(t.agentId, t.ts),
+  byStream: index("activity_stream_idx").on(t.agentId, t.streamId, t.runSeq),
+  byMessage: index("activity_message_idx").on(t.messageId),
+}));
 
 // ── Sidebar preferences (GET/PUT /api/servers/:id/sidebar-order) ──
 // One row per user per server: pinned items, sort order, hidden DMs, etc., stored as jsonb.

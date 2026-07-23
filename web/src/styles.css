@@ -20,7 +20,7 @@
   --task-mention:#f5ddd9;--task-mention-strong:#efcbc5;
   --human-mention:#fde9ec;--human-mention-strong:#fad9df;
   --alert-note:#92B6FF;--alert-tip:#72bd8f;--alert-important:#a98ad5;--alert-warning:#d9ad2b;--alert-caution:#d67b72;
-  --read-measure:76ch;--read-pad:24px;--read-top:40px;--read-bottom:80px;--scrollbar-gutter:16px;--chat-card-width:calc(var(--read-measure) + 72px + 2ch);
+  --read-measure:76ch;--read-pad:24px;--read-top:40px;--read-bottom:80px;--scrollbar-gutter:16px;--chat-card-width:1440px;
   --md-text-size:14.5px;--md-line-height:1.68;--md-paragraph-gap:.75em;
   --md-h1-size:1.4em;--md-h2-size:1.25em;--md-h3-size:1.12em;--md-h-rest-size:1em;
   /* Motion tokens — app shell (not landing page --lp-* system) */
@@ -36,7 +36,7 @@
 body{margin:0;font-family:var(--sans);font-size:16px;line-height:1.5;letter-spacing:.15px;background:var(--canvas);color:var(--ink-2)}
 button{font-family:inherit}
 .app{height:100vh;display:grid;grid-template-columns:56px var(--sb-w,248px) 1fr;position:relative}
-.app.has-traj{grid-template-columns:56px var(--sb-w,248px) 1fr var(--traj-w,320px)}
+.app.has-panel{grid-template-columns:56px var(--sb-w,248px) minmax(0,1fr) var(--traj-w,320px)}
 .resizer{position:absolute;top:0;bottom:0;width:7px;cursor:col-resize;z-index:45;background:transparent;transition:background .12s}
 .resizer:hover{background:var(--g-sky)}
 .resizer-sb{left:calc(56px + var(--sb-w,248px) - 3px)}
@@ -107,6 +107,7 @@ button{font-family:inherit}
 .item.ghost:hover{background:transparent}
 .joinbtn{border:1px solid var(--hair-strong);background:var(--surface);color:var(--ink);border-radius:6px;font-size:11px;padding:2px 9px;cursor:pointer;flex:none}
 .joinbtn:hover{background:var(--surface-strong)}
+.chat-head>.joinbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px}
 .dm-pick{margin:0 0 4px;padding:4px;border:1px solid var(--hair);border-radius:8px;background:var(--surface)}
 .inline-create{width:100%;font-size:15px;padding:6px 10px;border:1px solid var(--hair-strong);border-radius:8px;outline:none;margin-bottom:6px;background:var(--canvas)}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--muted-soft);flex:none}
@@ -226,17 +227,25 @@ main.content-col{display:flex;flex-direction:column;height:100vh;background:var(
    keep name + description + tabs on ONE row. The description shrinks to an ellipsis instead of wrapping — wrapping
    otherwise multiplied the header height and dropped the channel name to the bottom when the column got narrow
    (e.g. a wide right panel). Name + tabs never shrink, so the tab row stays intact instead of being pushed around. */
-.chat-head{position:relative;border-bottom:0;background:var(--surface);z-index:11}
-.chat-head::after{content:"";position:absolute;left:0;right:0;bottom:-46px;height:46px;background:linear-gradient(to bottom,var(--surface),rgba(255,255,255,.72) 32%,rgba(255,255,255,0));pointer-events:none}
+.chat-head{position:relative;min-height:58px;padding-top:12px;padding-bottom:12px;border-bottom:0;background:var(--surface);z-index:11}
+.chat-head::after{content:"";position:absolute;left:0;right:0;bottom:-24px;height:24px;background:linear-gradient(to bottom,var(--surface),rgba(255,255,255,.72) 32%,rgba(255,255,255,0));pointer-events:none}
 .chat-head>h1{flex-shrink:0}
 .chat-head>small,.chat-head>.head-status{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chat-head>.chtabs{flex-shrink:0}
-.scroll{flex:1;overflow:auto;padding:24px 28px}
+.scroll{flex:1;overflow:auto;padding:20px 28px 24px}
 main.content-col > .scroll{min-height:0;padding-bottom:112px;background:var(--surface)}
 main.content-col > .scroll::-webkit-scrollbar{background:var(--surface)}
 main.content-col > .scroll::-webkit-scrollbar-track{background:var(--surface)}
 main.content-col > .scroll::-webkit-scrollbar-thumb{background:rgba(87,96,106,.32);border-radius:9999px;border:3px solid var(--surface)}
-.msg{display:grid;grid-template-columns:44px minmax(0,1fr);column-gap:12px;width:100%;max-width:var(--chat-card-width);margin:0 auto 8px;padding:7px 12px 5px;position:relative;border-radius:12px;transition:box-shadow .5s ease;box-shadow:inset 0 0 0 .5px rgba(87,96,106,.10)}
+.msg{display:grid;grid-template-columns:44px minmax(0,1fr);column-gap:12px;width:100%;max-width:var(--chat-card-width);margin:0 auto 8px;padding:9px 12px 6px;position:relative;border-radius:8px;transition:box-shadow .32s ease,background-color .32s ease;box-shadow:inset 0 0 0 .5px rgba(87,96,106,.10)}
+.agent-run{display:grid;grid-template-columns:34px minmax(0,1fr);column-gap:10px;width:100%;max-width:var(--chat-card-width);margin:2px auto 8px;padding:7px 12px 6px;border-bottom:1px solid var(--hair);background:var(--surface);position:relative}
+.agent-run.is-live{background:var(--canvas-soft)}
+.agent-run.is-receipt{background:transparent;border-bottom-color:transparent;color:var(--muted)}
+.agent-run-av{align-self:start;display:inline-flex;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:transparent;cursor:pointer;line-height:0}
+.agent-run-col{min-width:0}
+.agent-run-head{display:flex;align-items:baseline;gap:7px;min-width:0;padding-right:2px}
+.agent-run .msg-act{margin:2px 0 0}
+.thread-agent-run{grid-template-columns:32px minmax(0,1fr);padding-left:8px;padding-right:8px}
 /* date divider between messages sent on different calendar days: a hairline through the middle, cut by a centered pill label */
 .date-divider{position:relative;display:flex;align-items:center;justify-content:center;width:100%;max-width:var(--chat-card-width);margin:14px auto}
 .date-divider::before{content:"";position:absolute;left:0;right:0;top:50%;border-top:1px solid var(--hair-strong)}
@@ -254,8 +263,8 @@ main.content-col > .scroll::-webkit-scrollbar-thumb{background:rgba(87,96,106,.3
 .mbody{white-space:pre-wrap;color:var(--body);overflow-wrap:anywhere}
 /* Message body markdown (MessageContent .md): react-markdown+remark-breaks already structures line breaks, explicit white-space:normal overrides pre-wrap inherited from .mbody — otherwise consecutive blank lines/paragraphs are double-preserved and inflate height (diagnosed: .md inherits pre-wrap + p default 16px margin → 3 paragraphs = 176px). Paragraph/list spacing tightened for compact body; code blocks retain their own line breaks */
 .md{white-space:normal;font-size:var(--md-text-size);line-height:var(--md-line-height);max-width:min(100%,var(--read-measure));margin-left:0;margin-right:auto;--inline-code-size:.9em}
-.msg .md{max-width:calc(100% - 64px)}
-.thread-panel .msg .md{max-width:100%} /* thread rows have no top-right message toolbar, so keep the full content column */
+.msg .md{max-width:100%} /* operational chat should use the message content column; the readable measure remains for document-style .md surfaces */
+.thread-panel .msg .md{max-width:100%}
 .md > :first-child{margin-top:0}.md > h1:first-child,.md > h2:first-child,.md > h3:first-child{margin-top:.45em}.md > :last-child{margin-bottom:0}
 .md p{margin:0}.md p + p{margin-top:var(--md-paragraph-gap)}
 .md ul,.md ol{margin:.65em 0;padding-left:1.1em}.md li{margin:.18em 0;position:relative;padding-left:1.38em}
@@ -286,7 +295,7 @@ main.content-col > .scroll::-webkit-scrollbar-thumb{background:rgba(87,96,106,.3
 .composer{position:relative;z-index:10;padding:4px 28px 14px;border-top:0;background:linear-gradient(to bottom,rgba(255,255,255,0),rgba(255,255,255,.48) 38%,var(--surface) 100%)}
 main.content-col > .composer{position:absolute;left:0;right:var(--scrollbar-gutter);bottom:0}
 .showcase-readonly{display:flex;align-items:center;gap:8px;padding:14px 28px 18px;border-top:1px solid var(--hair);font-size:13px;color:var(--muted);font-style:italic}
-/* Showcase layout: the /showcase route never gets has-traj's 4th grid column, so this shell IS the single
+/* Showcase layout: the /showcase route never opens a contextual 4th grid column, so this shell IS the single
    1fr grid cell and lays out "channel column + thread panel" itself (no empty strip when the thread is closed). */
 .showcase-shell{display:flex;height:100vh;overflow:hidden;min-width:0}
 .showcase-shell>.content-col{flex:1;min-width:0}
@@ -323,7 +332,7 @@ main.content-col > .composer{position:absolute;left:0;right:var(--scrollbar-gutt
 .mention-opt .mk-name{font-size:12px;color:var(--muted-soft)}
 .mention-opt .mk{font-size:11px;color:var(--muted-soft);flex:none}
 /* composer: auto-growing textarea + dual attachments + As Task + Send, skin follows DESIGN.md editorial style (thin hairline / rounded corners / ink pill) */
-.composer-box{width:100%;max-width:var(--chat-card-width);margin:0 auto;border:0;border-radius:12px;background:var(--surface);padding:10px 14px 10px;transition:box-shadow .5s ease;box-shadow:inset 0 0 0 .5px var(--card-line-strong),0 10px 30px rgba(15,23,42,.055)}
+.composer-box{width:100%;max-width:var(--chat-card-width);margin:0 auto;border:0;border-radius:8px;background:var(--surface);padding:10px 14px 10px;transition:box-shadow .32s ease;box-shadow:inset 0 0 0 .5px var(--card-line-strong),0 10px 30px rgba(15,23,42,.055)}
 .composer-box:hover{box-shadow:inset 0 0 0 .5px var(--card-line-strong),0 10px 30px rgba(15,23,42,.055)}
 .composer-box:focus-within{box-shadow:inset 0 0 0 .5px var(--card-line-strong),0 12px 34px rgba(15,23,42,.065)}
 .composer-status-chip{display:inline-flex;align-items:center;width:max-content;max-width:100%;margin:0 0 6px 2px;padding:2px 6px;border-radius:6px;background:var(--status-badge-bg);color:var(--muted);font-size:12px;line-height:1.35;white-space:normal}
@@ -489,16 +498,6 @@ main.content-col > .composer{position:absolute;left:0;right:var(--scrollbar-gutt
 aside.traj-col{position:relative;background:var(--canvas);padding:22px 20px;overflow-y:auto;overflow-x:hidden}
 aside.traj-col::before{content:"";position:absolute;top:-60px;right:-80px;width:220px;height:220px;pointer-events:none;background:radial-gradient(circle,var(--g-peach),transparent 68%);opacity:.5;filter:blur(8px)}
 aside.traj-col h2{position:relative;font-size:12px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);margin:0 0 14px}
-/* Live Trace groups: one message-bar-like block per agent/turn (avatar + running text) instead of one line per raw fragment */
-.traj-grp{display:grid;grid-template-columns:26px minmax(0,1fr);column-gap:9px;margin-bottom:14px}
-.traj-av{position:relative;line-height:0;margin-top:1px}
-.traj-head{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:2px}
-.traj-text{position:relative;font-size:14px;line-height:1.55;color:var(--body);overflow-wrap:anywhere;min-width:0}
-.traj-tool{display:flex;align-items:flex-start;gap:6px;font-size:12.5px;color:var(--muted);margin:4px 0}
-.traj-tool svg{flex:none;margin-top:2px;color:var(--muted-soft)}
-.traj-cursor{display:inline-block;width:2px;height:13px;background:var(--ink-2);vertical-align:-2px;margin-left:1px;animation:traj-blink 1s step-end infinite}
-@keyframes traj-blink{50%{opacity:0}}
-@media (prefers-reduced-motion:reduce){.traj-cursor{animation:none}}
 .hint{position:relative;font-size:12px;color:var(--muted-soft)}
 
 .modal-bg{position:fixed;inset:0;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;z-index:50}
@@ -595,24 +594,48 @@ aside.traj-col h2{position:relative;font-size:12px;font-weight:600;letter-spacin
 /* Message row craft (skin: DESIGN.md editorial style) */
 .msg-col{min-width:0;padding:0}
 .msg-head{display:flex;align-items:baseline;gap:7px;min-width:0}
+.msg-agent-state{display:inline-flex;align-items:center;gap:6px;min-width:0;margin-left:auto;color:var(--muted);font-size:11px;font-weight:500;white-space:nowrap}
+.msg-agent-state .dot{width:7px;height:7px;flex:none}
+main.content-col>.scroll .msg-head>.msg-agent-state{padding-right:76px}
 .member-badge{font-size:12px;color:var(--muted-soft);font-weight:400;flex:none}
 .msg-head .ts{margin-left:0;flex:none}
 .msg-subhead{display:flex;align-items:center;gap:7px;min-width:0;margin-top:2px;color:var(--muted-soft)}
 .msg-subhead + .mbody{margin-top:8px}
-.agent-reply-placeholder{color:#8f949b;font-size:14px;font-weight:700;font-style:normal;background:linear-gradient(90deg,#b9bdc2 0%,#b9bdc2 46%,#fff 50%,#b9bdc2 54%,#b9bdc2 100%);background-size:300% 100%;background-position:100% 0;-webkit-background-clip:text;background-clip:text;color:transparent;animation:agent-thinking-shimmer 4s linear infinite}
-.agent-reply-placeholder.done{animation:none;color:var(--muted-soft);background:none}
-.agent-reply-placeholder.error{color:var(--status-red);font-style:normal;background:none;animation:none}
-@keyframes agent-thinking-shimmer{0%{background-position:100% 0}50%{background-position:0% 0}100%{background-position:0% 0}}
-.msg-activity{flex:none;font-family:var(--mono);font-size:11px;line-height:1.35;color:var(--muted);background:var(--status-badge-bg);border:0;border-radius:5px;padding:1px 5px;white-space:nowrap;transition:opacity .5s ease}
-.msg-activity.sleeping{color:var(--status-blue);background:var(--status-badge-bg)}
-.msg-activity.online,.msg-activity.active{color:var(--status-green);background:var(--status-badge-bg)}
-.msg-activity.working,.msg-activity.thinking{color:var(--status-orange);background:var(--status-badge-bg)}
-.msg-activity.error{color:var(--status-red);background:var(--status-badge-bg)}
-.msg-activity.queued{color:var(--status-yellow);background:var(--status-badge-bg)}
 .msg-role{font-size:13px;color:var(--muted-soft);font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 auto}
-/* Agent status badge now lives on the header line itself (pinned right), not on its own subhead line below the name */
-.msg-head .msg-activity{margin-left:auto}
 .msg-head + .mbody{margin-top:8px} /* keeps body breathing room when no subhead follows (the common case now that activity moved into msg-head) */
+.msg-act{margin:7px 0 8px;border-left:1px solid var(--hair-strong);min-width:0}
+.msg-act.is-live{border-left-color:var(--status-blue)}
+.msg-act.is-error{border-left-color:var(--status-red)}
+.msg-act-toggle{display:grid;grid-template-columns:16px max-content minmax(0,1fr) max-content 14px;align-items:center;gap:7px;width:100%;min-height:32px;padding:5px 7px 5px 10px;border:0;border-radius:0 6px 6px 0;background:transparent;color:var(--muted);text-align:left;cursor:pointer}
+.msg-act-toggle:hover{background:var(--surface-strong);color:var(--ink-2)}
+.msg-act-state{display:grid;place-items:center;color:var(--muted-soft)}
+.msg-act.is-live .msg-act-state{color:var(--status-blue)}
+.msg-act.is-error .msg-act-state{color:var(--status-red)}
+.msg-act-label{color:var(--ink-2);font-size:13px;font-weight:600;white-space:nowrap}
+.msg-act-summary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.msg-act-count{font-size:11px;white-space:nowrap}
+.msg-act-chevron{transition:transform var(--dur-base) var(--ease-decel)}
+.msg-act-toggle[aria-expanded=true] .msg-act-chevron{transform:rotate(90deg)}
+.msg-act-reveal{display:none}
+.msg-act-reveal.is-open{display:block;max-height:min(50vh,520px);overflow-y:auto;overscroll-behavior:contain}
+.msg-act-body{min-height:0;padding:3px 8px 9px 26px;overflow:hidden}
+.msg-act-event{position:relative;display:grid;grid-template-columns:58px 14px minmax(0,1fr);gap:7px;min-height:28px;padding:4px 0;color:var(--muted);font-size:12.5px;line-height:1.45}
+.msg-act-event::after{content:"";position:absolute;left:71px;top:18px;bottom:-10px;width:1px;background:var(--hair)}
+.msg-act-event:last-child::after{display:none}
+.msg-act-event time{padding-top:1px;color:var(--muted-soft);font-family:var(--mono);font-size:10.5px;font-variant-numeric:tabular-nums}
+.msg-act-mark{position:relative;z-index:1;width:7px;height:7px;margin:6px auto 0;border:1px solid var(--hair-strong);border-radius:50%;background:var(--surface)}
+.msg-act-event.is-tool .msg-act-mark{border-radius:2px;border-color:var(--status-orange)}
+.msg-act-event.is-current .msg-act-mark{border-color:var(--status-blue);background:var(--status-blue);animation:msg-act-pulse 1.8s ease-out infinite}
+.msg-act-event-content{min-width:0;overflow-wrap:anywhere}
+.msg-act-kind{display:inline-flex;align-items:center;gap:5px;color:var(--ink-2);font-size:12px}
+.msg-act-event code{display:block;margin-top:3px;padding:6px 8px;border-radius:4px;background:var(--surface-strong);color:var(--ink-2);font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg-act.is-receipt{position:relative;margin-top:5px;margin-bottom:0}
+.msg-act.is-receipt::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:var(--hair);transform-origin:left;animation:msg-act-settle var(--dur-signature) var(--ease-decel) both}
+.msg-act.is-receipt .msg-act-state{width:20px;height:20px;border:1px solid var(--hair-strong);border-radius:50%;color:var(--ink-2);animation:msg-act-check var(--dur-slow) var(--ease-quint) both}
+@keyframes msg-act-pulse{0%{box-shadow:0 0 0 0 var(--status-blue)}70%,100%{box-shadow:0 0 0 5px transparent}}
+@keyframes msg-act-check{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
+@keyframes msg-act-settle{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@media (prefers-reduced-motion:reduce){.msg-act-event.is-current .msg-act-mark,.msg-act.is-receipt::after,.msg-act.is-receipt .msg-act-state{animation:none}.msg-act-chevron{transition:none}}
 .av-status{position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-radius:50%;border:2px solid var(--surface);background:var(--muted-soft)}
 .av-status.sleeping{background:var(--status-blue)}
 .av-status.offline,.av-status.inactive{background:var(--muted-soft)}
@@ -641,10 +664,6 @@ aside.traj-col h2{position:relative;font-size:12px;font-weight:600;letter-spacin
 .unread-threads-bar svg{color:var(--amber);flex:none}
 .unread-threads-bar .utb-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .unread-threads-bar .utb-cta{color:var(--amber);font-weight:700;flex:none}
-/* When the bar above is showing, a message scrolled up to the very top edge of .scroll gets its
-   avatar/name/timestamp clipped by the container boundary, leaving bare body text flush against the
-   bar's solid background — reads as one broken box. Fade the top ~32px instead of hard-clipping it. */
-.scroll-fade-top{-webkit-mask-image:linear-gradient(to bottom, transparent, black 32px);mask-image:linear-gradient(to bottom, transparent, black 32px)}
 /* action card (B-mode proposal card). Editorial style: off-white surface + hairline + pill CTA */
 .action-card{margin-top:4px;max-width:440px;background:var(--surface);border:1px solid var(--hair-strong);border-radius:12px;padding:12px 14px}
 .action-card .ac-title{font-size:15px;font-weight:600;color:var(--ink);letter-spacing:.1px}
@@ -662,8 +681,12 @@ aside.traj-col h2{position:relative;font-size:12px;font-weight:600;letter-spacin
 /* thread head icon buttons (mark done / unfollow / source message / close): unified transparent tertiary, surface appears on hover, flex-centered icons */
 .tp-link,.tp-close{background:none;border:0;color:var(--muted);cursor:pointer;padding:5px 7px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center}
 .tp-link:hover,.tp-close:hover{background:var(--surface-strong);color:var(--ink)}
-.thread-parent{background:var(--surface-strong);border-radius:12px;padding:6px 12px;margin-bottom:6px}
+.thread-parent{background:transparent;border-radius:0;padding:0;margin-bottom:6px}
 .thread-sep{font-size:12px;color:var(--muted);text-align:center;margin:6px 0 12px;position:relative}
+.thread-panel .msg-head{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:6px;row-gap:1px;align-items:center}
+.thread-panel .msg-head .who{grid-column:1;grid-row:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thread-panel .msg-head .ts{grid-column:1;grid-row:2}
+.thread-panel .msg-head .msg-agent-state{grid-column:2;grid-row:1;margin-left:0}
 .thread-composer{padding:14px 18px 18px}
 /* Reminder status badge */
 .rem-badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9999px;border:1px solid var(--hair-strong)}
@@ -842,7 +865,6 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
 /* ── Message hover floating toolbar (actions float in top-right corner) ──────────── */
 .msg-toolbar{position:absolute;top:7px;right:10px;display:flex;gap:2px;background:transparent;border:0;border-radius:8px;box-shadow:none;padding:0;opacity:0;pointer-events:none;transition:opacity .5s ease;z-index:5}
 .msg:hover .msg-toolbar{opacity:1;pointer-events:auto}
-.msg:hover .msg-activity{opacity:0} /* toolbar and the activity badge share the top-right corner; yield to the toolbar on hover instead of overlapping it */
 .msg-toolbar button{border:0;background:transparent;color:var(--muted);font-size:15px;line-height:1;padding:5px 7px;border-radius:6px;cursor:pointer}
 .msg-toolbar button:hover{background:var(--surface-strong)}
 .msg-toolbar button.on{color:var(--ink)}
@@ -875,28 +897,32 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
 @keyframes lb-ping{0%{transform:scale(1);opacity:.55}70%,100%{transform:scale(2.4);opacity:0}}
 @media (prefers-reduced-motion:reduce){.live-bar__pip::after,.dot.working:not(.live-bar__pip)::after,.av-status.working::after{animation:none;opacity:0}}
 
-/* ── Message enter animation: new socket-pushed messages expand upward from below.
-   The max-height/margin expansion lets the new row occupy space gradually, so older
-   messages are pushed up instead of jumping, while opacity/translateY keeps the motion soft. ── */
+/* New messages reveal quickly; the live run uses its own quieter entrance and then stays mounted
+   while the first persisted reply takes over the same render key. */
 @keyframes msg-enter {
-  from { opacity: 0; transform: translateY(18px); max-height:0; margin-bottom:0; }
-  to   { opacity: 1; transform: translateY(0); max-height:40rem; margin-bottom:8px; }
+  from { opacity: .25; transform: translateY(8px); clip-path:inset(0 0 85% 0 round 8px); max-height:0; margin-bottom:0; }
+  to   { opacity: 1; transform:translateY(0); clip-path:inset(0 0 0 0 round 8px); max-height:80rem; margin-bottom:8px; }
 }
 .msg-enter {
   overflow: hidden;
   animation-name: msg-enter;
-  animation-duration: 1s;
+  animation-duration: 420ms;
   animation-timing-function: var(--ease-expo);
   animation-delay: var(--msg-delay, 0ms);
   animation-fill-mode: backwards;
 }
-@media (prefers-reduced-motion:reduce){.msg-enter{animation:none}}
+@keyframes agent-run-enter{from{opacity:.35;transform:translateY(4px);clip-path:inset(0 0 70% 0)}to{opacity:1;transform:translateY(0);clip-path:inset(0)}}
+.agent-run-enter{animation:agent-run-enter 320ms var(--ease-expo) both}
+@media (prefers-reduced-motion:reduce){.msg-enter,.agent-run-enter{animation:none}}
 
 @media (max-width:700px){
   :root{--read-pad:16px}
   .scroll{padding-left:16px;padding-right:16px}
   .composer{padding-left:16px;padding-right:16px}
   .composer-input{font-size:16px}
+  .msg-agent-state{font-size:0;gap:0}
+  main.content-col>.scroll .msg-head>.msg-agent-state{padding-right:0}
+  .msg-toolbar{display:none}
 }
 
 /* ── Primary button press feedback: snap-scale on :active (transform only, layout-safe) ── */
@@ -923,13 +949,17 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
 .mobile-burger,.mobile-scrim{display:none}  /* hidden on desktop by default: if scrim is not hidden it occupies the first grid column and shifts rail/sidebar/content out of place */
 @media (max-width:820px){
   /* Layout: rail moves to bottom, main content full-width single column */
-  .app,.app.has-traj{grid-template-columns:1fr;grid-template-rows:1fr auto}
+  .app,.app.has-panel{grid-template-columns:1fr;grid-template-rows:1fr auto}
   .rail{grid-row:2;flex-direction:row;align-items:center;justify-content:space-around;gap:2px;padding:4px 6px;box-shadow:0 -1px 0 var(--hair);overflow-x:auto}
   .rail .brand,.rail .spacer,.sw-wrap{display:none}
   .rail a.t{flex-direction:column;gap:2px;width:auto;min-width:0;height:auto;flex:1 1 0;padding:5px 2px}
   .t-label{position:static;opacity:1;transform:none;background:none;color:var(--muted);font-size:10px;padding:0;box-shadow:none;pointer-events:auto;line-height:1.1}
   .rail a.t.active .t-label{color:var(--ink)}
   main.content-col{grid-row:1;min-width:0;height:auto;min-height:0}  /* overrides desktop height:100vh, delegated to grid 1fr; otherwise fills viewport and pushes bottom bar off screen */
+  .chat-head{gap:7px;padding-right:9px}
+  .chat-head>small,.chat-head>.head-status{display:none}
+  .chat-head>.joinbtn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;flex:none}
+  .chat-head .joinbtn-label{display:none}
   .showcase-shell{grid-row:1;height:auto;min-height:0}  /* same delegation: the showcase wrapper is the grid cell here (its inner .content-col gets height:auto via the rule above; the thread panel goes fullscreen via .thread-panel) */
   /* sidebar (channels/members etc.) → left drawer, collapsed by default, hamburger toggles body.sb-open */
   .sidebar{position:fixed;top:0;bottom:0;left:0;width:84vw;max-width:330px;z-index:60;transform:translateX(-100%);transition:transform var(--dur-slow) var(--ease-quint);box-shadow:4px 0 28px var(--scrim)}
@@ -941,7 +971,7 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
   /* thread/profile right panel → fullscreen overlay */
   .thread-panel,.traj-col.profile-mode{position:fixed;inset:0;z-index:70;width:100%}  /* a profile opened in the right column gets the same fullscreen treatment as a thread (otherwise .traj-col is display:none below and the profile would be invisible on mobile) */
   .traj-col.profile-mode{display:block;overflow:auto}
-  .traj-col{display:none}  /* agent trajectory sidebar: no horizontal space on mobile, hidden (otherwise pushed into implicit grid row and squashes main chat) */
+  .traj-col{display:none}
   .resizer{display:none}
   /* Modal → full-width bottom sheet */
   .modal-bg{align-items:flex-end}
@@ -949,10 +979,15 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
   /* Enlarge touch targets */
   .joinbtn{padding:6px 11px;font-size:13px}
   .addbtn{width:30px;height:30px}
+  .msg-act-toggle{grid-template-columns:16px max-content minmax(0,1fr) 14px}
+  .msg-act-count{display:none}
+  .msg-act-body{padding-left:8px;padding-right:2px}
+  .msg-act-event{grid-template-columns:49px 12px minmax(0,1fr);gap:6px}
+  .msg-act-event::after{left:60px}
 }
 
 /* ───────── Loading skeletons (WorkspaceSkeleton / ChatSkeleton, see views/Skeleton.tsx) ─────────
-   Mirror the app-shell grid (.app.has-traj) so the swap to the real UI is layout-shift-free. Editorial-calm:
+   Mirror the default three-column app shell so the swap to the real UI is layout-shift-free. Editorial-calm:
    hairline placeholder blocks with a soft left-to-right shimmer; shimmer off under prefers-reduced-motion. */
 .skel-app{background:var(--canvas)}
 .skel-box{position:relative;overflow:hidden;background:var(--hair);border-radius:8px}
