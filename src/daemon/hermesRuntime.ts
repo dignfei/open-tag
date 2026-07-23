@@ -45,8 +45,8 @@ export function buildHermesArgs(prompt: string, sessionId?: string | null): stri
   return args;
 }
 
-interface TurnState { sent: boolean; held: boolean; engaged: boolean; target: string | null; }
-type BridgeDecision = { ok: true; target: string; content: string } | { ok: false; reason: string };
+interface TurnState { sent: boolean; held: boolean; engaged: boolean; target: string | null; messageId?: string | null; grant?: string | null; }
+type BridgeDecision = { ok: true; target: string; content: string; replyTo?: string; hasGrant?: boolean } | { ok: false; reason: string };
 interface BridgePostResult { ok: boolean; held?: boolean; sentDraft?: boolean; status?: number; text?: string }
 
 export function parseHermesSessionId(stderr: string): string | null {
@@ -69,6 +69,10 @@ export function parseHermesTurnEvents(jsonl: string): TurnState {
     if ((evt.type === "check" || evt.type === "read") && typeof evt.target === "string" && evt.target.trim()) {
       state.engaged = true;
       state.target = evt.target.trim();
+      if (evt.type === "check") {
+        if (typeof evt.messageId === "string") state.messageId = evt.messageId;
+        if (typeof evt.grant === "string") state.grant = evt.grant;
+      }
     }
   }
   return state;
@@ -94,9 +98,10 @@ export function hermesBridgeDecision(stdout: string, state: TurnState): BridgeDe
   if (state.held) return { ok: false, reason: "already-held" };
   if (!state.engaged || !state.target) return { ok: false, reason: "no-open-tag-read" };
   if (!/^(#|dm:|thread:)/.test(state.target)) return { ok: false, reason: "invalid-target" };
+  if (!state.messageId) return { ok: false, reason: "no-reply-trigger" };
   const cleaned = cleanHermesStdout(stdout);
   if (!cleaned.ok) return cleaned;
-  return { ok: true, target: state.target, content: cleaned.content };
+  return { ok: true, target: state.target, content: cleaned.content, replyTo: state.messageId, hasGrant: state.grant === "primary" || state.grant === "supplemental" };
 }
 
 async function responseJson(res: Response): Promise<any> {
@@ -109,12 +114,13 @@ export async function postHermesBridgeMessage(
   headers: Record<string, string>,
   target: string,
   content: string,
+  replyTo?: string,
 ): Promise<BridgePostResult> {
   const url = `${serverUrl}/agent-api/message/send`;
   const first = await fetchImpl(url, {
     method: "POST",
     headers,
-    body: JSON.stringify({ target, content }),
+    body: JSON.stringify({ target, content, replyTo }),
   });
   const firstBody = await responseJson(first);
   if (!first.ok) return { ok: false, status: first.status };
@@ -266,11 +272,27 @@ class HermesRun {
       return null;
     }
     try {
+      if (!decision.hasGrant) {
+        const grantRes = await fetch(`${this.env.OPEN_TAG_SERVER_URL ?? ""}/agent-api/message/decide`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.env.OPEN_TAG_AGENT_TOKEN ?? ""}`,
+            "x-agent-id": this.env.OPEN_TAG_AGENT_ID ?? "",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ messageId: decision.replyTo, decision: "request_reply", reason: "ownership", summary: "one-shot runtime produced a substantive final response" }),
+        });
+        const grantBody = await responseJson(grantRes);
+        if (!grantRes.ok || !grantBody?.grant) {
+          this.cb.log.info("hermes final response stayed silent without reply grant", { status: grantRes.status, target: decision.target });
+          return null;
+        }
+      }
       const result = await postHermesBridgeMessage(fetch, this.env.OPEN_TAG_SERVER_URL ?? "", {
         authorization: `Bearer ${this.env.OPEN_TAG_AGENT_TOKEN ?? ""}`,
         "x-agent-id": this.env.OPEN_TAG_AGENT_ID ?? "",
         "content-type": "application/json",
-      }, decision.target, decision.content);
+      }, decision.target, decision.content, decision.replyTo);
       if (!result.ok) {
         if (result.held) {
           this.cb.log.warn("hermes final response freshness-held; draft saved for review", { target: decision.target });

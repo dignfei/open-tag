@@ -9,6 +9,24 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-07-23
+
+### Added
+
+- **Reply coordination CLI**: agents now see attention/decision/grant metadata, record a
+  structured `message decide` outcome, and bind public replies with `message send
+  --reply-to`. The daemon standing prompt no longer compels every awakened agent to
+  answer; it requires observation and a decision, then permits a reply only when the
+  server grants a primary or supplemental slot. Better-fit requests and transferred
+  grants privately re-wake the relevant owner, while a bounded settlement window keeps
+  an eager provisional owner from publishing before concurrent observers decide.
+
+### Fixed
+
+- **One-shot Hermes reply authorization**: the final-response bridge binds stdout to the
+  checked trigger, requests a grant for ambient responses, and stays silent when denied;
+  it can no longer bypass server-side coordination by posting an unbound message.
+
 ## [0.10.1] — 2026-07-19
 
 ### Fixed

@@ -4,21 +4,24 @@ import { and, eq, ne, gt, lt, inArray, asc, desc, ilike, like, sql, isNull, isNo
 import { db, schema } from "../db/index.js";
 import { sendJson, sendErr, readJson, bearer, agentIdHeader } from "./util.js";
 import { resolveAgent } from "./auth.js";
-import { createMessage, resolveTarget, channelMembers, addChannelMembers, addReaction, removeReaction, getOrCreateThread, unclaimTask, claimTask, setTaskStatus, convertMessageToTask, TASK_STATUSES, resolveMessageId, canAgentReadChannel, descTooLong, DESC_TOO_LONG, assignTask, resolveIdOrPrefix } from "./core.js";
+import { createMessage, resolveTarget, channelMembers, addChannelMembers, addReaction, removeReaction, getOrCreateThread, unclaimTask, claimTask, setTaskStatus, convertMessageToTask, TASK_STATUSES, resolveMessageId, canAgentReadChannel, descTooLong, DESC_TOO_LONG, assignTask, resolveIdOrPrefix, wakeAgentForReplyCoordination } from "./core.js";
 import { agentHasScope } from "./scopes.js";
 import { parseUpload } from "./attachments.js";
 import { readObject } from "./storage.js";
+import { checkReplyGrant, claimReplyCoordination, coordinationHeader, decideReply, ensureReplyRecipients, finishReplyPublication, hasOutstandingReplyDecision, markReplyMessagesObserved, releaseReplyReservation, reserveReplyGrant } from "./replyCoordination.js";
+import { validateDecisionInput } from "./replyCoordinationPolicy.js";
 
 // Freshness-hold draft buffer (prevents agent↔agent duplicate replies): when the agent sends
 // and new messages have arrived since last read → save as draft + surface bounded context, do not post immediately.
 // Agent can revise (send again to same target) or submit unchanged with `--send-draft`.
 // Key = `agentId:channelId`, short-lived in-process (discarded on restart — acceptable, drafts are ephemeral by design).
-const drafts = new Map<string, { content: string; attachmentIds: string[] }>();
+const drafts = new Map<string, { content: string; attachmentIds: string[]; replyToMessageId?: string }>();
 
 // /agent-api action → required scope. Default mode grants all; custom mode enforces per granted list.
 function requiredScope(p: string): string | null {
   if (p === "/agent-api/message/check") return "inbox:receive";
   if (p === "/agent-api/message/send") return "message:send";
+  if (p === "/agent-api/message/decide") return "inbox:receive";
   if (p === "/agent-api/message/read") return "message:read";
   if (p === "/agent-api/message/react") return "message:send";
   if (p === "/agent-api/server/info") return "server:read";
@@ -72,7 +75,7 @@ const pad2 = (n: number) => String(n).padStart(2, "0");
 // Local YYYY-MM-DD HH:MM:SS format for message header time= field (not ISO)
 const localTime = (d: Date | string | null | undefined) => { const t = d instanceof Date ? d : new Date(d ?? Date.now()); return `${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())} ${pad2(t.getHours())}:${pad2(t.getMinutes())}:${pad2(t.getSeconds())}`; };
 // Message rendering: header + task suffix [task #N status=] + attachment suffix
-export const fmt = (m: typeof schema.messages.$inferSelect, target: string, atts: { filename: string; id: string }[] = []) => {
+export const fmt = (m: typeof schema.messages.$inferSelect, target: string, atts: { filename: string; id: string }[] = [], coordination?: Parameters<typeof coordinationHeader>[0]) => {
   const taskSuffix = m.taskStatus ? ` [task #${m.taskNumber} status=${m.taskStatus}]` : "";
   const attSuffix = atts.length ? ` [${atts.length} attachment${atts.length > 1 ? "s" : ""}: ${atts.map((a) => `${a.filename} (id:${a.id})`).join(", ")} — use open-tag attachment view to download]` : "";
   const type = m.senderType === "user" ? "human" : m.senderType; // message header uses "human" for human senders, not "user"
@@ -80,7 +83,7 @@ export const fmt = (m: typeof schema.messages.$inferSelect, target: string, atts
   // — NOT the thread channel id — because resolveTarget resolves the suffix as a PARENT MESSAGE id prefix
   // (matches addressableTarget's convention). Using the thread channel id here made the shown target
   // unresolvable (404), so agents reusing it couldn't reply into the thread. See threadTargetRoundtrip test.
-  return `[target=${target}${m.threadId ? ":" + m.id.slice(0, 8) : ""} msg=${m.id.slice(0, 8)} time=${localTime(m.createdAt)} type=${type}] @${m.senderName}: ${m.content}${taskSuffix}${attSuffix}`;
+  return `[target=${target}${m.threadId ? ":" + m.id.slice(0, 8) : ""} msg=${m.id.slice(0, 8)}${coordinationHeader(coordination)} time=${localTime(m.createdAt)} type=${type}] @${m.senderName}: ${m.content}${taskSuffix}${attSuffix}`;
 };
 
 export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, url: URL, method: string): Promise<boolean> {
@@ -106,16 +109,77 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       const fresh = msgs.filter((m) => m.senderId !== agent.id);
       if (fresh.length) {
         const target = await addressableTarget(ch, agent.id);
+        // A check can expose non-wakeable ambient agent chatter alongside another delivery. Backfill its
+        // observation row here so every message the agent actually sees can be judged (usually no_action)
+        // without changing the anti-loop wake policy.
+        const ownMentions = await db.select({ messageId: schema.messageMentions.messageId }).from(schema.messageMentions).where(and(
+          inArray(schema.messageMentions.messageId, fresh.map((m) => m.id)),
+          eq(schema.messageMentions.mentionType, "agent"),
+          eq(schema.messageMentions.mentionId, agent.id),
+        ));
+        const mentionedIds = new Set(ownMentions.map((m) => m.messageId));
+        for (const message of fresh) await ensureReplyRecipients({
+          serverId, channelId: cm.channelId, messageId: message.id,
+          recipients: [{ agentId: agent.id, attention: ch.type === "dm" ? "dm" : mentionedIds.has(message.id) ? "direct" : "ambient" }],
+        });
+        const coordination = await markReplyMessagesObserved(agent.id, fresh.map((m) => m.id));
         // Batch-load attachments → append attachment suffix to message header
         const atts = await db.select().from(schema.attachments).where(inArray(schema.attachments.messageId, fresh.map((m) => m.id)));
         const byMsg = new Map<string, { filename: string; id: string }[]>();
         for (const a of atts) { const k = a.messageId!; const arr = byMsg.get(k) ?? []; arr.push({ filename: a.filename, id: a.id }); byMsg.set(k, arr); }
-        out.push(...fresh.map((m) => ({ ...serialize(m), text: fmt(m, target, byMsg.get(m.id) ?? []) })));
+        out.push(...fresh.map((m) => ({ ...serialize(m), coordination: coordination.get(m.id) ?? null, text: fmt(m, target, byMsg.get(m.id) ?? [], coordination.get(m.id)) })));
       }
       if (msgs.length) await db.update(schema.channelMembers).set({ lastReadSeq: msgs[msgs.length - 1]!.seq })
         .where(and(eq(schema.channelMembers.channelId, cm.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id)));
     }
-    return (sendJson(res, 200, { messages: out }), true);
+    const coordination: any[] = [];
+    for (const update of await claimReplyCoordination(agent.id)) {
+      const requester = (await db.select({ name: schema.agents.name }).from(schema.agents).where(and(
+        eq(schema.agents.id, update.requesterAgentId), eq(schema.agents.serverId, serverId),
+      )))[0];
+      const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.id, update.channelId), eq(schema.channels.serverId, serverId))))[0];
+      if (!requester || !ch) continue;
+      const target = await addressableTarget(ch, agent.id);
+      const summary = update.summary ? ` summary=${JSON.stringify(update.summary)}` : "";
+      const text = update.kind === "request"
+        ? `[coordination target=${target} msg=${update.messageId.slice(0, 8)} requester=@${requester.name} reason=${update.reasonCode}${summary}] Decide again: delegate to @${requester.name} or accept to keep the primary reply. This is private coordination, not a channel message.`
+        : `[coordination target=${target} msg=${update.messageId.slice(0, 8)} grant=primary reason=${update.reasonCode}${summary}] The primary reply was transferred to you. Publish one reply with --reply-to ${update.messageId.slice(0, 8)}, or abstain if the context changed. This is private coordination, not a channel message.`;
+      coordination.push({
+        messageId: update.messageId, requesterAgentId: update.requesterAgentId, requester: requester.name,
+        kind: update.kind, reason: update.reasonCode, target, grant: "primary", text,
+      });
+    }
+    return (sendJson(res, 200, { messages: out, coordination }), true);
+  }
+
+  if (p === "/agent-api/message/decide" && method === "POST") {
+    const b = await readJson(req);
+    const valid = validateDecisionInput({ decision: b.decision, reason: b.reason, toAgentId: b.to });
+    if (!valid.ok) return (sendErr(res, 400, "invalid reply decision", { code: valid.code }), true);
+    const messageId = await resolveMessageId(serverId, b.messageId, agent.id);
+    if (!messageId) return (sendErr(res, 404, "message not found", { code: "MESSAGE_NOT_FOUND" }), true);
+    let delegateToAgentId: string | undefined;
+    if (valid.decision === "delegate") {
+      const name = String(b.to ?? "").trim().replace(/^@/, "");
+      delegateToAgentId = (await db.select({ id: schema.agents.id }).from(schema.agents).where(and(
+        eq(schema.agents.serverId, serverId), eq(schema.agents.name, name), isNull(schema.agents.deletedAt),
+      )))[0]?.id;
+      if (!delegateToAgentId) return (sendErr(res, 404, "delegate target not found", { code: "DELEGATE_TARGET_NOT_FOUND" }), true);
+    }
+    const result = await decideReply({
+      serverId, agentId: agent.id, messageId, decision: valid.decision,
+      reason: valid.reason, summary: typeof b.summary === "string" ? b.summary : undefined,
+      delegateToAgentId,
+    });
+    if (!result.ok) return (sendErr(res, 409, "reply decision rejected", { code: result.code }), true);
+    if (result.notifyAgentId) await wakeAgentForReplyCoordination(serverId, result.notifyAgentId, messageId, agent.name);
+    if (result.promotedAgentId) await wakeAgentForReplyCoordination(serverId, result.promotedAgentId, messageId, agent.name);
+    return (sendJson(res, 200, {
+      ok: true, messageId, decision: result.row.decision,
+      grant: result.row.grantStatus === "active" ? result.row.grantSlot : null,
+      promotedAgentId: result.promotedAgentId ?? null,
+      notifiedAgentId: result.notifyAgentId ?? null,
+    }), true);
   }
 
   if (p === "/agent-api/message/send" && method === "POST") {
@@ -125,17 +189,45 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const tgt = await resolveTarget(serverId, b.target, agent.id);
     if (!tgt) return (sendErr(res, 404, "target not found", { code: "TARGET_FAILED" }), true);
     const draftKey = `${agent.id}:${tgt.channelId}`;
-    const post = async (content: string, attachmentIds: string[]) => {
+    const resolveTrigger = async (raw: unknown): Promise<string | null> => raw ? resolveMessageId(serverId, String(raw), agent.id) : null;
+    let replyToMessageId = await resolveTrigger(b.replyTo);
+    if (b.replyTo && !replyToMessageId) return (sendErr(res, 404, "reply trigger not found", { code: "REPLY_TRIGGER_NOT_FOUND" }), true);
+    const savedDraft = b.sendDraft ? drafts.get(draftKey) : undefined;
+    replyToMessageId = savedDraft?.replyToMessageId ?? replyToMessageId;
+    if (replyToMessageId) {
+      const preflight = await checkReplyGrant({ serverId, agentId: agent.id, messageId: replyToMessageId, channelId: tgt.channelId });
+      if (!preflight.ok) return (sendErr(res, 409, "reply not granted", { code: preflight.code }), true);
+    } else if (await hasOutstandingReplyDecision(agent.id, tgt.channelId)) {
+      return (sendErr(res, 409, "reply context required", { code: "REPLY_CONTEXT_REQUIRED" }), true);
+    }
+    const post = async (content: string, attachmentIds: string[], triggerId?: string) => {
+      let slot: "primary" | "supplemental" | undefined;
+      if (triggerId) {
+        const reserved = await reserveReplyGrant({ serverId, agentId: agent.id, messageId: triggerId, channelId: tgt.channelId });
+        if (!reserved.ok) return (sendErr(res, 409, "reply not granted", { code: reserved.code }), true);
+        slot = reserved.slot;
+      } else if (await hasOutstandingReplyDecision(agent.id, tgt.channelId)) {
+        return (sendErr(res, 409, "reply context required", { code: "REPLY_CONTEXT_REQUIRED" }), true);
+      }
       drafts.delete(draftKey);
-      const msg = await createMessage({ serverId, channelId: tgt.channelId, senderType: "agent", senderId: agent.id, senderName: agent.name, content, threadId: tgt.threadId, attachmentIds: attachmentIds.length ? attachmentIds : undefined });
-      return (sendJson(res, 200, { ok: true, id: msg.id, seq: msg.seq, target: b.target }), true);
+      try {
+        const msg = await createMessage({ serverId, channelId: tgt.channelId, senderType: "agent", senderId: agent.id, senderName: agent.name, content, threadId: tgt.threadId, attachmentIds: attachmentIds.length ? attachmentIds : undefined, replyToMessageId: triggerId, replyGrantSlot: slot });
+        if (triggerId) await finishReplyPublication({ messageId: triggerId, agentId: agent.id, replyMessageId: msg.id });
+        return (sendJson(res, 200, { ok: true, id: msg.id, seq: msg.seq, target: b.target, replyTo: triggerId ?? null, replySlot: slot ?? null }), true);
+      } catch (e) {
+        if (triggerId) await releaseReplyReservation(triggerId, agent.id);
+        const code = (e as any)?.cause?.code ?? (e as any)?.code;
+        if (code === "23505") return (sendErr(res, 409, "reply grant already published", { code: "REPLY_GRANT_CONSUMED" }), true);
+        throw e;
+      }
     };
     // --send-draft: submit existing draft as-is, bypassing freshness check
     if (b.sendDraft) {
-      const d = drafts.get(draftKey);
+      const d = savedDraft;
       const content = d?.content ?? b.content ?? ""; const dAtts = (d?.attachmentIds?.length ? d.attachmentIds : atts);
       if (!content && !dAtts.length) return (sendErr(res, 400, "no draft to send"), true);
-      return post(content, dAtts);
+      replyToMessageId = d?.replyToMessageId ?? replyToMessageId;
+      return post(content, dAtts, replyToMessageId ?? undefined);
     }
     if (!b.content && !atts.length) return (sendErr(res, 400, "target + content (or attachmentIds) required"), true);
     // Freshness-hold: new messages arrived since agent last read (not self / not system) → save draft + surface bounded context, do not post immediately (prevents agent↔agent duplicate replies)
@@ -143,16 +235,17 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const lastRead = cm?.lastReadSeq ?? 0;
     const newer = (await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, tgt.channelId), gt(schema.messages.seq, lastRead))).orderBy(asc(schema.messages.seq)).limit(20)).filter((m) => m.senderId !== agent.id && m.senderType !== "system");
     if (newer.length && cm) {
-      drafts.set(draftKey, { content: b.content || "", attachmentIds: atts });
+      drafts.set(draftKey, { content: b.content || "", attachmentIds: atts, replyToMessageId: replyToMessageId ?? undefined });
       await db.update(schema.channelMembers).set({ lastReadSeq: newer[newer.length - 1]!.seq }).where(and(eq(schema.channelMembers.channelId, tgt.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id))); // Mark this batch as read → next send won't hold again unless further new messages arrive
       const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, tgt.channelId)))[0]!;
       const tname = await addressableTarget(ch, agent.id);
       const history = newer.map((m) => fmt(m, tname)).join("\n");
       const n = newer.length, pl = n > 1 ? "s" : "";
-      const text = `Freshness hold: showing latest ${n} of ${n} newer message${pl}.\nYour message has been saved as a draft. Review the bounded context shown here, then choose one path.\n\n## Message History for ${tname} (${n} message${pl})\n\n${history}\n\nTo update the draft, send revised content normally:\n  open-tag message send --target "${b.target}" <<'MSG'\n  revised message\n  MSG\nTo send the current draft unchanged:\n  open-tag message send --send-draft --target "${b.target}"`;
+      const replyArg = replyToMessageId ? ` --reply-to ${replyToMessageId.slice(0, 8)}` : "";
+      const text = `Freshness hold: showing latest ${n} of ${n} newer message${pl}.\nYour message has been saved as a draft. Review the bounded context shown here, then choose one path.\n\n## Message History for ${tname} (${n} message${pl})\n\n${history}\n\nTo update the draft, send revised content normally:\n  open-tag message send${replyArg} --target "${b.target}" <<'MSG'\n  revised message\n  MSG\nTo send the current draft unchanged:\n  open-tag message send --send-draft${replyArg} --target "${b.target}"`;
       return (sendJson(res, 200, { held: true, draft: true, newerCount: n, messages: newer.map((m) => ({ ...serialize(m), text: fmt(m, tname) })), text }), true);
     }
-    return post(b.content || "", atts);
+    return post(b.content || "", atts, replyToMessageId ?? undefined);
   }
   // action prepare: agent lacks channel:create/agent:create scope, so to create resources it posts a "proposal card" → human clicks → pre-filled dialog → human creates under their own identity.
   // message messageType=action + actionMetadata{kind:"action-card",state:"prepared",action}. Variants: channel:create / agent:create.
@@ -377,8 +470,27 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const parent = await findParent(b.parent, b.channel ?? b.target ?? null);
     if (!parent) return (sendErr(res, 404, "parent message not found"), true);
     const th = await getOrCreateThread(serverId, parent.id, { type: "agent", id: agent.id });
-    const msg = await createMessage({ serverId, channelId: th.id, senderType: "agent", senderId: agent.id, senderName: agent.name, content: b.content });
-    return (sendJson(res, 200, { ok: true, threadChannelId: th.id, id: msg.id, seq: msg.seq }), true);
+    const replyToMessageId = b.replyTo ? await resolveMessageId(serverId, String(b.replyTo), agent.id) : null;
+    if (b.replyTo && !replyToMessageId) return (sendErr(res, 404, "reply trigger not found", { code: "REPLY_TRIGGER_NOT_FOUND" }), true);
+    if (!replyToMessageId && await hasOutstandingReplyDecision(agent.id, th.id)) {
+      return (sendErr(res, 409, "reply context required", { code: "REPLY_CONTEXT_REQUIRED" }), true);
+    }
+    let slot: "primary" | "supplemental" | undefined;
+    if (replyToMessageId) {
+      const reserved = await reserveReplyGrant({ serverId, agentId: agent.id, messageId: replyToMessageId, channelId: th.id });
+      if (!reserved.ok) return (sendErr(res, 409, "reply not granted", { code: reserved.code }), true);
+      slot = reserved.slot;
+    }
+    try {
+      const msg = await createMessage({ serverId, channelId: th.id, senderType: "agent", senderId: agent.id, senderName: agent.name, content: b.content, replyToMessageId: replyToMessageId ?? undefined, replyGrantSlot: slot });
+      if (replyToMessageId) await finishReplyPublication({ messageId: replyToMessageId, agentId: agent.id, replyMessageId: msg.id });
+      return (sendJson(res, 200, { ok: true, threadChannelId: th.id, id: msg.id, seq: msg.seq, replyTo: replyToMessageId, replySlot: slot ?? null }), true);
+    } catch (e) {
+      if (replyToMessageId) await releaseReplyReservation(replyToMessageId, agent.id);
+      const code = (e as any)?.cause?.code ?? (e as any)?.code;
+      if (code === "23505") return (sendErr(res, 409, "reply grant already published", { code: "REPLY_GRANT_CONSUMED" }), true);
+      throw e;
+    }
   }
   if (p === "/agent-api/thread/read" && method === "GET") {
     const parent = await findParent(url.searchParams.get("parent") ?? "", url.searchParams.get("channel"));

@@ -26,7 +26,8 @@ This is authoritative context injected by open-tag. Do NOT infer identity from h
 ## Communication — the \`open-tag\` CLI ONLY
 A local \`open-tag\` command is on your PATH. Use ONLY it to communicate, via your shell/bash tool, ONE command per call:
 - \`open-tag message check\` — non-blocking: read new messages addressed to you. Run it at the start and after notifications.
-- \`open-tag message send --target <t>\` — send a message; the BODY is read from STDIN (use a heredoc).
+- \`open-tag message decide --message-id <id> --decision <no_action|request_reply|accept|delegate|abstain>\` — record your judgment for each inbound message. A reply request also needs \`--reason <ownership|better_fit|handoff|correction|blocker|new_evidence|unique_expertise>\`; delegation needs \`--to @agent\`.
+- \`open-tag message send --reply-to <id> --target <t>\` — publish only after the decision response/header shows a grant; the BODY is read from STDIN (use a heredoc).
 - \`open-tag message read --channel <t> [--limit N]\` — read history.
 - \`open-tag server info\` — list channels / agents / humans.
 - \`open-tag channel join --target "#name"\` — join a public channel.
@@ -41,16 +42,20 @@ A local \`open-tag\` command is on your PATH. Use ONLY it to communicate, via yo
 
 Targets: \`#channel\`, \`dm:@name\`, thread \`#channel:shortid\` or \`thread:shortid\`. Prefer \`thread:shortid\` when reusing a thread target across different agents, private channels, or DMs because it is stable across actor viewpoints. Send the body via stdin heredoc:
 \`\`\`bash
-open-tag message send --target "#all" <<'MSG'
+open-tag message send --reply-to 1234abcd --target "#all" <<'MSG'
 Your reply. Quotes, $vars, \`backticks\`, code blocks are all safe here.
 MSG
 \`\`\`
 CRITICAL: Text you print outside a \`open-tag\` command is NOT delivered to anyone. Only \`open-tag message send\` reaches people. Do not use curl/echo to talk — only the \`open-tag\` CLI.
 
-FRESHNESS HOLD (collaboration safety): if new messages arrived in that target since you last read it, \`send\` does NOT post — it saves your text as a draft and shows you the newer messages ("Freshness hold: …"). Read that bounded context, then EITHER revise (run \`send --target <t>\` again with new content — e.g. drop what a teammate already covered, to avoid redundant replies) OR commit unchanged with \`open-tag message send --send-draft --target <t>\`. This is how teammates avoid talking over each other — use it: if someone already answered, shorten or skip your reply.
+REPLY COORDINATION: every checked message includes \`attention=\`, \`decision=\`, and \`grant=\`. Reading is not permission to speak. For each actionable message, record one decision. A direct primary may accept, delegate to a teammate who first requested \`better_fit\`/handoff, or abstain. An ambient observer should normally choose \`no_action\`; request a reply only with a concrete structured reason. Send only when \`grant=primary|supplemental\`, always pass the trigger as \`--reply-to <msg>\`. If a request is pending or denied, stay silent. A suspected mistaken @mention is handled by \`better_fit\` request plus delegation/abstention, never by both agents replying.
+
+A private \`[coordination ... requester=@agent reason=...]\` line means a teammate requested the reply while you still own the primary grant. It is not a channel message. Decide the same trigger again: use \`delegate --to @agent\` when the request is better, or \`accept\` to keep ownership. A private line with \`grant=primary\` means ownership was transferred to you; publish one reply or abstain if context changed. Do not publish before the applicable decision or grant is recorded.
+
+FRESHNESS HOLD (secondary collaboration safety): if new messages arrived in that target since you last read it, \`send\` does NOT post — it saves your text as a draft and shows you the newer messages. Review the bounded context, then either revise or use \`--send-draft\` with the same \`--reply-to\`. Draft submission never bypasses reply authorization.
 
 ## Received message format
-\`[target=<id> msg=<shortid> time=<iso> type=human|agent|system] @sender: content\`
+\`[target=<id> msg=<shortid> attention=direct|dm|assigned|ambient decision=<state> grant=primary|supplemental|none time=<iso> type=human|agent|system] @sender: content\`
 Reuse the \`target=\` value when replying so it lands in the right channel/DM/thread. @mention people by their @handle. \`msg=\` is the 8-char short id — use it as a thread suffix (\`#channel:shortid\`) or as the stable form \`thread:shortid\` to start/reply in a thread, and pass it to \`open-tag message resolve\` to verify a cited id is real. \`type=system\` messages announce state changes (task events, reminders) — don't reply unless they clearly ask you to act.
 
 ### Formatting — so refs/links render
@@ -77,15 +82,15 @@ When a message asks you to DO something (fix a bug, write code, investigate) —
 When splitting a big task into subtasks, structure them for **parallel** work: group by phase with clear labels ("Phase 1: …") when there are real dependencies; prefer independent subtasks that don't block each other; avoid sequential chains that force agents to work one-at-a-time.
 
 ## Etiquette & safety
-- **Respect ongoing conversations.** If two people are going back-and-forth, their follow-ups are for each other — only join if @mentioned or clearly addressed. Don't insert yourself when not @-ed (decide relevance, default to staying idle).
+- **Respect ongoing conversations.** If two people are going back-and-forth, their follow-ups are for each other. Observe the message, record \`no_action\`, and stay silent unless you have a granted, specific correction/blocker/new evidence.
 - **Only the person who did the work reports on it.** Don't echo or summarize someone else's task/PR.
 - **Before stopping, clear blockers you own** — if you owe a specific reply/handoff/decision blocking someone, send one minimal message first. Otherwise skip idle narration (don't broadcast that you're waiting/idle).
 - **Credential hygiene (CRITICAL):** NEVER paste credentials (\`sk_agent_*\`, \`sk_machine_*\`, JWTs, \`.env\`, tokens) into public channels. DMs/private channels only for authorized secret handoff. If a tool output contains credential-shaped strings, redact to \`sk_agent_<redacted>\` before posting publicly.
 
 ## Startup sequence
 1. Run \`open-tag message check\` to see anything waiting.
-2. Read \`MEMORY.md\` in your cwd for your role and context.
-3. If there is a message, handle it and reply with \`open-tag message send\`. If it requires real work (code/tools), claim it first with \`open-tag task claim\`.
+2. Open \`MEMORY.md\` in your cwd for your role and context.
+3. For each message, record a reply decision. Handle and send only messages for which the server grants a slot. If it requires real work (code/tools), claim it first with \`open-tag task claim\`.
 4. Finish ALL the work, report the result. New messages are delivered into your session automatically — you do not need to poll.
 5. **Before you stop, update your memory if you learned anything durable** — a decision you made, a fact about the project/people, what you were mid-way through. Write it into \`MEMORY.md\` (keep the index current) or \`notes/\` (details). This is the ONLY thing that survives context compaction; if you skip it, after a compaction you'll wake up as a blank slate. Skip only for trivial one-off replies that taught you nothing.
 
@@ -125,13 +130,13 @@ ${c.description ? `\n## Your role\n${c.description}. This may evolve.` : ""}`;
 
 /** First startup: you were woken because someone needs you — immediately check the inbox (messages are persisted in the DB, so even if WS delivery was missed they will be available via check). */
 export const STARTUP_NUDGE =
-  "You just started — someone messaged you. FIRST run `open-tag message check` to read the message(s) waiting for you, handle them fully, reply with `open-tag message send`, then stop.";
+  "You just started because messages may need judgment. FIRST run `open-tag message check`, record one `open-tag message decide` result per actionable message, and only send a reply with `--reply-to` when the server grants a slot. Otherwise stay silent, then stop.";
 /** Lightweight nudge sent to the agent on resume wakeup. */
 export const RESUME_NUDGE =
-  "You were woken because new messages may be waiting. Run `open-tag message check` to read them, handle them, reply with `open-tag message send`, then stop.";
+  "You were woken because messages may need judgment. Run `open-tag message check`, decide each actionable message, and only send with `--reply-to` when granted. Otherwise stay silent, then stop.";
 /** One-shot runtimes need the wakeup itself to be a concrete instruction, not only a generic inbox notice. */
 export const ONE_SHOT_WAKE_NUDGE =
-  "You were woken by a new open-tag delivery. FIRST run `open-tag message check` now, handle the pending message(s), and send exactly one reply with `open-tag message send`. Do not end this turn with stdout only; only `open-tag message send` reaches the human.";
+  "You were woken by a new open-tag delivery. FIRST run `open-tag message check`, record one decision per actionable message, and send at most one reply with `open-tag message send --reply-to` only if the server grants a slot. A no-action or denied decision must end silently.";
 /** Stdin notification delivered while the agent is busy. Structured, content-free: metadata only — message bodies are retrieved via `open-tag message check`. */
 export function inboxNotice(o: { count: number; from: string; targetName: string; firstShort?: string; latestShort?: string; isTask?: boolean; isDm?: boolean; changedTargets?: number; mentioned?: boolean }): string {
   // Inbox notice format (content-free, metadata only):
@@ -140,10 +145,10 @@ export function inboxNotice(o: { count: number; from: string; targetName: string
   const changed = o.changedTargets ?? 1;
   const first = o.firstShort ? ` · first msg=${o.firstShort}` : "";
   const latest = o.latestShort ? ` · latest msg=${o.latestShort}` : "";
-  const suffix = `${o.isTask ? " · task" : ""}${o.isDm ? " · dm" : ""}`;
+  const suffix = `${o.isTask ? " · task" : ""}${o.isDm ? " · dm" : ""} · attention=${o.mentioned || o.isDm || o.isTask ? "direct" : "ambient"}`;
   return `[inbox notice:
-Inbox update: ${o.count} unread message${plural(o.count)} total; ${changed} changed target${plural(changed)}
-${o.targetName}  pending: ${o.count} message${plural(o.count)}${first} · latest @${o.from}${latest}${suffix}
+Inbox update: ${o.count} pending item${plural(o.count)}; ${changed} changed target${plural(changed)}
+${o.targetName}  pending: ${o.count} item${plural(o.count)}${first} · latest @${o.from}${latest}${suffix}
 ]
-Content-free signal — message bodies are withheld, not absent. Finish your current step, then run \`open-tag message check\` to read and handle. If this notice is the only thing in your current turn, check now and reply with \`open-tag message send\`; do not finish with stdout only. Never conclude "no work" from this notice alone.`;
+Content-free signal — this may represent a new message or a private reply-coordination update. Finish your current step, then run \`open-tag message check\` and record a decision for each actionable item. Reply only when granted; no-action and denied decisions end silently. Never conclude "no work" from this notice alone.`;
 }
