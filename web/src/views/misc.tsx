@@ -243,7 +243,7 @@ export function Computers() {
               {delErr && <div className="form-err" style={{ marginBottom: 14 }}>{delErr}</div>}
               <div className="card">
                 <div className="kv"><b>{t("common.hostname")}</b> {cur.hostname || ""}</div>
-                <div className="kv"><b>OS</b> {cur.os || ""}</div>
+                <div className="kv"><b>{t("misc.computersOs")}</b> {cur.os || ""}</div>
                 <div className="kv"><b>{t("misc.computersTypeLabel")}</b> {cur.isComputer ? t("misc.computersTypeSandbox") : t("misc.computersTypeDaemon")}</div>
                 <div className="kv"><b>{t("misc.computersStatusLabel")}</b> <span className={"dot " + (cur.status === "online" ? "online" : "")} style={{ display: "inline-block", verticalAlign: "middle" }} /> {cur.status}</div>
               </div>
@@ -252,9 +252,9 @@ export function Computers() {
               {budget && (
                 <div className="card">
                   <div className="meta" style={{ marginBottom: 8 }}>{t("members.resourceBudget")}</div>
-                  <div className="kv"><b>Agent budget</b> {fmtMem(budget.availableMemMB)} free · CPU {100 - budget.cpuUsagePct}% free</div>
-                  <div className="kv"><b>Running</b> {budget.agentCount} agents</div>
-                  <div className="kv"><b>Queue</b> {budget.queueLength}</div>
+                  <div className="kv"><b>{t("misc.computersBudget")}</b> {t("misc.computersBudgetValue", { mem: fmtMem(budget.availableMemMB), cpu: 100 - budget.cpuUsagePct })}</div>
+                  <div className="kv"><b>{t("misc.computersRunning")}</b> {t("misc.computersRunningAgents", { count: budget.agentCount })}</div>
+                  <div className="kv"><b>{t("misc.computersQueue")}</b> {budget.queueLength}</div>
                 </div>
               )}
               <div className="sec">{t("misc.computersAgentsSection")} <span className="cnt">{onMachine.length}</span></div>
@@ -383,7 +383,7 @@ function AccountSettings({ api }: { api: any }) {
     <div className="setform">
       <label>{t("misc.accountDisplayName")}</label><input value={u.displayName || ""} onChange={(e) => setU({ ...u, displayName: e.target.value })} />
       <label>{t("misc.accountDescription")}</label>
-      <textarea value={u.description || ""} maxLength={3000} onChange={(e) => setU({ ...u, description: e.target.value })} placeholder="Describe yourself for other humans and agents in this server" />
+      <textarea value={u.description || ""} maxLength={3000} onChange={(e) => setU({ ...u, description: e.target.value })} placeholder={t("common.describeSelfPlaceholder")} />
       <div className="ta-count">{(u.description || "").length}/3000</div>
       <label>{t("misc.accountEmail")}</label><input value={u.email || ""} disabled />
       <div className="setrow"><button className="ok" onClick={save}>{t("misc.accountSave")}</button>{saved && <span className="saved">{t("misc.accountSaved")}</span>}</div>
@@ -509,7 +509,7 @@ export function Saved() {
                   <span className="ib-name">{source(it)}</span>
                   <span className="ib-time">{relTime(it.createdAt, t)}</span>
                 </span>
-                <span className="ib-preview"><b>{it.senderName ?? (it.senderType === "agent" ? "agent" : "user")}</b>: {it.content}</span>
+                <span className="ib-preview"><b>{it.senderName ?? (it.senderType === "agent" ? t("chat.agentKind") : t("chat.userKind"))}</b>: {it.content}</span>
               </span>
               <span className="ib-save on" title={t("misc.savedUnsave")} onClick={(e) => unsave(e, it)}><Bookmark size={15} fill="currentColor" /></span>
             </button>
