@@ -21,7 +21,48 @@ const baseConfig = (agentId: string): AgentConfig => ({
   agentToken: "test-token",
 });
 
-test("deliver received during async start is flushed to runtime session", async () => {
+test("deliver received during async start is consumed by the wake nudge, not re-delivered as a notice", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-"));
+  const delivered: string[] = [];
+  const sent: any[] = [];
+  let initialPrompt: string | undefined;
+  const fakeRuntime: Runtime = {
+    name: "fake",
+    start(opts: StartOpts, cb: RuntimeCallbacks) {
+      initialPrompt = opts.initialPrompt;
+      cb.onSession("fake-session");
+      return { deliver: (text) => delivered.push(text), stop: () => {} };
+    },
+  };
+
+  try {
+    const mgr = new AgentManager((msg) => sent.push(msg), {
+      dataDir: root,
+      binDir: root,
+      deliverDebounceMs: 0,
+      budget: noPressureBudget,
+      runtimeResolver: () => fakeRuntime,
+    });
+    const start = mgr.start("agent-1", baseConfig("agent-1"));
+    mgr.deliver("agent-1", "User", "dm:agent-1", true, { targetName: "dm:Agent", msgShort: "m1" });
+    await start;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // The startup nudge itself drives the "check inbox" turn — the queued deliver
+    // must not produce a second in-session notice (that caused double replies).
+    assert.equal(delivered.length, 0);
+    assert.match(initialPrompt ?? "", /open-tag message check/);
+    // The reply preview still starts so the UI shows "agent is replying…".
+    const previewStart = sent.find((m) => m?.type === "agent:reply" && m?.op === "start");
+    assert.ok(previewStart, "expected an agent:reply start preview");
+    assert.equal(previewStart.channelId, "dm:agent-1");
+    mgr.stopAll();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("deliver while the agent is running still produces a batched inbox notice", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-"));
   const delivered: string[] = [];
   const fakeRuntime: Runtime = {
@@ -40,13 +81,12 @@ test("deliver received during async start is flushed to runtime session", async 
       budget: noPressureBudget,
       runtimeResolver: () => fakeRuntime,
     });
-    const start = mgr.start("agent-1", baseConfig("agent-1"));
+    await mgr.start("agent-1", baseConfig("agent-1"));
     mgr.deliver("agent-1", "User", "dm:agent-1", true, { targetName: "dm:Agent", msgShort: "m1" });
-    await start;
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     assert.equal(delivered.length, 1);
-    assert.match(delivered[0]!, /User/);
+    assert.match(delivered[0]!, /inbox notice/);
     assert.match(delivered[0]!, /dm:Agent/);
     mgr.stopAll();
   } finally {
