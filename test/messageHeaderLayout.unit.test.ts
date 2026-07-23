@@ -159,6 +159,11 @@ test("message hover uses a subtle border instead of a filled background", () => 
   assert.match(ruleBody(".msg .md"), /max-width\s*:\s*calc\(100% - 64px\)/, "message Markdown should reserve roughly the avatar-column width on the right without moving the card border");
 });
 
+test("thread message Markdown uses the full content column", () => {
+  const body = ruleBody(".thread-panel .msg .md");
+  assert.match(body, /max-width\s*:\s*100%(?:;|$)/, `thread messages have no hover toolbar, so their Markdown should not reserve the main-chat toolbar width: ${body}`);
+});
+
 test("new messages expand from below so existing messages move smoothly", () => {
   const frames = css.match(/@keyframes msg-enter\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
   assert.match(frames, /transform:\s*translateY\(18px\)/, `message should start below its final position: ${frames}`);

@@ -255,6 +255,7 @@ main.content-col > .scroll::-webkit-scrollbar-thumb{background:rgba(87,96,106,.3
 /* Message body markdown (MessageContent .md): react-markdown+remark-breaks already structures line breaks, explicit white-space:normal overrides pre-wrap inherited from .mbody — otherwise consecutive blank lines/paragraphs are double-preserved and inflate height (diagnosed: .md inherits pre-wrap + p default 16px margin → 3 paragraphs = 176px). Paragraph/list spacing tightened for compact body; code blocks retain their own line breaks */
 .md{white-space:normal;font-size:var(--md-text-size);line-height:var(--md-line-height);max-width:min(100%,var(--read-measure));margin-left:0;margin-right:auto;--inline-code-size:.9em}
 .msg .md{max-width:calc(100% - 64px)}
+.thread-panel .msg .md{max-width:100%} /* thread rows have no top-right message toolbar, so keep the full content column */
 .md > :first-child{margin-top:0}.md > h1:first-child,.md > h2:first-child,.md > h3:first-child{margin-top:.45em}.md > :last-child{margin-bottom:0}
 .md p{margin:0}.md p + p{margin-top:var(--md-paragraph-gap)}
 .md ul,.md ol{margin:.65em 0;padding-left:1.1em}.md li{margin:.18em 0;position:relative;padding-left:1.38em}
