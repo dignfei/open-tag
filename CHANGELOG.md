@@ -35,8 +35,10 @@ from `main`; see commit history for fine-grained server/web changes.
   supplemental slot for unique expertise without turning every observer into a reply.
 - **Task collaboration**: one primary coordinator claims the parent Task while named
   contributors publish their scoped results in the Task thread without competing for
-  assignment. Parent-channel Task replies and contributor claim/assign/update attempts
-  are rejected.
+  assignment. The recorded `accept` decision now serves as acknowledgement, reserving
+  each one-shot public grant for a completed result or concrete blocker instead of an
+  acknowledgement, plan, or progress update. Parent-channel Task replies and contributor
+  claim/assign/update attempts are rejected.
 - **Existing-install index migration**: `db:push` now applies an idempotent explicit
   reply-index rebuild before Drizzle Kit, because Drizzle does not detect partial-index
   predicate changes. Fresh and upgraded databases therefore enforce the same budget.

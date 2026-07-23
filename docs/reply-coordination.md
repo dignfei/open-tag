@@ -47,7 +47,11 @@ granted a slot for the triggering message.
    publish their scoped results without claiming or mutating the parent. Only the
    active primary may claim, assign, or update it. All trigger-bound task replies are
    authorized only in the task thread, never the parent channel.
-10. Primary publication waits up to `OPEN_TAG_REPLY_SETTLE_MS` (default 5000 ms) from
+10. A coordinated Task grant is result-first. Recording `accept` is the acknowledgement
+   and does not publish a message. The agent must not consume its one-shot public grant
+   with an acknowledgement, plan, intent, or progress update; it finishes its assigned
+   slice first, then publishes one concrete result or blocker.
+11. Primary publication waits up to `OPEN_TAG_REPLY_SETTLE_MS` (default 5000 ms) from
    trigger creation for concurrently awakened observers to decide. A pending
    `better_fit`/handoff request blocks publication and privately wakes the owner;
    unreachable or silent observers stop blocking when the bounded window expires.
@@ -86,6 +90,11 @@ Primary is the coordination/Task-ownership role, not an exclusive public-reply l
 The harness cannot infer whether two natural-language assignments overlap, so the
 explicit mention establishes eligibility and each agent judges whether its slice is
 actually distinct.
+
+For a Task, the valid publication in this table is the completed slice result, not an
+acknowledgement or plan. The server can enforce the one-shot budget and audit the
+decision, but it cannot reliably classify free-form text as an acknowledgement; the
+runtime-agnostic standing prompt therefore carries this semantic constraint.
 
 ## Persisted model
 
@@ -171,7 +180,8 @@ The implementation is complete only when all of these are demonstrated:
 - agent-authored explicit mentions wake the named teammate while unmentioned agent
   chatter remains ambient; literal/quoted handles are still active mentions (I91);
 - a task's parent channel rejects replies while all named contributions publish in its
-  thread and only the primary coordinator can claim, assign, or update it;
+  thread, only the primary coordinator can claim, assign, or update it, and Task grants
+  are used for completed results or concrete blockers rather than acknowledgements;
 - an isolated live stack with three real agents shows every recipient observed/decided,
   every accepted explicit mention published once, and ambient duplication stayed silent;
 - the daemon standing prompt remains runtime-agnostic.

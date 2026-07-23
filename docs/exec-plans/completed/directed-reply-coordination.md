@@ -56,6 +56,18 @@ contributors.
 - Isolated live stack: primary + directed Codex agents each published once in the Task
   thread, the parent received zero replies, and the ambient Claude agent chose no action.
   A Codex-authored mention then granted and woke the named Codex peer, which replied.
+- The first live Task run exposed that both one-shot grants were consumed by plan-style
+  acknowledgements. The follow-up reserves Task publications for completed results or
+  concrete blockers and adds a prompt-contract regression test.
+- Follow-up isolated live stack: the primary reply reported the observed channel count,
+  agent count, and roster; the directed reply reported the observed Task number, status,
+  assignee, and mention order. Neither used its grant for acknowledgement/plan/progress,
+  both original grants reached `published/consumed`, the Task reached `in_review`, the
+  parent channel received zero bound replies, and the ambient agent chose `no_action`.
+- Residual I91 evidence remained visible: bare `@handle` values in a result were parsed as
+  new work mentions. They produced no extra reply during the observation window, but one
+  secondary `codex2` grant remained pending. This is intentionally not conflated with the
+  result-first fix.
 - Browser screenshot capture was skipped because the in-app browser webview could not
   attach after three fresh-tab attempts. The human UI was not changed; HTTP, DB, daemon,
   and server-log evidence covered the modified runtime path.
