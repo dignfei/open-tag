@@ -16,6 +16,15 @@
         "value": "im-bounce-down",
         "createdAt": "2026-07-23T09:30:14.971Z",
         "reason": "User confirmed: literal gravity bounce on the download icon (docs/icon-motion.md §3); easing is already plain ease-in-out"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "web/src/styles.css"
+        ],
+        "createdAt": "2026-07-23T10:02:06.967Z",
+        "reason": "User-approved audit 2026-07-23: both side-tab hits are markdown blockquote / GitHub-alert left borders (.md/.ws-md blockquote) — the standard md affordance, not a card accent"
       }
     ]
   }
