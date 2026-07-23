@@ -153,7 +153,7 @@ mark{background:var(--g-peach);color:var(--ink);padding:0 2px;border-radius:4px}
 .cancel:hover{background:var(--surface-strong)}
 .avatar-edit{display:flex;align-items:center;gap:14px}
 .avatar-edit-img,.avatar-edit-ph{width:56px;height:56px;border-radius:12px;flex:0 0 auto;object-fit:cover;border:1px solid var(--hair-strong)}
-.avatar-edit-ph{display:flex;align-items:center;justify-content:center;background:var(--ink);color:var(--canvas);font-family:var(--serif);font-size:26px}
+.avatar-edit-ph{display:flex;align-items:center;justify-content:center;background:var(--ink);color:var(--canvas);font-family:var(--serif);font-size:24px}
 .avatar-edit button{font-size:14px;color:var(--ink);background:var(--canvas);border:1px solid var(--hair-strong);padding:8px 18px;border-radius:9999px;cursor:pointer}
 .avatar-edit button:disabled{opacity:.55;cursor:default}
 .ta-count{font-size:12px;color:var(--muted);text-align:right;margin-top:5px;font-variant-numeric:tabular-nums}
@@ -492,7 +492,7 @@ main.content-col > .composer{position:absolute;left:0;right:var(--scrollbar-gutt
    pinned top-left. Secondary sub-section empties keep the inline .empty above. See <PaneEmpty>. */
 .pane-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:62vh;padding:48px 24px;text-align:center;color:var(--muted)}
 .pane-empty svg{color:var(--muted-soft)}
-.pane-empty .pe-title{font-family:var(--serif);font-weight:300;font-size:23px;line-height:1.25;letter-spacing:-.3px;color:var(--ink-2);max-width:34ch}
+.pane-empty .pe-title{font-family:var(--serif);font-weight:300;font-size:24px;line-height:1.25;letter-spacing:-.3px;color:var(--ink-2);max-width:34ch}
 .pane-empty .pe-sub{font-size:14px;line-height:1.55;color:var(--muted);max-width:44ch}
 .pane-empty .pe-action{margin-top:4px}
 .pane-empty .pe-cta{display:inline-flex;align-items:center;gap:7px;font-size:14px;font-weight:500;color:var(--on-ink);background:var(--ink-2);border:0;padding:8px 20px;border-radius:9999px;cursor:pointer}
@@ -622,7 +622,7 @@ main.content-col>.scroll .msg-head>.msg-agent-state{padding-right:76px}
 .msg-act-reveal{display:none}
 .msg-act-reveal.is-open{display:block;max-height:min(50vh,520px);overflow-y:auto;overscroll-behavior:contain}
 .msg-act-body{min-height:0;padding:3px 8px 9px 26px;overflow:hidden}
-.msg-act-event{position:relative;display:grid;grid-template-columns:58px 14px minmax(0,1fr);gap:7px;min-height:28px;padding:4px 0;color:var(--muted);font-size:12.5px;line-height:1.45}
+.msg-act-event{position:relative;display:grid;grid-template-columns:58px 14px minmax(0,1fr);gap:7px;min-height:28px;padding:4px 0;color:var(--muted);font-size:12px;line-height:1.45}
 .msg-act-event::after{content:"";position:absolute;left:71px;top:18px;bottom:-10px;width:1px;background:var(--hair)}
 .msg-act-event:last-child::after{display:none}
 .msg-act-event time{padding-top:1px;color:var(--muted-soft);font-family:var(--mono);font-size:10.5px;font-variant-numeric:tabular-nums}
@@ -847,7 +847,7 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
 .ctx-backdrop{position:fixed;inset:0;z-index:70}
 .ctx-menu{position:fixed;min-width:212px;background:var(--surface);border:1px solid var(--hair-strong);border-radius:12px;box-shadow:0 10px 34px var(--shadow-4);padding:6px;animation:ahc-in var(--dur-fast) var(--ease-quint) both}
 .ctx-rx{display:flex;gap:2px;padding:3px 2px 7px;margin-bottom:4px;border-bottom:1px solid var(--hair)}
-.ctx-rx button{flex:1;border:0;background:transparent;font-size:17px;line-height:1;padding:5px 0;border-radius:8px;cursor:pointer;transition:background .1s}
+.ctx-rx button{flex:1;border:0;background:transparent;font-size:18px;line-height:1;padding:5px 0;border-radius:8px;cursor:pointer;transition:background .1s}
 .ctx-rx button:hover{background:var(--surface-strong);transform:scale(1.15)}
 .ctx-item{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;color:var(--ink-2);font-size:14px;text-align:left;padding:8px 10px;border-radius:8px;cursor:pointer}
 .ctx-item:hover{background:var(--surface-strong)}
