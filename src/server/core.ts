@@ -10,6 +10,7 @@ import { createLogger } from "../log.js";
 import { canUserReadChannel } from "./channelAccess.js";
 import { canAutoJoinMentionedMembers, isWakeable } from "./agentWakePolicy.js";
 import { UUID_RE } from "./util.js";
+import { ensureReplyRecipients, releaseUnavailableReplyGrant, type ReplyRecipient } from "./replyCoordination.js";
 
 const log = createLogger("server:core");
 const PORT = Number(process.env.PORT ?? 7777);
@@ -339,6 +340,7 @@ export async function createMessage(opts: {
   serverId: string; channelId: string;
   senderType: "user" | "agent" | "system"; senderId: string | null; senderName: string;
   content: string; messageType?: string; threadId?: string | null; asTask?: boolean; attachmentIds?: string[];
+  replyToMessageId?: string; replyGrantSlot?: "primary" | "supplemental";
   actionMetadata?: unknown; // action-card and other platform action payloads (slice09)
 }) {
   const seq = await nextSeq(opts.serverId);
@@ -352,6 +354,8 @@ export async function createMessage(opts: {
     actionMetadata: opts.actionMetadata ?? null,
     threadId: opts.threadId ?? null, searchText: opts.content,
     taskStatus: opts.asTask ? "todo" : null, taskNumber,
+    replyToMessageId: opts.replyToMessageId ?? null,
+    replyGrantSlot: opts.replyGrantSlot ?? null,
   }).returning();
 
   // auto-follow: reply to thread → sender auto-joins; replying after done clears done and brings thread back to inbox
@@ -410,7 +414,11 @@ export async function createMessage(opts: {
   const targetName = isDm ? `dm:@${opts.senderName}` : `#${ch?.name ?? opts.channelId}`;
   const msgShort = msg!.id.slice(0, 8);
   const woken: string[] = [];
-  for (const mem of members) {
+  const wakeable: { mem: Member; mentioned: boolean; receipt: ReplyRecipient }[] = [];
+  const mentionRank = new Map(mentions.filter((m) => m.type === "agent").map((m, i) => [m.id, i]));
+  const agentMembers = members.filter((m): m is Member => m.type === "agent" && m.id !== opts.senderId)
+    .sort((a, b) => (mentionRank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (mentionRank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+  for (const mem of agentMembers) {
     if (mem.type !== "agent" || mem.id === opts.senderId) continue;
     const mentioned = mentionedAgents.has(mem.id);
     // Channel messages delivered to all agent members (not limited to @; wake even without @, model decides whether to reply).
@@ -419,8 +427,13 @@ export async function createMessage(opts: {
       const a0 = (await db.select({ scopes: schema.agents.scopes }).from(schema.agents).where(eq(schema.agents.id, mem.id)))[0];
       if (!isWakeable({ channelType: ch?.type ?? "channel", mentioned, hasInboxScope: agentHasScope(a0?.scopes, "inbox:receive"), senderType: opts.senderType })) continue;
     }
+    wakeable.push({ mem, mentioned, receipt: { agentId: mem.id, attention: mentioned ? "direct" : isDm ? "dm" : "ambient" } });
+  }
+  await ensureReplyRecipients({ serverId: opts.serverId, channelId: opts.channelId, messageId: msg!.id, recipients: wakeable.map((x) => x.receipt) });
+  for (const { mem, mentioned } of wakeable) {
     const target = await agentStartTarget(opts.serverId, mem.id);
     if (!target.ok) {
+      await releaseUnavailableReplyGrant(msg!.id, mem.id);
       if (target.reason !== "agent not found") await markAgentUnavailable(opts.serverId, mem.id, target.reason);
       continue;
     }
@@ -429,6 +442,7 @@ export async function createMessage(opts: {
     const startSent = sendAgentStart(opts.serverId, target, mem.id);
     const deliverSent = startSent && sendAgentDeliver(opts.serverId, target, { agentId: mem.id, seq, from: opts.senderName, target: opts.channelId, targetName, msgShort, isTask: !!opts.asTask, message: { content: opts.content }, mentioned, streamId: replyStreamId });
     if (!deliverSent) {
+      await releaseUnavailableReplyGrant(msg!.id, mem.id);
       await publish(opts.serverId, { type: "agent:reply", agentId: mem.id, channelId: opts.channelId, streamId: replyStreamId, name: mem.displayName || mem.name, op: "error", text: "machine offline" });
       await markAgentUnavailable(opts.serverId, mem.id, "machine offline");
       continue;
@@ -735,6 +749,7 @@ export async function assignTask(
   const actor = by ? await actorName(by.type, by.id) : "Someone";
   const assigneeName = target.displayName || target.name;
   const sysMsg = await sysTaskMsg(serverId, threadCh, `${actor} assigned #${upd.taskNumber} "${taskTitle(upd.content)}" to ${assigneeName}`, by);
+  await ensureReplyRecipients({ serverId, channelId: threadCh, messageId: sysMsg.id, recipients: [{ agentId: assigneeId, attention: "assigned" }] });
 
   const startTarget = await agentStartTarget(serverId, assigneeId);
   if (startTarget.ok) {
@@ -750,8 +765,9 @@ export async function assignTask(
       message: { content: `#${upd.taskNumber} assigned to you` },
       mentioned: true,
     });
-    if (!deliverSent) await markAgentUnavailable(serverId, assigneeId, "machine offline");
+    if (!deliverSent) { await releaseUnavailableReplyGrant(sysMsg.id, assigneeId); await markAgentUnavailable(serverId, assigneeId, "machine offline"); }
   } else if (startTarget.reason !== "agent not found") {
+    await releaseUnavailableReplyGrant(sysMsg.id, assigneeId);
     await markAgentUnavailable(serverId, assigneeId, startTarget.reason);
   }
 
@@ -783,11 +799,13 @@ export async function setTaskStatus(serverId: string, messageId: string, status:
   if (upd.taskAssigneeType === "agent" && upd.taskAssigneeId && by?.id !== upd.taskAssigneeId) {
     await db.insert(schema.channelMembers).values({ channelId: threadCh, memberType: "agent", memberId: upd.taskAssigneeId }).onConflictDoNothing(); // ensure assignee is a thread member, otherwise message check cannot see this system message
     const target = await agentStartTarget(serverId, upd.taskAssigneeId);
+    await ensureReplyRecipients({ serverId, channelId: threadCh, messageId: sysMsg.id, recipients: [{ agentId: upd.taskAssigneeId, attention: "assigned" }] });
     if (target.ok) {
       const startSent = sendAgentStart(serverId, target, upd.taskAssigneeId);
       const deliverSent = startSent && sendAgentDeliver(serverId, target, { type: "agent:deliver", agentId: upd.taskAssigneeId, seq: sysMsg.seq, from: actor, target: threadCh, targetName: `task #${upd.taskNumber}`, msgShort: sysMsg.id.slice(0, 8), isTask: true, message: { content: `#${upd.taskNumber} → ${label}` }, mentioned: true });
-      if (!deliverSent) await markAgentUnavailable(serverId, upd.taskAssigneeId, "machine offline");
+      if (!deliverSent) { await releaseUnavailableReplyGrant(sysMsg.id, upd.taskAssigneeId); await markAgentUnavailable(serverId, upd.taskAssigneeId, "machine offline"); }
     } else if (target.reason !== "agent not found") {
+      await releaseUnavailableReplyGrant(sysMsg.id, upd.taskAssigneeId);
       await markAgentUnavailable(serverId, upd.taskAssigneeId, target.reason);
     }
   }
@@ -830,6 +848,24 @@ function sendAgentDeliver(serverId: string, target: AgentStartTarget, msg: Recor
   if (daemonCount(serverId) === 0) return false;
   broadcastToDaemons(serverId, { type: "agent:deliver", ...msg });
   return true;
+}
+
+/** Wake the current primary for a private better-fit/handoff decision. The agent pulls the one-shot
+ * coordination event through message check; no public channel message is created. */
+export async function wakeAgentForReplyCoordination(serverId: string, agentId: string, messageId: string, from: string): Promise<boolean> {
+  const trigger = (await db.select().from(schema.messages).where(and(eq(schema.messages.id, messageId), eq(schema.messages.serverId, serverId))))[0];
+  if (!trigger) return false;
+  const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, trigger.channelId)))[0];
+  const target = await agentStartTarget(serverId, agentId);
+  if (!target.ok) { await releaseUnavailableReplyGrant(messageId, agentId); return false; }
+  const started = sendAgentStart(serverId, target, agentId);
+  const delivered = started && sendAgentDeliver(serverId, target, {
+    agentId, seq: trigger.seq, from, target: trigger.channelId,
+    targetName: `coordination:${ch?.name ?? trigger.channelId}`, msgShort: trigger.id.slice(0, 8),
+    mentioned: true, message: { content: "reply coordination update" },
+  });
+  if (!delivered) await releaseUnavailableReplyGrant(messageId, agentId);
+  return delivered;
 }
 
 function sendAgentControl(serverId: string, target: AgentControlTarget, msg: Record<string, unknown>): boolean {

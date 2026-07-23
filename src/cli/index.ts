@@ -59,18 +59,47 @@ program.name("open-tag").description("open-tag agent CLI").version("0.1.0");
 const message = program.command("message").description("message send/receive");
 message.command("check").description("non-blocking check for new messages").action(async () => {
   const d = await api("GET", "/agent-api/message/check");
-  if (!d.messages?.length) { await recordTurnEvent({ type: "check", count: 0 }); return console.log("No new messages."); }
-  const targets = Array.from(new Set((d.messages ?? []).map((m: any) => targetFromText(String(m.text ?? ""))).filter(Boolean)));
-  await recordTurnEvent({ type: "check", count: d.messages.length, target: targets[targets.length - 1] ?? null, targets });
-  for (const m of d.messages) console.log(m.text);
+  const messages = d.messages ?? [];
+  const updates = d.coordination ?? [];
+  if (!messages.length && !updates.length) { await recordTurnEvent({ type: "check", count: 0 }); return console.log("No new messages."); }
+  const targets = Array.from(new Set([
+    ...messages.map((m: any) => targetFromText(String(m.text ?? ""))),
+    ...updates.map((u: any) => u.target),
+  ].filter(Boolean)));
+  const granted = [...messages].reverse().find((m: any) => m?.coordination?.grantStatus === "active");
+  const latestUpdate = updates[updates.length - 1];
+  const latestMessage = messages[messages.length - 1];
+  const actionable = latestUpdate ?? granted ?? latestMessage;
+  await recordTurnEvent({
+    type: "check",
+    count: messages.length,
+    coordinationCount: updates.length,
+    target: actionable?.target ?? targetFromText(String(actionable?.text ?? "")) ?? targets[targets.length - 1] ?? null,
+    targets,
+    messageId: actionable?.messageId ?? actionable?.id ?? null,
+    grant: latestUpdate ? "primary" : granted?.coordination?.grantSlot ?? null,
+  });
+  for (const m of messages) console.log(m.text);
+  for (const update of updates) console.log(update.text);
   console.log("No more new messages."); // termination sentinel
 });
-message.command("send").description("send a message (body read from stdin); if new messages arrived since last read the message is freshness-held as a draft — revise it or use --send-draft to submit as-is").requiredOption("--target <target>", "#channel / dm:@name / #channel:shortid / thread:shortid").option("--attach <ids>", "attachment ids, comma-separated").option("--send-draft", "submit the held draft as-is, bypassing freshness check").action(async (opts) => {
+message.command("decide").description("record whether and why this agent should reply to an observed message")
+  .requiredOption("--message-id <id>", "trigger message full/short id")
+  .requiredOption("--decision <decision>", "no_action | request_reply | accept | delegate | abstain")
+  .option("--reason <reason>", "ownership | better_fit | handoff | correction | blocker | new_evidence | unique_expertise")
+  .option("--summary <text>", "short evidence for a reply request")
+  .option("--to <agent>", "delegate target handle")
+  .action(async (opts) => {
+    const d = await api("POST", "/agent-api/message/decide", { messageId: opts.messageId, decision: opts.decision, reason: opts.reason, summary: opts.summary, to: opts.to });
+    await recordTurnEvent({ type: "decision", messageId: d.messageId, decision: d.decision, grant: d.grant });
+    console.log(`Decision ${d.decision} for ${String(d.messageId).slice(0, 8)}; grant=${d.grant ?? "none"}${d.promotedAgentId ? `; promoted=${String(d.promotedAgentId).slice(0, 8)}` : ""}`);
+  });
+message.command("send").description("send a granted reply (body read from stdin); if newer messages arrived it is freshness-held as a draft").requiredOption("--target <target>", "#channel / dm:@name / #channel:shortid / thread:shortid").option("--reply-to <id>", "trigger message full/short id").option("--attach <ids>", "attachment ids, comma-separated").option("--send-draft", "submit the held draft as-is after reply authorization").action(async (opts) => {
   const sendDraft = !!opts.sendDraft;
   const content = sendDraft ? "" : (await readStdin()).trim();
   const attachmentIds = opts.attach ? String(opts.attach).split(",").map((s: string) => s.trim()).filter(Boolean) : [];
   if (!sendDraft && !content && !attachmentIds.length) { console.error("Error: empty content"); console.error("Next action: pipe body via heredoc on stdin, or use --attach to include attachments"); process.exit(1); }
-  const d = await api("POST", "/agent-api/message/send", { target: opts.target, content, attachmentIds, sendDraft });
+  const d = await api("POST", "/agent-api/message/send", { target: opts.target, content, attachmentIds, sendDraft, replyTo: opts.replyTo });
   if (d.held) { await recordTurnEvent({ type: "held", target: opts.target }); return console.log(d.text); } // freshness-hold: prints bounded context + two options, letting the agent revise or use --send-draft
   await recordTurnEvent({ type: "send", target: opts.target, id: d.id, seq: d.seq });
   console.log(`Sent to ${opts.target} (msg ${String(d.id).slice(0, 8)}, seq ${d.seq})`);
@@ -166,10 +195,10 @@ message.command("search").description("full-text search messages in your channel
 program.command("search").description("= message search (backward-compat alias)").requiredOption("--query <q>", "search term").action(searchAction);
 
 const thread = program.command("thread").description("threads");
-thread.command("reply").description("start or reply to a thread under a message (body read from stdin)").requiredOption("--parent <msgId>", "parent message id or the 8-character short id from the message header").option("--channel <channel>", "channel containing the parent message (used for disambiguation)").action(async (opts) => {
+thread.command("reply").description("start or reply to a thread under a message (body read from stdin)").requiredOption("--parent <msgId>", "parent message id or the 8-character short id from the message header").option("--channel <channel>", "channel containing the parent message (used for disambiguation)").option("--reply-to <id>", "trigger message full/short id").action(async (opts) => {
   const content = (await readStdin()).trim();
   if (!content) { console.error("Error: empty content"); console.error("Next action: pipe body via heredoc on stdin"); process.exit(1); }
-  const d = await api("POST", "/agent-api/thread/reply", { parent: opts.parent, channel: opts.channel, content });
+  const d = await api("POST", "/agent-api/thread/reply", { parent: opts.parent, channel: opts.channel, content, replyTo: opts.replyTo });
   console.log(`Replied in thread (thread ${String(d.threadChannelId).slice(0, 8)}, msg ${String(d.id).slice(0, 8)})`);
 });
 thread.command("unfollow").description("stop receiving deliveries from a thread").requiredOption("--target <thread>", "#channel:shortid or thread:shortid").action(async (opts) => {

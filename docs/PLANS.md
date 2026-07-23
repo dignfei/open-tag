@@ -30,6 +30,10 @@
 The early capability slices shipped and their working notes were not retained as plan files;
 their verified end state is recorded in `FEATURES.md`:
 
+- **Reply coordination** — observation remains broad while trigger-bound primary/supplemental
+  grants constrain publication; mistaken mentions transfer through audited intent and private
+  coordination. Contract: [`docs/reply-coordination.md`](./reply-coordination.md); evidence:
+  [`docs/exec-plans/completed/reply-coordination.md`](./exec-plans/completed/reply-coordination.md).
 - **01 Agent communication loop + agent ↔ agent collaboration** ✅ (FEATURES P5)
 - **02 Saved Messages** ✅ (FEATURES P3)
 - **03 / 03b Tasks end-to-end + interaction rework** ✅ (FEATURES P4 — board move UX, layout toggle, DM tasks, handoff)
