@@ -105,6 +105,31 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     });
     const humanHeaders = { authorization: `Bearer ${signUser(user!.id)}`, "x-server-id": server!.id };
     const agentHeaders = (i: number) => ({ authorization: `Bearer ${tokens[i]!.token}`, "x-agent-id": agents[i]!.id });
+
+    const [dm] = await db.insert(schema.channels).values({ serverId: server!.id, name: `dm:${[user!.id, agents[0]!.id].sort().join(":")}`, type: "dm" }).returning();
+    await db.insert(schema.channelMembers).values([
+      { channelId: dm!.id, memberType: "user", memberId: user!.id },
+      { channelId: dm!.id, memberType: "agent", memberId: agents[0]!.id },
+    ]);
+    const dmTrigger = await api(live.base, "POST", "/api/messages", humanHeaders, { channelId: dm!.id, content: "hi" });
+    assert.equal(dmTrigger.status, 200, JSON.stringify(dmTrigger.body));
+    const dmTriggerId = dmTrigger.body.id as string;
+    const dmCheck = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(0));
+    const dmCoordination = dmCheck.body.messages.find((m: any) => m.id === dmTriggerId)?.coordination;
+    assert.deepEqual([dmCoordination?.attention, dmCoordination?.decision, dmCoordination?.grantSlot, dmCoordination?.grantStatus], ["dm", "pending", "primary", "active"]);
+    const dmReply = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
+      target: `dm:@${user!.name}`, replyTo: dmTriggerId, content: "hello from codex",
+    });
+    assert.equal(dmReply.status, 200, JSON.stringify(dmReply.body));
+    assert.equal(dmReply.body.replySlot, "primary");
+    const [dmAudit] = await db.select().from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, dmTriggerId));
+    assert.deepEqual([dmAudit?.decision, dmAudit?.grantStatus, dmAudit?.replyMessageId], ["published", "consumed", dmReply.body.id]);
+    const duplicateDmReply = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
+      target: `dm:@${user!.name}`, replyTo: dmTriggerId, content: "duplicate",
+    });
+    assert.equal(duplicateDmReply.status, 409);
+    assert.equal(duplicateDmReply.body.code, "REPLY_GRANT_CONSUMED");
+
     const first = await api(live.base, "POST", "/api/messages", humanHeaders, { channelId: channel!.id, content: `write a joke @${tokens[0]!.name}` });
     assert.equal(first.status, 200, JSON.stringify(first.body));
     const triggerId = first.body.id as string;
@@ -184,10 +209,6 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     assert.deepEqual(multiCoordination.map((c: any) => [c?.attention, c?.grantStatus, c?.grantSlot]), [
       ["direct", "active", "primary"], ["direct", "active", "directed"], ["ambient", "none", null],
     ]);
-    for (const i of [0, 1]) {
-      const accepted = await api(live.base, "POST", "/agent-api/message/decide", agentHeaders(i), { messageId: multiId, decision: "accept" });
-      assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
-    }
     const backend = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
       target: `#${channel!.name}`, replyTo: multiId, content: `backend answer; @${tokens[2]!.name} verify this`,
     });
@@ -231,10 +252,6 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     assert.equal(contributorAssign.body.code, "TASK_RESERVED_FOR_PRIMARY");
     const ownerClaim = await api(live.base, "POST", "/agent-api/task/claim", agentHeaders(0), { messageId: taskId });
     assert.equal(ownerClaim.status, 200, JSON.stringify(ownerClaim.body));
-    for (const i of [0, 1]) {
-      const accepted = await api(live.base, "POST", "/agent-api/message/decide", agentHeaders(i), { messageId: taskId, decision: "accept" });
-      assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
-    }
     const wrongTaskTarget = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
       target: `#${channel!.name}`, replyTo: taskId, content: "wrong parent answer",
     });

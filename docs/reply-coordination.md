@@ -25,7 +25,9 @@ granted a slot for the triggering message.
    an active grant for that message, including freshness-draft submission.
 3. The first explicit mention receives the primary grant. Every later explicit
    mention receives an independent directed grant. Each named agent may publish at
-   most once for the trigger; it must accept or choose no action first.
+   most once for the trigger. An explicit `accept` may record ownership before work
+   starts, while publication against an active addressed grant atomically records an
+   implicit accept so ordinary replies do not depend on a fragile two-command sequence.
 4. Direct attention establishes eligibility, not an obligation to answer. A directed
    contributor accepts only when it owns a distinct requested slice; copying an agent
    or overlapping another answer should end in `no_action`.
@@ -47,8 +49,9 @@ granted a slot for the triggering message.
    publish their scoped results without claiming or mutating the parent. Only the
    active primary may claim, assign, or update it. All trigger-bound task replies are
    authorized only in the task thread, never the parent channel.
-10. A coordinated Task grant is result-first. Recording `accept` is the acknowledgement
-   and does not publish a message. The agent must not consume its one-shot public grant
+10. A coordinated Task grant is result-first. Recording `accept` is an optional early
+   acknowledgement and does not publish a message; sending the final result may instead
+   record acceptance implicitly. The agent must not consume its one-shot public grant
    with an acknowledgement, plan, intent, or progress update; it finishes its assigned
    slice first, then publishes one concrete result or blocker.
 11. Primary publication waits up to `OPEN_TAG_REPLY_SETTLE_MS` (default 5000 ms) from
@@ -67,7 +70,7 @@ Suppose `@codex2` is the humor specialist, but a human writes `@codex write a jo
 | `codex2` reports `better_fit`; `codex` delegates to `codex2` | The primary grant moves atomically. Only `codex2` can reply. |
 | `codex` abstains after `codex2` reports `better_fit` | The oldest eligible `better_fit` request is promoted. Only `codex2` can reply. |
 | `codex2` tries to send before delegation | `409 REPLY_NOT_GRANTED`; no message is created. |
-| `codex` tries to send without first accepting | `409 REPLY_DECISION_REQUIRED`; no message is created. |
+| `codex` sends its active addressed grant without a separate accept command | Publication atomically records acceptance and consumes the one-shot grant. |
 | `codex` tries to send while `better_fit` is pending | `409 REPLY_COORDINATION_REQUIRED`; no message is created. |
 | both agents race to send | The unique primary slot and one-shot grant consumption allow one publication. The loser receives `409 REPLY_GRANT_CONSUMED`. |
 | `codex` replies; `codex2` has genuinely new contradictory evidence | `codex2` may request `new_evidence`; if the supplemental slot is free it may publish one bounded follow-up. |
@@ -82,8 +85,8 @@ Suppose a human writes `@codex cover backend; @codex2 cover frontend`.
 
 | Recipient | Grant | Valid result |
 |---|---|---|
-| first mention `codex` | `primary` | accept and publish the backend slice; or transfer/abstain |
-| later mention `codex2` | `directed` | accept and publish the frontend slice; or `no_action` if copied/redundant |
+| first mention `codex` | `primary` | publish the backend slice (explicit accept optional); or transfer/abstain |
+| later mention `codex2` | `directed` | publish the frontend slice (explicit accept optional); or `no_action` if copied/redundant |
 | unmentioned observer | none | `no_action`, or request the single supplemental for a concrete eligible reason |
 
 Primary is the coordination/Task-ownership role, not an exclusive public-reply lock.
@@ -140,7 +143,11 @@ open-tag message send --reply-to <id> --target <target>
 ```
 
 `message send` validates access to both target and trigger and atomically reserves the
-authenticated agent's active grant before creating the reply. The canonical target is
+authenticated agent's active grant before creating the reply. When an addressed
+`direct|dm|assigned` row is still pending, that same reservation records `accepted`;
+the attempted publication is the agent's concrete decision to answer. Ambient observers
+still need an evidence-bearing `request_reply` decision to obtain a grant, and explicit
+`no_action`, delegation, or abstention remain separate decisions. The canonical target is
 the trigger channel for normal messages and the trigger's thread for tasks. Persisted
 primary/supplemental slot uniqueness plus `(reply_to_message_id, sender_id)` prevents
 duplicate publication even if a process fails between insert and decision finalization.
@@ -172,7 +179,8 @@ The implementation is complete only when all of these are demonstrated:
 - ungranted and wrong-channel sends return `409` without creating a message;
 - `--send-draft` cannot bypass reply authorization;
 - accept, delegate, abstain/promote, no-action, and supplemental flows;
-- pre-accept publication and publication with pending transfer requests are rejected;
+- active addressed grants publish with implicit acceptance, while publication with a
+  pending transfer request is rejected;
 - owner-request and transferred-grant private wakeups are delivered exactly once;
 - concurrent primary/supplemental requests stay singular and each directed sender
   creates at most one result;

@@ -66,6 +66,34 @@ test("directed message is observed by all recipients but grants one primary", as
   } finally { await f.cleanup(); }
 });
 
+test("active addressed grants treat publication as implicit acceptance", async () => {
+  const f = await fixture("implicit-accept");
+  try {
+    const [codex] = f.agents;
+    for (const [offset, attention] of (["direct", "dm", "assigned"] as const).entries()) {
+      const message = await f.makeMessage(9_100_030 + offset);
+      await ensureReplyRecipients({
+        serverId: f.server.id,
+        channelId: f.channel.id,
+        messageId: message.id,
+        recipients: [{ agentId: codex!.id, attention }],
+      });
+      await markReplyMessagesObserved(codex!.id, [message.id]);
+
+      assert.deepEqual(
+        await reserveReplyGrant({ serverId: f.server.id, agentId: codex!.id, messageId: message.id, channelId: f.channel.id }),
+        { ok: true, slot: "primary" },
+      );
+      const [row] = await db.select().from(schema.agentMessageDecisions).where(and(
+        eq(schema.agentMessageDecisions.messageId, message.id),
+        eq(schema.agentMessageDecisions.agentId, codex!.id),
+      ));
+      assert.equal(row?.decision, "accepted", `${attention} publication records an implicit accept`);
+      assert.equal(row?.grantStatus, "publishing");
+    }
+  } finally { await f.cleanup(); }
+});
+
 test("every explicit mention can accept one independent directed reply", async () => {
   const f = await fixture("multi-directed");
   try {
@@ -174,7 +202,7 @@ test("mistaken mention transfers primary only after better_fit request", async (
   } finally { await f.cleanup(); }
 });
 
-test("direct owner cannot publish before accepting and pending better_fit blocks publication", async () => {
+test("pending better_fit blocks implicit primary acceptance and publication", async () => {
   const f = await fixture("settlement");
   try {
     const message = await f.makeMessage(9_100_020);
@@ -183,9 +211,7 @@ test("direct owner cannot publish before accepting and pending better_fit blocks
       { agentId: codex!.id, attention: "direct" }, { agentId: codex2!.id, attention: "ambient" },
     ] });
     await markReplyMessagesObserved(codex!.id, [message.id]);
-    assert.deepEqual(await reserveReplyGrant({ serverId: f.server.id, agentId: codex!.id, messageId: message.id, channelId: f.channel.id }), { ok: false, code: "REPLY_DECISION_REQUIRED" });
     await markReplyMessagesObserved(codex2!.id, [message.id]);
-    await decideReply({ serverId: f.server.id, agentId: codex!.id, messageId: message.id, decision: "accept" });
     await decideReply({ serverId: f.server.id, agentId: codex2!.id, messageId: message.id, decision: "request_reply", reason: "better_fit" });
     assert.deepEqual(await reserveReplyGrant({ serverId: f.server.id, agentId: codex!.id, messageId: message.id, channelId: f.channel.id }), { ok: false, code: "REPLY_COORDINATION_REQUIRED" });
   } finally { await f.cleanup(); }

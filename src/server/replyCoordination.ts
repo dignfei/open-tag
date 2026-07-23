@@ -314,31 +314,51 @@ export async function reserveReplyGrant(o: { serverId: string; agentId: string; 
   )))[0];
   const targetChannelId = await canonicalReplyChannelId(o.messageId);
   if (targetChannelId !== o.channelId) return { ok: false, code: "REPLY_TARGET_MISMATCH" };
-  if (current?.grantStatus === "active" && current.attention !== "ambient" && current.decision !== "accepted" && current.decision !== "requested") {
-    return { ok: false, code: "REPLY_DECISION_REQUIRED" };
-  }
   if (current?.grantSlot === "primary" && await waitForReplySettlement(o.messageId, o.agentId) === "coordination_required") {
     return { ok: false, code: "REPLY_COORDINATION_REQUIRED" };
   }
-  const [reserved] = await db.update(schema.agentMessageDecisions).set({ grantStatus: "publishing", updatedAt: new Date() }).where(and(
-    eq(schema.agentMessageDecisions.serverId, o.serverId),
-    eq(schema.agentMessageDecisions.messageId, o.messageId),
-    eq(schema.agentMessageDecisions.agentId, o.agentId),
-    eq(schema.agentMessageDecisions.grantStatus, "active"),
-  )).returning({ slot: schema.agentMessageDecisions.grantSlot });
-  if (reserved?.slot === "primary") {
-    const pendingTransfer = (await db.select({ agentId: schema.agentMessageDecisions.agentId }).from(schema.agentMessageDecisions).where(and(
+  const now = new Date();
+  const reservation = await db.transaction(async (tx) => {
+    const [reserved] = await tx.update(schema.agentMessageDecisions).set({ grantStatus: "publishing", updatedAt: now }).where(and(
+      eq(schema.agentMessageDecisions.serverId, o.serverId),
       eq(schema.agentMessageDecisions.messageId, o.messageId),
-      ne(schema.agentMessageDecisions.agentId, o.agentId),
-      eq(schema.agentMessageDecisions.decision, "requested"),
-      or(eq(schema.agentMessageDecisions.reasonCode, "better_fit"), eq(schema.agentMessageDecisions.reasonCode, "handoff")),
-    )).limit(1))[0];
-    if (pendingTransfer) {
-      await releaseReplyReservation(o.messageId, o.agentId);
-      return { ok: false, code: "REPLY_COORDINATION_REQUIRED" };
+      eq(schema.agentMessageDecisions.agentId, o.agentId),
+      eq(schema.agentMessageDecisions.grantStatus, "active"),
+      or(
+        eq(schema.agentMessageDecisions.decision, "accepted"),
+        eq(schema.agentMessageDecisions.decision, "requested"),
+        and(ne(schema.agentMessageDecisions.attention, "ambient"), eq(schema.agentMessageDecisions.decision, "pending")),
+      ),
+    )).returning({ slot: schema.agentMessageDecisions.grantSlot, decision: schema.agentMessageDecisions.decision });
+    if (!reserved) return null;
+    if (reserved.slot === "primary") {
+      const pendingTransfer = (await tx.select({ agentId: schema.agentMessageDecisions.agentId }).from(schema.agentMessageDecisions).where(and(
+        eq(schema.agentMessageDecisions.messageId, o.messageId),
+        ne(schema.agentMessageDecisions.agentId, o.agentId),
+        eq(schema.agentMessageDecisions.decision, "requested"),
+        or(eq(schema.agentMessageDecisions.reasonCode, "better_fit"), eq(schema.agentMessageDecisions.reasonCode, "handoff")),
+      )).limit(1))[0];
+      if (pendingTransfer) {
+        await tx.update(schema.agentMessageDecisions).set({ grantStatus: "active", updatedAt: new Date() }).where(and(
+          eq(schema.agentMessageDecisions.messageId, o.messageId),
+          eq(schema.agentMessageDecisions.agentId, o.agentId),
+          eq(schema.agentMessageDecisions.grantStatus, "publishing"),
+        ));
+        return { blocked: true as const };
+      }
     }
-  }
-  if (reserved?.slot === "primary" || reserved?.slot === "directed" || reserved?.slot === "supplemental") return { ok: true, slot: reserved.slot };
+    if (reserved.decision === "pending") {
+      await tx.update(schema.agentMessageDecisions).set({ decision: "accepted", decidedAt: now, updatedAt: now }).where(and(
+        eq(schema.agentMessageDecisions.messageId, o.messageId),
+        eq(schema.agentMessageDecisions.agentId, o.agentId),
+        eq(schema.agentMessageDecisions.grantStatus, "publishing"),
+        eq(schema.agentMessageDecisions.decision, "pending"),
+      ));
+    }
+    return { blocked: false as const, slot: reserved.slot };
+  });
+  if (reservation?.blocked) return { ok: false, code: "REPLY_COORDINATION_REQUIRED" };
+  if (reservation?.slot === "primary" || reservation?.slot === "directed" || reservation?.slot === "supplemental") return { ok: true, slot: reservation.slot };
   const row = (await db.select().from(schema.agentMessageDecisions).where(and(
     eq(schema.agentMessageDecisions.serverId, o.serverId),
     eq(schema.agentMessageDecisions.messageId, o.messageId),
