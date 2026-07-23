@@ -75,6 +75,7 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
   const cleanup = async () => {
     const channelIds = (await db.select({ id: schema.channels.id }).from(schema.channels).where(eq(schema.channels.serverId, server!.id))).map((c) => c.id);
     const ids = (await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.serverId, server!.id))).map((m) => m.id);
+    await db.delete(schema.agentActivityLog).where(eq(schema.agentActivityLog.serverId, server!.id));
     await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.serverId, server!.id));
     if (ids.length) await db.delete(schema.messageMentions).where(inArray(schema.messageMentions.messageId, ids));
     await db.delete(schema.messages).where(eq(schema.messages.serverId, server!.id));

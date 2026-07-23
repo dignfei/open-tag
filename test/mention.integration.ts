@@ -54,6 +54,7 @@ async function setup() {
 async function cleanup() {
   // FK-safe order, scoped to this run's rows only
   const msgs = await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.serverId, serverId));
+  await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.serverId, serverId));
   for (const m of msgs) await db.delete(schema.messageMentions).where(eq(schema.messageMentions.messageId, m.id));
   await db.delete(schema.messages).where(eq(schema.messages.serverId, serverId));
   // Delete members for EVERY channel of this run's server (covers the thread channels created dynamically in [5]/[6]).

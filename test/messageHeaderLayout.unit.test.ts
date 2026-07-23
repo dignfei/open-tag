@@ -187,9 +187,9 @@ test("new messages expand from below so existing messages move smoothly", () => 
 
 test("message toolbar stays inside the message border and exposes save/copy/more directly", () => {
   assert.match(chatSrc, /const copyMarkdown = \(content: string\) => \{ navigator\.clipboard\?\.writeText\(content\)\.catch\(\(\) => \{\}\); \};/);
-  assert.match(chatSrc, /<button className=\{isSaved \? "on" : ""\} title=\{isSaved \? t\("chat\.unsave"\) : t\("chat\.saveMessage"\)\} onClick=\{\(\) => \{ isSaved \? unsaveMsg\(m\.id\) : saveMsg\(m\.id\); \}\}><Bookmark size=\{15\} fill=\{isSaved \? "currentColor" : "none"\} \/><\/button>/);
-  assert.match(chatSrc, /<button title=\{t\("chat\.copyMarkdown"\)\} onClick=\{\(\) => copyMarkdown\(m\.content\)\}><Clipboard size=\{15\} \/><\/button>/);
-  assert.match(chatSrc, /<button title=\{t\("chat\.more"\)\} onClick=\{\(e\) => \{ const r = e\.currentTarget\.getBoundingClientRect\(\); setCtxMenu\(\{ m, x: r\.right - 212, y: r\.bottom \+ 4 \}\); \}\}><MoreHorizontal size=\{15\} \/><\/button>/);
+  assert.match(chatSrc, /<button className=\{"im" \+ \(isSaved \? " on" : ""\)\} title=\{isSaved \? t\("chat\.unsave"\) : t\("chat\.saveMessage"\)\} onClick=\{\(\) => \{ isSaved \? unsaveMsg\(m\.id\) : saveMsg\(m\.id\); \}\}><Bookmark size=\{15\} className="im-pop im-fill" fill=\{isSaved \? "currentColor" : "none"\} \/><\/button>/);
+  assert.match(chatSrc, /<button className="im" title=\{t\("chat\.copyMarkdown"\)\} onClick=\{\(\) => copyMarkdown\(m\.content\)\}><Clipboard size=\{15\} className="im-pop" \/><\/button>/);
+  assert.match(chatSrc, /<button className="im" title=\{t\("chat\.more"\)\} onClick=\{\(e\) => \{ const r = e\.currentTarget\.getBoundingClientRect\(\); setCtxMenu\(\{ m, x: r\.right - 212, y: r\.bottom \+ 4 \}\); \}\}><MoreHorizontal size=\{15\} className="im-pop" \/><\/button>/);
   assert.match(chatSrc, /className="ctx-item" onClick=\{\(\) => copy\(m\.content\)\}/);
 
   const toolbar = ruleBody(".msg-toolbar");
@@ -205,7 +205,7 @@ test("message toolbar stays inside the message border and exposes save/copy/more
 test("reaction footer keeps the upstream add-reaction entry even with no reactions", () => {
   assert.doesNotMatch(chatSrc, /if \(!rs\.length\) return null;/);
   assert.match(chatSrc, /<div className="msg-rx">/);
-  assert.match(chatSrc, /<button className="rx-add" title=\{i18n\.t\("chat\.addReaction"\)\}/);
+  assert.match(chatSrc, /<button className="rx-add im" title=\{i18n\.t\("chat\.addReaction"\)\}/);
   const add = ruleBody(".rx-add");
   assert.match(add, /opacity\s*:\s*0\b/, `add-reaction should stay quiet until hover/focus: ${add}`);
   assert.match(add, /transition\s*:\s*opacity \.5s ease\b/, `add-reaction should fade in with the message hairline timing: ${add}`);
