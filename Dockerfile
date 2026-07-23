@@ -16,7 +16,8 @@ RUN npm --prefix web ci
 COPY docs-site/package.json docs-site/package-lock.json ./docs-site/
 RUN npm --prefix docs-site ci
 COPY . .
-RUN npm run site:build
+# Keep dev dependencies installed above, but select production exports for browser bundles.
+RUN NODE_ENV=production npm run site:build
 
 # ---- runtime stage: source + root node_modules + built client/docs, run with tsx ----
 FROM node:22-slim AS runtime

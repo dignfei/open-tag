@@ -55,7 +55,6 @@
     "dev:e2e:down": "bash scripts/dev-e2e-down.sh"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "busboy": "^1.6.0",
     "commander": "^12.1.0",
     "cross-spawn": "^7.0.6",
