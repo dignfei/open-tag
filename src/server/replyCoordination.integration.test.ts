@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { db, schema, sql } from "../db/index.js";
 import { pub, redis, sub } from "../redis.js";
-import { claimReplyCoordination, decideReply, ensureReplyRecipients, finishReplyPublication, markReplyMessagesObserved, reserveReplyGrant } from "./replyCoordination.js";
+import { canAgentManageCoordinatedTask, checkReplyGrant, claimReplyCoordination, decideReply, ensureReplyRecipients, finishReplyPublication, markReplyMessagesObserved, reserveReplyGrant } from "./replyCoordination.js";
 import { assignTask, createMessage, getOrCreateThread } from "./core.js";
 
 after(async () => {
@@ -63,6 +63,79 @@ test("directed message is observed by all recipients but grants one primary", as
     assert.equal(rows.length, 3, "reconnect/idempotent ensure must not duplicate recipients");
     assert.equal(rows.filter((r) => r.observedAt).length, 3);
     assert.deepEqual(rows.filter((r) => r.grantStatus === "active").map((r) => [r.agentId, r.grantSlot]), [[codex!.id, "primary"]]);
+  } finally { await f.cleanup(); }
+});
+
+test("every explicit mention can accept one independent directed reply", async () => {
+  const f = await fixture("multi-directed");
+  try {
+    const message = await f.makeMessage(9_100_010);
+    const [codex, codex2, worker] = f.agents;
+    await ensureReplyRecipients({ serverId: f.server.id, channelId: f.channel.id, messageId: message.id, recipients: [
+      { agentId: codex!.id, attention: "direct" },
+      { agentId: codex2!.id, attention: "direct" },
+      { agentId: worker!.id, attention: "direct" },
+    ] });
+    for (const agent of f.agents) await markReplyMessagesObserved(agent.id, [message.id]);
+
+    const primary = await decideReply({ serverId: f.server.id, agentId: codex!.id, messageId: message.id, decision: "accept" });
+    const contributor = await decideReply({ serverId: f.server.id, agentId: codex2!.id, messageId: message.id, decision: "accept" });
+    const secondContributor = await decideReply({ serverId: f.server.id, agentId: worker!.id, messageId: message.id, decision: "accept" });
+    assert.equal(primary.ok, true);
+    assert.equal(contributor.ok, true);
+    assert.equal(secondContributor.ok, true);
+    if (primary.ok) assert.equal(primary.row.grantSlot, "primary");
+    if (contributor.ok) assert.equal(contributor.row.grantSlot, "directed");
+    if (secondContributor.ok) assert.equal(secondContributor.row.grantSlot, "directed");
+
+    assert.deepEqual(await reserveReplyGrant({ serverId: f.server.id, agentId: codex!.id, messageId: message.id, channelId: f.channel.id }), { ok: true, slot: "primary" });
+    assert.deepEqual(await reserveReplyGrant({ serverId: f.server.id, agentId: codex2!.id, messageId: message.id, channelId: f.channel.id }), { ok: true, slot: "directed" });
+    assert.deepEqual(await reserveReplyGrant({ serverId: f.server.id, agentId: worker!.id, messageId: message.id, channelId: f.channel.id }), { ok: true, slot: "directed" });
+    const [reply1] = await db.insert(schema.messages).values({
+      seq: 9_100_011, serverId: f.server.id, channelId: f.channel.id, senderType: "agent", senderId: codex!.id,
+      senderName: codex!.name, content: "backend", replyToMessageId: message.id, replyGrantSlot: "primary",
+    }).returning();
+    const [reply2] = await db.insert(schema.messages).values({
+      seq: 9_100_012, serverId: f.server.id, channelId: f.channel.id, senderType: "agent", senderId: codex2!.id,
+      senderName: codex2!.name, content: "frontend", replyToMessageId: message.id, replyGrantSlot: "directed",
+    }).returning();
+    const [reply3] = await db.insert(schema.messages).values({
+      seq: 9_100_013, serverId: f.server.id, channelId: f.channel.id, senderType: "agent", senderId: worker!.id,
+      senderName: worker!.name, content: "review", replyToMessageId: message.id, replyGrantSlot: "directed",
+    }).returning();
+    await finishReplyPublication({ messageId: message.id, agentId: codex!.id, replyMessageId: reply1!.id });
+    await finishReplyPublication({ messageId: message.id, agentId: codex2!.id, replyMessageId: reply2!.id });
+    await finishReplyPublication({ messageId: message.id, agentId: worker!.id, replyMessageId: reply3!.id });
+
+    await assert.rejects(() => db.insert(schema.messages).values({
+      seq: 9_100_014, serverId: f.server.id, channelId: f.channel.id, senderType: "agent", senderId: codex2!.id,
+      senderName: codex2!.name, content: "duplicate frontend", replyToMessageId: message.id, replyGrantSlot: "directed",
+    }), (e: any) => (e?.cause?.code ?? e?.code) === "23505");
+  } finally { await f.cleanup(); }
+});
+
+test("task grants publish only in the task thread and reserve the claim for the primary", async () => {
+  const f = await fixture("task-target");
+  try {
+    const [codex, codex2] = f.agents;
+    const task = (await db.insert(schema.messages).values({
+      seq: 9_100_015, serverId: f.server.id, channelId: f.channel.id, senderType: "user", senderId: f.user.id,
+      senderName: f.user.name, content: "split task", taskStatus: "todo", taskNumber: 1,
+    }).returning())[0]!;
+    const thread = await getOrCreateThread(f.server.id, task.id, { type: "user", id: f.user.id });
+    await db.update(schema.messages).set({ threadId: thread.id }).where(eq(schema.messages.id, task.id));
+    await ensureReplyRecipients({ serverId: f.server.id, channelId: f.channel.id, messageId: task.id, recipients: [
+      { agentId: codex!.id, attention: "direct" }, { agentId: codex2!.id, attention: "direct" },
+    ] });
+    await markReplyMessagesObserved(codex!.id, [task.id]);
+    await markReplyMessagesObserved(codex2!.id, [task.id]);
+    await decideReply({ serverId: f.server.id, agentId: codex!.id, messageId: task.id, decision: "accept" });
+    await decideReply({ serverId: f.server.id, agentId: codex2!.id, messageId: task.id, decision: "accept" });
+
+    assert.deepEqual(await checkReplyGrant({ serverId: f.server.id, agentId: codex!.id, messageId: task.id, channelId: f.channel.id }), { ok: false, code: "REPLY_TARGET_MISMATCH" });
+    assert.deepEqual(await checkReplyGrant({ serverId: f.server.id, agentId: codex!.id, messageId: task.id, channelId: thread.id }), { ok: true, slot: "primary" });
+    assert.equal(await canAgentManageCoordinatedTask(task.id, codex!.id), true);
+    assert.equal(await canAgentManageCoordinatedTask(task.id, codex2!.id), false);
   } finally { await f.cleanup(); }
 });
 
@@ -250,7 +323,7 @@ test("thread messages and task assignments stay observable with directed grants"
   } finally { await f.cleanup(); }
 });
 
-test("multi-mention order chooses one primary and a DM stays directly observable", async () => {
+test("multi-mention order chooses a primary plus directed contributors and a DM stays directly observable", async () => {
   const f = await fixture("multi-dm");
   try {
     const [codex, codex2, worker] = f.agents;
@@ -262,7 +335,8 @@ test("multi-mention order chooses one primary and a DM stays directly observable
     assert.equal(multiRows.find((r) => r.agentId === codex2!.id)?.grantSlot, "primary", "first explicit mention owns priority");
     assert.equal(multiRows.find((r) => r.agentId === codex2!.id)?.grantStatus, "released");
     assert.equal(multiRows.find((r) => r.agentId === codex!.id)?.attention, "direct");
-    assert.equal(multiRows.find((r) => r.agentId === codex!.id)?.grantStatus, "none");
+    assert.equal(multiRows.find((r) => r.agentId === codex!.id)?.grantSlot, "directed");
+    assert.equal(multiRows.find((r) => r.agentId === codex!.id)?.grantStatus, "released");
     assert.equal(multiRows.find((r) => r.agentId === worker!.id)?.attention, "ambient");
 
     const [dm] = await db.insert(schema.channels).values({ serverId: f.server.id, name: `dm:${f.user.id}:${codex!.id}`, type: "dm" }).returning();

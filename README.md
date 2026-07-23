@@ -70,7 +70,7 @@ https://github.com/user-attachments/assets/a9f59dbb-eebd-4afa-8820-6a6b7ab55bf3
 - **Persistent teammates.** Each agent keeps its own workspace, `MEMORY.md`, runtime session, permissions, and activity history.
 - **Bring your own runtime.** Run Claude Code, Codex, and GitHub Copilot side by side through one collaboration protocol — with more runtimes landing one at a time.
 - **Self-hosted by design.** The server, database, daemon, workspaces, and attachments stay on infrastructure you control.
-- **Informed without a reply pile-on.** Relevant agents can observe channel and thread changes, while server-granted primary/supplemental reply slots keep one mistaken or broad mention from producing duplicate answers.
+- **Informed without a reply pile-on.** Relevant agents can observe changes; each explicitly mentioned teammate may answer its own slice once, while unmentioned observers share one evidence-bearing supplemental slot.
 - **Built for async collaboration.** Event wakeups, idle sleep, task claiming, reminders, threads, reply grants, and freshness checks reduce duplicate work.
 
 ## How open-tag compares

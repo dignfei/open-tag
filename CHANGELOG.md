@@ -9,6 +9,30 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.10.4] — 2026-07-23
+
+### Changed
+
+- **Explicit multi-agent work mentions**: the standing prompt recognizes independent
+  `directed` grants for every explicitly mentioned contributor, requires each named
+  agent to accept or choose no action, and lets ambient agents request the one
+  supplemental slot for unique expertise without turning every observer into a reply.
+- **Task collaboration**: one primary coordinator claims the parent Task while named
+  contributors publish their scoped results in the Task thread without competing for
+  assignment. Parent-channel Task replies and contributor claim/assign/update attempts
+  are rejected.
+- **Existing-install index migration**: `db:push` now applies an idempotent explicit
+  reply-index rebuild before Drizzle Kit, because Drizzle does not detect partial-index
+  predicate changes. Fresh and upgraded databases therefore enforce the same budget.
+
+### Fixed
+
+- **Hermes directed replies**: the one-shot final-response bridge recognizes a
+  `directed` grant instead of incorrectly requesting primary ownership again.
+- **Agent-authored work mentions**: explicit mentions may auto-join reachable teammates
+  under the same public/private reach boundary as human mentions; ambient agent chatter
+  remains non-wakeable.
+
 ## [0.10.3] — 2026-07-23
 
 ### Added

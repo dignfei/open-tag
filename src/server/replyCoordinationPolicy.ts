@@ -1,10 +1,10 @@
 export const REPLY_DECISIONS = ["no_action", "request_reply", "accept", "delegate", "abstain"] as const;
 export const REPLY_REASONS = ["ownership", "better_fit", "handoff", "correction", "blocker", "new_evidence", "unique_expertise"] as const;
-export const SUPPLEMENTAL_REASONS = new Set<ReplyReason>(["correction", "blocker", "new_evidence"]);
+export const SUPPLEMENTAL_REASONS = new Set<ReplyReason>(["correction", "blocker", "new_evidence", "unique_expertise"]);
 
 export type ReplyDecision = typeof REPLY_DECISIONS[number];
 export type ReplyReason = typeof REPLY_REASONS[number];
-export type ReplySlot = "primary" | "supplemental";
+export type ReplySlot = "primary" | "directed" | "supplemental";
 export type PrimaryState = "none" | "active" | "consumed";
 
 export type IntentOutcome =

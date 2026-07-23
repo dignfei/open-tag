@@ -11,6 +11,7 @@ import { canUserReadChannel } from "./channelAccess.js";
 import { canAutoJoinMentionedMembers, isWakeable } from "./agentWakePolicy.js";
 import { UUID_RE } from "./util.js";
 import { ensureReplyRecipients, releaseUnavailableReplyGrant, type ReplyRecipient } from "./replyCoordination.js";
+import type { ReplySlot } from "./replyCoordinationPolicy.js";
 
 const log = createLogger("server:core");
 const PORT = Number(process.env.PORT ?? 7777);
@@ -340,7 +341,7 @@ export async function createMessage(opts: {
   serverId: string; channelId: string;
   senderType: "user" | "agent" | "system"; senderId: string | null; senderName: string;
   content: string; messageType?: string; threadId?: string | null; asTask?: boolean; attachmentIds?: string[];
-  replyToMessageId?: string; replyGrantSlot?: "primary" | "supplemental";
+  replyToMessageId?: string; replyGrantSlot?: ReplySlot;
   actionMetadata?: unknown; // action-card and other platform action payloads (slice09)
 }) {
   const seq = await nextSeq(opts.serverId);
@@ -377,8 +378,8 @@ export async function createMessage(opts: {
   // parent channel's @-reach (mentionAutoJoinPool — the same parent-channel inheritance canReadChannel uses),
   // so @-ing a teammate who hasn't replied in the thread yet still wakes them. Public channel → whole
   // workspace; private/dm (and their threads) → existing members only, so an @ to a non-member stays a no-op.
-  // Agent-authored text must not mutate channel membership: a model casually mentioning @Reviewer should not
-  // pull that agent into a channel and start a reply loop.
+  // A resolvable mention is an active work edge for human and agent senders. The reach pool still preserves
+  // the channel boundary: public spaces may pull in workspace peers; private/DM spaces never pull outsiders.
   if (ch && canAutoJoinMentionedMembers(opts.senderType) && opts.content.includes("@")) {
     const joined = await autoJoinMentioned(opts.serverId, opts.channelId, opts.content, members, await mentionAutoJoinPool(opts.serverId, ch), seq - 1);
     if (joined.length) members = [...members, ...joined];

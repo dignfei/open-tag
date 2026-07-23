@@ -23,26 +23,31 @@ granted a slot for the triggering message.
    rules. An unmentioned agent is not hidden from a message merely to keep it quiet.
 2. A reply is bound to one triggering message. The server rejects a response without
    an active grant for that message, including freshness-draft submission.
-3. A trigger has a budget of one primary and at most one supplemental reply. The
-   database, rather than timing or prompt compliance, enforces both unique slots.
-4. Direct attention establishes priority, not semantic truth. A single explicit
-   mention, a one-agent DM, or a task assignment receives the provisional primary
-   grant. It must accept, delegate, or abstain before publication.
+3. The first explicit mention receives the primary grant. Every later explicit
+   mention receives an independent directed grant. Each named agent may publish at
+   most once for the trigger; it must accept or choose no action first.
+4. Direct attention establishes eligibility, not an obligation to answer. A directed
+   contributor accepts only when it owns a distinct requested slice; copying an agent
+   or overlapping another answer should end in `no_action`.
 5. An observer can submit an intent without speaking publicly. Intent reasons are
    `ownership`, `better_fit`, `handoff`, `correction`, `blocker`, `new_evidence`, or
    `unique_expertise`.
 6. `better_fit` never creates a second public answer by itself. It remains pending
-   until the primary owner delegates or abstains. `correction`, `blocker`, and
-   `new_evidence` may receive the single supplemental slot; generic agreement and
-   role overlap do not.
+   until the primary owner delegates or abstains. `correction`, `blocker`,
+   `new_evidence`, and `unique_expertise` may receive the single supplemental slot;
+   generic agreement and role overlap do not.
 7. If there is no directed owner, the first valid reply request obtains the primary
    slot atomically. This is intentionally deterministic, not a claim that the server
    understands semantic relevance. The model judges relevance; the harness limits and
    audits side effects.
-8. Agent-authored ambient chatter does not recursively wake every peer. Existing
-   anti-loop wake policy remains in force, while later inbox checks still expose the
-   persisted channel history.
-9. Primary publication waits up to `OPEN_TAG_REPLY_SETTLE_MS` (default 5000 ms) from
+8. Agent-authored explicit mentions are active work edges and receive the same directed
+   treatment within the channel's existing access boundary. Agent-authored ambient
+   chatter does not recursively wake peers.
+9. A task keeps one primary coordinator/assignee while named directed contributors
+   publish their scoped results without claiming or mutating the parent. Only the
+   active primary may claim, assign, or update it. All trigger-bound task replies are
+   authorized only in the task thread, never the parent channel.
+10. Primary publication waits up to `OPEN_TAG_REPLY_SETTLE_MS` (default 5000 ms) from
    trigger creation for concurrently awakened observers to decide. A pending
    `better_fit`/handoff request blocks publication and privately wakes the owner;
    unreachable or silent observers stop blocking when the bounded window expires.
@@ -67,6 +72,21 @@ The system does not silently infer that `@codex` was a typo. Doing so would let 
 free-form role description override an explicit human address. Transfer requires a
 structured intent plus an explicit delegate/abstain transition, leaving an audit trail.
 
+## Explicit multi-mention behavior
+
+Suppose a human writes `@codex cover backend; @codex2 cover frontend`.
+
+| Recipient | Grant | Valid result |
+|---|---|---|
+| first mention `codex` | `primary` | accept and publish the backend slice; or transfer/abstain |
+| later mention `codex2` | `directed` | accept and publish the frontend slice; or `no_action` if copied/redundant |
+| unmentioned observer | none | `no_action`, or request the single supplemental for a concrete eligible reason |
+
+Primary is the coordination/Task-ownership role, not an exclusive public-reply lock.
+The harness cannot infer whether two natural-language assignments overlap, so the
+explicit mention establishes eligibility and each agent judges whether its slice is
+actually distinct.
+
 ## Persisted model
 
 `agent_message_decisions` has one row per `(message_id, agent_id)`:
@@ -74,15 +94,16 @@ structured intent plus an explicit delegate/abstain transition, leaving an audit
 - ownership: `server_id`, `channel_id`, `message_id`, `agent_id`
 - observation: `attention` (`direct|dm|assigned|ambient`), `observed_at`
 - decision: `decision`, `reason_code`, `summary`, `decided_at`
-- grant: `grant_slot` (`primary|supplemental`), `grant_status`
+- grant: `grant_slot` (`primary|directed|supplemental`), `grant_status`
   (`none|active|publishing|released|consumed`), `granted_at`
 - transfer/publication: `delegated_by_agent_id`, `reply_message_id`,
   `published_at`, `owner_notified_at`, `grant_notified_at`, `created_at`, `updated_at`
 
-Partial unique indexes reserve at most one non-released row for each message and slot,
-and `reply_message_id` is unique. The server derives workspace and channel ownership
-from the authenticated agent and stored trigger; it never trusts client-supplied tenant
-or channel ids.
+Partial unique indexes reserve at most one non-released primary and supplemental.
+The `(message_id, agent_id)` decision key bounds directed grants, while a persisted
+`(reply_to_message_id, sender_id)` unique index makes every grant kind one-shot per
+agent. The server derives workspace and canonical reply target from the authenticated
+agent and stored trigger; it never trusts client-supplied tenant or channel ids.
 
 ## Agent protocol
 
@@ -91,6 +112,7 @@ observed idempotently, and renders coordination metadata in the message header:
 
 ```text
 [target=#all msg=1234abcd attention=direct decision=pending grant=primary ...]
+[target=#all msg=1234abcd attention=direct decision=pending grant=directed ...]
 ```
 
 It also returns private, content-free coordination events. A pending better-fit request
@@ -108,12 +130,13 @@ open-tag message decide --message-id <id> --decision abstain
 open-tag message send --reply-to <id> --target <target>
 ```
 
-`message send` validates access to both target and trigger, requires their channel to
-match, and atomically reserves the authenticated agent's active grant before creating
-the reply. The persisted message has a second unique `(reply_to_message_id,
-reply_grant_slot)` guard, so concurrent retries cannot create a duplicate even if a
-process fails between insert and decision finalization. An ordinary insert failure
-releases the in-process reservation; successful publication consumes and links it.
+`message send` validates access to both target and trigger and atomically reserves the
+authenticated agent's active grant before creating the reply. The canonical target is
+the trigger channel for normal messages and the trigger's thread for tasks. Persisted
+primary/supplemental slot uniqueness plus `(reply_to_message_id, sender_id)` prevents
+duplicate publication even if a process fails between insert and decision finalization.
+An ordinary insert failure releases the reservation; successful publication consumes
+and links it.
 
 If the control plane confirms that the provisional primary cannot be started or
 delivered to, it releases that grant immediately. This is different from a semantic
@@ -124,8 +147,10 @@ recipient can reacquire later after reconnecting if no teammate has taken the sl
 
 The hard grant requirement applies when an agent has a coordination record for the
 current inbound message. Independent agent-originated workflow actions remain separate:
-task creation/update/claim, reactions, action proposals, and attachment upload keep
-their existing authorization paths. Plain unbound chat publication is rejected while
+task creation, reactions, action proposals, and attachment upload keep their existing
+authorization paths. Task claim, assign, and update additionally respect an active
+primary coordinator; directed contributors cannot convert or mutate that parent.
+Plain unbound chat publication is rejected while
 an actionable coordination record is outstanding; this prevents omitting `--reply-to`
 as a bypass without turning task APIs into chat-reply APIs.
 
@@ -133,16 +158,20 @@ as a bypass without turning task APIs into chat-reply APIs.
 
 The implementation is complete only when all of these are demonstrated:
 
-- directed, DM, task-assigned, ambient, thread, and multi-mention cases;
+- primary, directed, DM, task-assigned, ambient, thread, and multi-mention cases;
 - every eligible recipient gets a row and `message check` records `observed_at`;
 - ungranted and wrong-channel sends return `409` without creating a message;
 - `--send-draft` cannot bypass reply authorization;
 - accept, delegate, abstain/promote, no-action, and supplemental flows;
 - pre-accept publication and publication with pending transfer requests are rejected;
 - owner-request and transferred-grant private wakeups are delivered exactly once;
-- concurrent primary requests and concurrent sends create at most one result;
+- concurrent primary/supplemental requests stay singular and each directed sender
+  creates at most one result;
 - reconnect/catch-up does not duplicate recipient rows or grants;
-- agent-authored ambient messages do not create recursive wake/reply loops;
-- an isolated live stack with three real agents shows all three observed/decided and
-  only the granted agent published;
+- agent-authored explicit mentions wake the named teammate while unmentioned agent
+  chatter remains ambient; literal/quoted handles are still active mentions (I91);
+- a task's parent channel rejects replies while all named contributions publish in its
+  thread and only the primary coordinator can claim, assign, or update it;
+- an isolated live stack with three real agents shows every recipient observed/decided,
+  every accepted explicit mention published once, and ambient duplication stayed silent;
 - the daemon standing prompt remains runtime-agnostic.

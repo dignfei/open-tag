@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, ne, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { evaluateReplyIntent, type ReplyReason, type ReplySlot } from "./replyCoordinationPolicy.js";
 
@@ -30,21 +30,40 @@ export async function ensureReplyRecipients(o: {
     attention: r.attention,
   }))).onConflictDoNothing();
 
-  const directed = o.recipients.find((r) => r.attention !== "ambient");
-  if (!directed) return;
-  try {
-    await db.update(schema.agentMessageDecisions).set({
-      grantSlot: "primary",
-      grantStatus: "active",
-      grantedAt: new Date(),
-      updatedAt: new Date(),
-    }).where(and(
+  const directed = o.recipients.filter((r) => r.attention !== "ambient");
+  if (!directed.length) return;
+  const existingPrimary = (await db.select({ agentId: schema.agentMessageDecisions.agentId })
+    .from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, o.messageId),
-      eq(schema.agentMessageDecisions.agentId, directed.agentId),
-      eq(schema.agentMessageDecisions.grantStatus, "none"),
-    ));
-  } catch (e) {
-    if (conflictCode(e) !== "23505") throw e;
+      eq(schema.agentMessageDecisions.grantSlot, "primary"),
+    )).limit(1))[0];
+  let primaryAssigned = !!existingPrimary;
+  for (const recipient of directed) {
+    let slot: ReplySlot = primaryAssigned ? "directed" : "primary";
+    try {
+      const updated = await db.update(schema.agentMessageDecisions).set({
+        grantSlot: slot,
+        grantStatus: "active",
+        grantedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(schema.agentMessageDecisions.messageId, o.messageId),
+        eq(schema.agentMessageDecisions.agentId, recipient.agentId),
+        eq(schema.agentMessageDecisions.grantStatus, "none"),
+      )).returning({ agentId: schema.agentMessageDecisions.agentId });
+      if (updated.length && slot === "primary") primaryAssigned = true;
+    } catch (e) {
+      if (conflictCode(e) !== "23505" || slot !== "primary") throw e;
+      primaryAssigned = true;
+      slot = "directed";
+      await db.update(schema.agentMessageDecisions).set({
+        grantSlot: slot, grantStatus: "active", grantedAt: new Date(), updatedAt: new Date(),
+      }).where(and(
+        eq(schema.agentMessageDecisions.messageId, o.messageId),
+        eq(schema.agentMessageDecisions.agentId, recipient.agentId),
+        eq(schema.agentMessageDecisions.grantStatus, "none"),
+      ));
+    }
   }
 }
 
@@ -151,7 +170,12 @@ export async function decideReply(o: {
   const now = new Date();
 
   if (o.decision === "accept") {
-    if (row.grantSlot !== "primary" || row.grantStatus !== "active") return { ok: false, code: "NOT_PRIMARY_OWNER" };
+    if ((row.grantSlot !== "primary" && row.grantSlot !== "directed") || row.grantStatus !== "active") return { ok: false, code: "NOT_PRIMARY_OWNER" };
+    if (row.grantSlot === "directed") {
+      const [updated] = await db.update(schema.agentMessageDecisions).set({ decision: "accepted", decidedAt: now, updatedAt: now })
+        .where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId))).returning();
+      return { ok: true, row: updated! };
+    }
     return db.transaction(async (tx) => {
       const [updated] = await tx.update(schema.agentMessageDecisions).set({ decision: "accepted", decidedAt: now, updatedAt: now })
         .where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId))).returning();
@@ -195,9 +219,10 @@ export async function decideReply(o: {
   if (o.decision === "no_action" || o.decision === "abstain") {
     const nextDecision = o.decision === "no_action" ? "no_action" : "abstained";
     const ownedPrimary = row.grantSlot === "primary" && row.grantStatus === "active";
+    const ownedGrant = row.grantStatus === "active";
     const [updated] = await db.update(schema.agentMessageDecisions).set({
       decision: nextDecision,
-      grantStatus: ownedPrimary ? "released" : row.grantStatus,
+      grantStatus: ownedGrant ? "released" : row.grantStatus,
       decidedAt: now,
       updatedAt: now,
     }).where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId))).returning();
@@ -287,7 +312,9 @@ export async function reserveReplyGrant(o: { serverId: string; agentId: string; 
     eq(schema.agentMessageDecisions.messageId, o.messageId),
     eq(schema.agentMessageDecisions.agentId, o.agentId),
   )))[0];
-  if (current?.grantSlot === "primary" && current.attention !== "ambient" && current.decision !== "accepted" && current.decision !== "requested") {
+  const targetChannelId = await canonicalReplyChannelId(o.messageId);
+  if (targetChannelId !== o.channelId) return { ok: false, code: "REPLY_TARGET_MISMATCH" };
+  if (current?.grantStatus === "active" && current.attention !== "ambient" && current.decision !== "accepted" && current.decision !== "requested") {
     return { ok: false, code: "REPLY_DECISION_REQUIRED" };
   }
   if (current?.grantSlot === "primary" && await waitForReplySettlement(o.messageId, o.agentId) === "coordination_required") {
@@ -295,7 +322,6 @@ export async function reserveReplyGrant(o: { serverId: string; agentId: string; 
   }
   const [reserved] = await db.update(schema.agentMessageDecisions).set({ grantStatus: "publishing", updatedAt: new Date() }).where(and(
     eq(schema.agentMessageDecisions.serverId, o.serverId),
-    eq(schema.agentMessageDecisions.channelId, o.channelId),
     eq(schema.agentMessageDecisions.messageId, o.messageId),
     eq(schema.agentMessageDecisions.agentId, o.agentId),
     eq(schema.agentMessageDecisions.grantStatus, "active"),
@@ -312,14 +338,13 @@ export async function reserveReplyGrant(o: { serverId: string; agentId: string; 
       return { ok: false, code: "REPLY_COORDINATION_REQUIRED" };
     }
   }
-  if (reserved?.slot === "primary" || reserved?.slot === "supplemental") return { ok: true, slot: reserved.slot };
+  if (reserved?.slot === "primary" || reserved?.slot === "directed" || reserved?.slot === "supplemental") return { ok: true, slot: reserved.slot };
   const row = (await db.select().from(schema.agentMessageDecisions).where(and(
     eq(schema.agentMessageDecisions.serverId, o.serverId),
     eq(schema.agentMessageDecisions.messageId, o.messageId),
     eq(schema.agentMessageDecisions.agentId, o.agentId),
   )))[0];
   if (!row) return { ok: false, code: "REPLY_NOT_GRANTED" };
-  if (row.channelId !== o.channelId) return { ok: false, code: "REPLY_TARGET_MISMATCH" };
   if (row.grantStatus === "consumed" || row.grantStatus === "publishing") return { ok: false, code: "REPLY_GRANT_CONSUMED" };
   return { ok: false, code: "REPLY_NOT_GRANTED" };
 }
@@ -333,9 +358,9 @@ export async function checkReplyGrant(o: { serverId: string; agentId: string; me
     eq(schema.agentMessageDecisions.agentId, o.agentId),
   )))[0];
   if (!row) return { ok: false, code: "REPLY_NOT_GRANTED" };
-  if (row.channelId !== o.channelId) return { ok: false, code: "REPLY_TARGET_MISMATCH" };
+  if (await canonicalReplyChannelId(o.messageId) !== o.channelId) return { ok: false, code: "REPLY_TARGET_MISMATCH" };
   if (row.grantStatus === "consumed" || row.grantStatus === "publishing") return { ok: false, code: "REPLY_GRANT_CONSUMED" };
-  if (row.grantStatus === "active" && (row.grantSlot === "primary" || row.grantSlot === "supplemental")) return { ok: true, slot: row.grantSlot };
+  if (row.grantStatus === "active" && (row.grantSlot === "primary" || row.grantSlot === "directed" || row.grantSlot === "supplemental")) return { ok: true, slot: row.grantSlot };
   return { ok: false, code: "REPLY_NOT_GRANTED" };
 }
 
@@ -359,9 +384,13 @@ export async function releaseReplyReservation(messageId: string, agentId: string
 }
 
 export async function hasOutstandingReplyDecision(agentId: string, channelId: string): Promise<boolean> {
-  const row = (await db.select({ messageId: schema.agentMessageDecisions.messageId }).from(schema.agentMessageDecisions).where(and(
+  const row = (await db.select({ messageId: schema.agentMessageDecisions.messageId }).from(schema.agentMessageDecisions)
+    .innerJoin(schema.messages, eq(schema.messages.id, schema.agentMessageDecisions.messageId)).where(and(
     eq(schema.agentMessageDecisions.agentId, agentId),
-    eq(schema.agentMessageDecisions.channelId, channelId),
+    or(
+      eq(schema.agentMessageDecisions.channelId, channelId),
+      and(isNotNull(schema.messages.taskStatus), eq(schema.messages.threadId, channelId)),
+    ),
     ne(schema.agentMessageDecisions.grantStatus, "consumed"),
     or(
       inArray(schema.agentMessageDecisions.grantStatus, ["active", "publishing"]),
@@ -369,4 +398,24 @@ export async function hasOutstandingReplyDecision(agentId: string, channelId: st
     ),
   )).limit(1))[0];
   return !!row;
+}
+
+async function canonicalReplyChannelId(messageId: string): Promise<string | null> {
+  const trigger = (await db.select({
+    channelId: schema.messages.channelId,
+    threadId: schema.messages.threadId,
+    taskStatus: schema.messages.taskStatus,
+  }).from(schema.messages).where(eq(schema.messages.id, messageId)))[0];
+  if (!trigger) return null;
+  return trigger.taskStatus && trigger.threadId ? trigger.threadId : trigger.channelId;
+}
+
+export async function canAgentManageCoordinatedTask(messageId: string, agentId: string): Promise<boolean> {
+  const owner = (await db.select({ agentId: schema.agentMessageDecisions.agentId })
+    .from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, messageId),
+      eq(schema.agentMessageDecisions.grantSlot, "primary"),
+      inArray(schema.agentMessageDecisions.grantStatus, ["active", "publishing", "consumed"]),
+    )).limit(1))[0];
+  return !owner || owner.agentId === agentId;
 }

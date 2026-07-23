@@ -28,7 +28,7 @@
   "scripts": {
     "infra": "docker compose up -d",
     "infra:down": "docker compose down",
-    "db:push": "drizzle-kit push",
+    "db:push": "node scripts/migrate-reply-coordination-directed.mjs && drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "seed": "tsx src/db/seed.ts",
     "seed:dev": "tsx src/db/seed-dev.ts",
@@ -40,7 +40,7 @@
     "stop": "pkill -f 'src/server/index.ts'; pkill -f 'src/daemon/index.ts'; pkill -f 'bin/vite'; true",
     "start:prod": "ENV_FILE=.env.prod tsx src/server/index.ts",
     "daemon:prod": "set -a && . ./.env.prod && set +a && ENV_FILE=.env.prod tsx src/daemon/index.ts --api-key \"$DAEMON_BOOTSTRAP_KEY\"",
-    "db:push:prod": "set -a && . ./.env.prod && set +a && drizzle-kit push",
+    "db:push:prod": "set -a && . ./.env.prod && set +a && npm run db:push",
     "seed:prod": "ENV_FILE=.env.prod tsx src/db/seed.ts",
     "stop:prod": "lsof -ti tcp:7788 -sTCP:LISTEN | xargs kill 2>/dev/null; true",
     "prod:up": "bash scripts/prod-up.sh",

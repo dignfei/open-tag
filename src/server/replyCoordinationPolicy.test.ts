@@ -15,14 +15,14 @@ test("ambient first valid intent gets the primary slot", () => {
   });
 });
 
-test("only evidence-bearing reasons can get the supplemental slot", () => {
-  for (const reason of ["correction", "blocker", "new_evidence"] as const) {
+test("evidence-bearing and unique-expertise reasons can get the supplemental slot", () => {
+  for (const reason of ["correction", "blocker", "new_evidence", "unique_expertise"] as const) {
     assert.deepEqual(evaluateReplyIntent({ reason, primaryState: "active", supplementalTaken: false }), {
       outcome: "grant",
       slot: "supplemental",
     });
   }
-  for (const reason of ["ownership", "handoff", "unique_expertise"] as const) {
+  for (const reason of ["ownership", "handoff"] as const) {
     assert.deepEqual(evaluateReplyIntent({ reason, primaryState: "active", supplementalTaken: false }), {
       outcome: "deny",
       code: "PRIMARY_ALREADY_ASSIGNED",

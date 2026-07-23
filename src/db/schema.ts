@@ -139,7 +139,7 @@ export const messages = pgTable("messages", {
   taskCompletedAt: timestamp("task_completed_at", { withTimezone: true }),
   searchText: text("search_text"),                // source text for full-text search (GIN to_tsvector index to be added later)
   replyToMessageId: uuid("reply_to_message_id"),  // agent reply authorization trigger; null for independent messages
-  replyGrantSlot: text("reply_grant_slot"),       // primary | supplemental; paired with replyToMessageId
+  replyGrantSlot: text("reply_grant_slot"),       // primary | directed | supplemental; paired with replyToMessageId
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -148,8 +148,10 @@ export const messages = pgTable("messages", {
   // Agents cite 6-8 char short-id prefixes (core.ts resolveIdOrPrefix does `id::text LIKE 'prefix%'`);
   // the uuid pkey btree can't serve a text-cast prefix match, so without this the lookup is a seq scan.
   idTextPrefix: index("messages_id_text_prefix_idx").using("btree", sql`(${t.id}::text) text_pattern_ops`),
-  replySlotUniq: uniqueIndex("messages_reply_slot_uniq").on(t.replyToMessageId, t.replyGrantSlot)
-    .where(sql`${t.replyToMessageId} is not null and ${t.replyGrantSlot} is not null`),
+  replySlotUniq: uniqueIndex("messages_reply_slot_budget_uniq").on(t.replyToMessageId, t.replyGrantSlot)
+    .where(sql`${t.replyToMessageId} is not null and ${t.replyGrantSlot} in ('primary', 'supplemental')`),
+  replyAgentUniq: uniqueIndex("messages_reply_agent_grant_uniq").on(t.replyToMessageId, t.senderId)
+    .where(sql`${t.replyToMessageId} is not null and ${t.replyGrantSlot} is not null and ${t.senderId} is not null`),
 }));
 
 // @mentions: separate table for efficient "messages that mention me = inbox" queries + frontend highlighting
@@ -164,7 +166,8 @@ export const messageMentions = pgTable("message_mentions", {
 }));
 
 // One auditable observe/decide/grant row per agent recipient of an inbound message.
-// Slot uniqueness is the server-side reply budget: one primary and one supplemental at most.
+// Slot uniqueness is the reply budget: one primary and one supplemental at most.
+// Directed grants are independently bounded by the (messageId, agentId) primary key.
 export const agentMessageDecisions = pgTable("agent_message_decisions", {
   messageId: uuid("message_id").notNull().references(() => messages.id),
   agentId: uuid("agent_id").notNull().references(() => agents.id),
@@ -176,7 +179,7 @@ export const agentMessageDecisions = pgTable("agent_message_decisions", {
   reasonCode: text("reason_code"),
   summary: text("summary"),
   decidedAt: timestamp("decided_at", { withTimezone: true }),
-  grantSlot: text("grant_slot"),                 // primary | supplemental
+  grantSlot: text("grant_slot"),                 // primary | directed | supplemental
   grantStatus: text("grant_status").default("none").notNull(), // none | active | publishing | released | consumed
   grantedAt: timestamp("granted_at", { withTimezone: true }),
   delegatedByAgentId: uuid("delegated_by_agent_id").references(() => agents.id),
@@ -189,8 +192,8 @@ export const agentMessageDecisions = pgTable("agent_message_decisions", {
 }, (t) => ({
   pk: primaryKey({ columns: [t.messageId, t.agentId] }),
   byAgent: index("agent_message_decisions_agent_idx").on(t.agentId, t.createdAt),
-  slotUniq: uniqueIndex("agent_message_decisions_slot_uniq").on(t.messageId, t.grantSlot)
-    .where(sql`${t.grantSlot} is not null and ${t.grantStatus} in ('active', 'publishing', 'consumed')`),
+  slotUniq: uniqueIndex("agent_message_decisions_slot_budget_uniq").on(t.messageId, t.grantSlot)
+    .where(sql`${t.grantSlot} in ('primary', 'supplemental') and ${t.grantStatus} in ('active', 'publishing', 'consumed')`),
   replyUniq: uniqueIndex("agent_message_decisions_reply_uniq").on(t.replyMessageId)
     .where(sql`${t.replyMessageId} is not null`),
 }));

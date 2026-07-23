@@ -101,7 +101,7 @@ export function hermesBridgeDecision(stdout: string, state: TurnState): BridgeDe
   if (!state.messageId) return { ok: false, reason: "no-reply-trigger" };
   const cleaned = cleanHermesStdout(stdout);
   if (!cleaned.ok) return cleaned;
-  return { ok: true, target: state.target, content: cleaned.content, replyTo: state.messageId, hasGrant: state.grant === "primary" || state.grant === "supplemental" };
+  return { ok: true, target: state.target, content: cleaned.content, replyTo: state.messageId, hasGrant: state.grant === "primary" || state.grant === "directed" || state.grant === "supplemental" };
 }
 
 async function responseJson(res: Response): Promise<any> {

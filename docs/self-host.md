@@ -88,7 +88,9 @@ docker compose logs app --tail=50
 
 The server is now on port **7788** (default) or `${APP_PORT}` if you overrode it.
 
-> **Schema migration safety**: the entrypoint runs `drizzle-kit push` *without* `--force`.
+> **Schema migration safety**: the entrypoint runs `npm run db:push`, which first applies
+> the idempotent reply-coordination partial-index migration and then runs `drizzle-kit push`
+> *without* `--force`.
 > Additive-only migrations (the normal case) are applied automatically. If a future version
 > requires a destructive migration (dropping a column or table), drizzle-kit will detect
 > that stdin is not a TTY and exit with an error — causing the container to fail rather than

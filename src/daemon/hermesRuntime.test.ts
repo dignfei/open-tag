@@ -115,6 +115,9 @@ test("Hermes final response bridge requires a checked reply trigger and filters 
     ok: false,
     reason: "no-reply-trigger",
   });
+  assert.equal(hermesBridgeDecision("My assigned slice.", parseHermesTurnEvents(JSON.stringify({
+    type: "check", target: "#all", count: 1, messageId: "5678abcd", grant: "directed",
+  }))).ok, true);
   assert.equal(hermesBridgeDecision("Error: provider rejected the request", checked).ok, false);
   assert.equal(hermesBridgeDecision("┊ review diff\na/MEMORY.md → b/MEMORY.md\n@@ -1 +1", checked).ok, false);
 });

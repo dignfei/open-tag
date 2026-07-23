@@ -8,7 +8,8 @@ import { createMessage, resolveTarget, channelMembers, addChannelMembers, addRea
 import { agentHasScope } from "./scopes.js";
 import { parseUpload } from "./attachments.js";
 import { readObject } from "./storage.js";
-import { checkReplyGrant, claimReplyCoordination, coordinationHeader, decideReply, ensureReplyRecipients, finishReplyPublication, hasOutstandingReplyDecision, markReplyMessagesObserved, releaseReplyReservation, reserveReplyGrant } from "./replyCoordination.js";
+import { canAgentManageCoordinatedTask, checkReplyGrant, claimReplyCoordination, coordinationHeader, decideReply, ensureReplyRecipients, finishReplyPublication, hasOutstandingReplyDecision, markReplyMessagesObserved, releaseReplyReservation, reserveReplyGrant } from "./replyCoordination.js";
+import type { ReplySlot } from "./replyCoordinationPolicy.js";
 import { validateDecisionInput } from "./replyCoordinationPolicy.js";
 
 // Freshness-hold draft buffer (prevents agent↔agent duplicate replies): when the agent sends
@@ -201,7 +202,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       return (sendErr(res, 409, "reply context required", { code: "REPLY_CONTEXT_REQUIRED" }), true);
     }
     const post = async (content: string, attachmentIds: string[], triggerId?: string) => {
-      let slot: "primary" | "supplemental" | undefined;
+      let slot: ReplySlot | undefined;
       if (triggerId) {
         const reserved = await reserveReplyGrant({ serverId, agentId: agent.id, messageId: triggerId, channelId: tgt.channelId });
         if (!reserved.ok) return (sendErr(res, 409, "reply not granted", { code: reserved.code }), true);
@@ -375,6 +376,9 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       mid = await resolveMessageId(serverId, b.messageId, agent.id); // Tolerates 8-character short id
     }
     if (!mid) return (sendErr(res, 404, "task not found"), true);
+    if (!await canAgentManageCoordinatedTask(mid, agent.id)) {
+      return (sendErr(res, 409, "task reserved for its primary coordinator", { code: "TASK_RESERVED_FOR_PRIMARY" }), true);
+    }
     await ensureTaskForAgent(mid); // claiming a plain message converts it to a task first (so it gets a number), then claims
     const r = await claimTask(serverId, mid, "agent", agent.id); // Atomic claim: returns null if already taken
     if (!r) return (sendErr(res, 409, "already claimed", { code: "CLAIM_FAILED" }), true);
@@ -397,6 +401,9 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       mid = await resolveMessageId(serverId, b.messageId, agent.id);
     }
     if (!mid) return (sendErr(res, 404, "message not found"), true);
+    if (!await canAgentManageCoordinatedTask(mid, agent.id)) {
+      return (sendErr(res, 409, "task reserved for its primary coordinator", { code: "TASK_RESERVED_FOR_PRIMARY" }), true);
+    }
     if (!(TASK_STATUSES as readonly string[]).includes(String(b.status))) return (sendErr(res, 400, `valid status is required (${TASK_STATUSES.join(", ")})`), true);
     await ensureTaskForAgent(mid); // updating the status of a plain message converts it to a task first (so it gets a number), then sets status
     // Reuse human-side setTaskStatus: done/closed writes completedAt + emits task:updated socket
@@ -428,6 +435,9 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       mid = await resolveMessageId(serverId, b.messageId, agent.id);
     }
     if (!mid) return (sendErr(res, 404, "task not found"), true);
+    if (!await canAgentManageCoordinatedTask(mid, agent.id)) {
+      return (sendErr(res, 409, "task reserved for its primary coordinator", { code: "TASK_RESERVED_FOR_PRIMARY" }), true);
+    }
 
     const assigned = await assignTask(serverId, mid, targetAgent.id, { type: "agent", id: agent.id });
     if (!assigned) return (sendErr(res, 404, "task not found"), true);
@@ -475,7 +485,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     if (!replyToMessageId && await hasOutstandingReplyDecision(agent.id, th.id)) {
       return (sendErr(res, 409, "reply context required", { code: "REPLY_CONTEXT_REQUIRED" }), true);
     }
-    let slot: "primary" | "supplemental" | undefined;
+    let slot: ReplySlot | undefined;
     if (replyToMessageId) {
       const reserved = await reserveReplyGrant({ serverId, agentId: agent.id, messageId: replyToMessageId, channelId: th.id });
       if (!reserved.ok) return (sendErr(res, 409, "reply not granted", { code: reserved.code }), true);

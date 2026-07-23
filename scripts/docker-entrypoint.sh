@@ -13,8 +13,8 @@
 #   Review the diff carefully before confirming. (Same procedure as docs/self-host.md.)
 set -e
 
-echo "[entrypoint] applying schema (drizzle-kit push, additive-safe)..."
-npx drizzle-kit push
+echo "[entrypoint] applying schema (explicit index migration + drizzle-kit push)..."
+npm run db:push
 
 echo "[entrypoint] seeding bootstrap data (idempotent — skips if the workspace already exists)..."
 npx tsx src/db/seed.ts

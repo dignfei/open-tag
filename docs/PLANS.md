@@ -23,7 +23,7 @@
   independent evaluator loop, scheduled doc-gardening. Done: `ARCHITECTURE.md` codemap, `docs/` skeleton,
   `CLAUDE.md` slimmed to an `AGENTS.md` import, git, `/doc-sync` skill (`.agents/skills/doc-sync/`).
 
-*(`docs/exec-plans/active/` is currently empty; completed plans live in `docs/exec-plans/completed/`.)*
+*(Completed plans live in `docs/exec-plans/completed/`.)*
 
 ## Completed slice history (index only)
 
@@ -34,6 +34,10 @@ their verified end state is recorded in `FEATURES.md`:
   grants constrain publication; mistaken mentions transfer through audited intent and private
   coordination. Contract: [`docs/reply-coordination.md`](./reply-coordination.md); evidence:
   [`docs/exec-plans/completed/reply-coordination.md`](./exec-plans/completed/reply-coordination.md).
+- **Directed reply coordination** — explicit mentions get independent one-shot grants,
+  Tasks retain one coordinator while named contributors publish in-thread, and active
+  agent-authored mentions remain work edges. Evidence:
+  [`docs/exec-plans/completed/directed-reply-coordination.md`](./exec-plans/completed/directed-reply-coordination.md).
 - **01 Agent communication loop + agent ↔ agent collaboration** ✅ (FEATURES P5)
 - **02 Saved Messages** ✅ (FEATURES P3)
 - **03 / 03b Tasks end-to-end + interaction rework** ✅ (FEATURES P4 — board move UX, layout toggle, DM tasks, handoff)

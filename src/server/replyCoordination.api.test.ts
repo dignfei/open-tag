@@ -73,11 +73,12 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     ...agents.map((a) => ({ channelId: channel!.id, memberType: "agent", memberId: a.id })),
   ]);
   const cleanup = async () => {
+    const channelIds = (await db.select({ id: schema.channels.id }).from(schema.channels).where(eq(schema.channels.serverId, server!.id))).map((c) => c.id);
     const ids = (await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.serverId, server!.id))).map((m) => m.id);
     await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.serverId, server!.id));
     if (ids.length) await db.delete(schema.messageMentions).where(inArray(schema.messageMentions.messageId, ids));
     await db.delete(schema.messages).where(eq(schema.messages.serverId, server!.id));
-    await db.delete(schema.channelMembers).where(eq(schema.channelMembers.channelId, channel!.id));
+    if (channelIds.length) await db.delete(schema.channelMembers).where(inArray(schema.channelMembers.channelId, channelIds));
     await db.delete(schema.channels).where(eq(schema.channels.serverId, server!.id));
     await db.delete(schema.agents).where(eq(schema.agents.serverId, server!.id));
     await db.delete(schema.machines).where(eq(schema.machines.serverId, server!.id));
@@ -170,6 +171,97 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     assert.equal(audit.length, 3);
     assert.equal(audit.every((r) => !!r.observedAt), true);
     assert.deepEqual(audit.map((r) => r.decision).sort(), ["delegated", "no_action", "published"]);
+
+    const multi = await api(live.base, "POST", "/api/messages", humanHeaders, {
+      channelId: channel!.id,
+      content: `separate answers @${tokens[0]!.name} backend and @${tokens[1]!.name} frontend`,
+    });
+    assert.equal(multi.status, 200, JSON.stringify(multi.body));
+    const multiId = multi.body.id as string;
+    const multiChecks = await Promise.all(agents.map((_, i) => api(live.base, "GET", "/agent-api/message/check", agentHeaders(i))));
+    const multiCoordination = multiChecks.map((c) => c.body.messages.find((m: any) => m.id === multiId)?.coordination);
+    assert.deepEqual(multiCoordination.map((c: any) => [c?.attention, c?.grantStatus, c?.grantSlot]), [
+      ["direct", "active", "primary"], ["direct", "active", "directed"], ["ambient", "none", null],
+    ]);
+    for (const i of [0, 1]) {
+      const accepted = await api(live.base, "POST", "/agent-api/message/decide", agentHeaders(i), { messageId: multiId, decision: "accept" });
+      assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+    }
+    const backend = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
+      target: `#${channel!.name}`, replyTo: multiId, content: `backend answer; @${tokens[2]!.name} verify this`,
+    });
+    assert.equal(backend.status, 200, JSON.stringify(backend.body));
+    await api(live.base, "GET", "/agent-api/message/check", agentHeaders(1));
+    const frontend = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), {
+      target: `#${channel!.name}`, replyTo: multiId, content: "frontend answer",
+    });
+    assert.equal(frontend.status, 200, JSON.stringify(frontend.body));
+    assert.equal(frontend.body.replySlot, "directed");
+    const multiReplies = await db.select().from(schema.messages).where(eq(schema.messages.replyToMessageId, multiId));
+    assert.deepEqual(multiReplies.map((m) => m.senderId).sort(), [agents[0]!.id, agents[1]!.id].sort());
+    const contributorConversion = await api(live.base, "POST", "/agent-api/task/claim", agentHeaders(1), { messageId: multiId });
+    assert.equal(contributorConversion.status, 409);
+    assert.equal(contributorConversion.body.code, "TASK_RESERVED_FOR_PRIMARY");
+    const contributorUpdateConversion = await api(live.base, "POST", "/agent-api/task/update", agentHeaders(1), { messageId: multiId, status: "done" });
+    assert.equal(contributorUpdateConversion.status, 409);
+    assert.equal(contributorUpdateConversion.body.code, "TASK_RESERVED_FOR_PRIMARY");
+    const stillPlain = (await db.select({ taskStatus: schema.messages.taskStatus }).from(schema.messages).where(eq(schema.messages.id, multiId)))[0];
+    assert.equal(stillPlain?.taskStatus, null);
+    const workerCheck = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(2));
+    const agentMention = workerCheck.body.messages.find((m: any) => m.id === backend.body.id)?.coordination;
+    assert.deepEqual([agentMention?.attention, agentMention?.grantSlot], ["direct", "primary"]);
+    await api(live.base, "POST", "/agent-api/message/decide", agentHeaders(2), { messageId: backend.body.id, decision: "no_action" });
+
+    const task = await api(live.base, "POST", "/api/messages", humanHeaders, {
+      channelId: channel!.id, asTask: true,
+      content: `split task @${tokens[0]!.name} backend and @${tokens[1]!.name} frontend`,
+    });
+    assert.equal(task.status, 200, JSON.stringify(task.body));
+    const taskId = task.body.id as string;
+    await Promise.all(agents.map((_, i) => api(live.base, "GET", "/agent-api/message/check", agentHeaders(i))));
+    const contributorClaim = await api(live.base, "POST", "/agent-api/task/claim", agentHeaders(1), { messageId: taskId });
+    assert.equal(contributorClaim.status, 409);
+    assert.equal(contributorClaim.body.code, "TASK_RESERVED_FOR_PRIMARY");
+    const contributorUpdate = await api(live.base, "POST", "/agent-api/task/update", agentHeaders(1), { messageId: taskId, status: "done" });
+    assert.equal(contributorUpdate.status, 409);
+    assert.equal(contributorUpdate.body.code, "TASK_RESERVED_FOR_PRIMARY");
+    const contributorAssign = await api(live.base, "POST", "/agent-api/task/assign", agentHeaders(1), { messageId: taskId, to: tokens[1]!.name });
+    assert.equal(contributorAssign.status, 409);
+    assert.equal(contributorAssign.body.code, "TASK_RESERVED_FOR_PRIMARY");
+    const ownerClaim = await api(live.base, "POST", "/agent-api/task/claim", agentHeaders(0), { messageId: taskId });
+    assert.equal(ownerClaim.status, 200, JSON.stringify(ownerClaim.body));
+    for (const i of [0, 1]) {
+      const accepted = await api(live.base, "POST", "/agent-api/message/decide", agentHeaders(i), { messageId: taskId, decision: "accept" });
+      assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+    }
+    const wrongTaskTarget = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
+      target: `#${channel!.name}`, replyTo: taskId, content: "wrong parent answer",
+    });
+    assert.equal(wrongTaskTarget.status, 409);
+    assert.equal(wrongTaskTarget.body.code, "REPLY_TARGET_MISMATCH");
+    const threadTarget = `thread:${taskId.slice(0, 8)}`;
+    const taskBackend = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
+      target: threadTarget, replyTo: taskId, content: "task backend result",
+    });
+    assert.equal(taskBackend.status, 200, JSON.stringify(taskBackend.body));
+    const taskFrontendAttempt = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), {
+      target: threadTarget, replyTo: taskId, content: "task frontend result",
+    });
+    assert.equal(taskFrontendAttempt.status, 200, JSON.stringify(taskFrontendAttempt.body));
+    const taskFrontend = taskFrontendAttempt.body.held
+      ? await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), { target: threadTarget, replyTo: taskId, sendDraft: true })
+      : taskFrontendAttempt;
+    assert.equal(taskFrontend.status, 200, JSON.stringify(taskFrontend.body));
+    assert.equal(taskFrontend.body.replySlot, "directed");
+    const taskRow = (await db.select().from(schema.messages).where(eq(schema.messages.id, taskId)))[0]!;
+    const taskThreadReplies = await db.select().from(schema.messages).where(and(
+      eq(schema.messages.channelId, taskRow.threadId!), eq(schema.messages.replyToMessageId, taskId),
+    ));
+    const taskParentReplies = await db.select().from(schema.messages).where(and(
+      eq(schema.messages.channelId, channel!.id), eq(schema.messages.replyToMessageId, taskId),
+    ));
+    assert.equal(taskThreadReplies.length, 2);
+    assert.equal(taskParentReplies.length, 0);
     assert.match(live.logs(), /message created/);
   } finally {
     daemonSocket?.close(); daemonSocket = null;
