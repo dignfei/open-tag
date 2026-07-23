@@ -529,6 +529,6 @@ The system uses **hairline + restrained drop shadow**. Flat surfaces float above
 
 ## Known Gaps
 
-- Animation timings (orb drift, hero entrance) out of scope. **Icon micro-interactions are an exception** — specified in [`docs/icon-motion.md`](./docs/icon-motion.md) and implemented by `web/src/iconMotion.css` (shared `--im-spring` overshoot curve, two-class `im` / `im-*` API).
+- Animation timings (orb drift, hero entrance) out of scope — the standing motion spec is [`docs/motion-charter.md`](./docs/motion-charter.md). **Icon micro-interactions** are specified in [`docs/icon-motion.md`](./docs/icon-motion.md) and implemented by `web/src/iconMotion.css` (`--im-spring`, a scoped charter exception; two-class `im` / `im-*` API).
 - In-product application surfaces only partially specified here; extend tokens as needed.
 - Form validation states beyond focus not fully specified.

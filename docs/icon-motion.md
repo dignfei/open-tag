@@ -31,8 +31,13 @@ motion 组件成本更高）。spring 手感用**单次过冲贝塞尔**近似�
 
 ```css
 --im-spring: cubic-bezier(0.34, 1.56, 0.64, 1);  /* ≈ spring(600, 25) */
---im-dur: 0.35s;
 ```
+
+**与动效宪法的关系**（[`docs/motion-charter.md`](./motion-charter.md)）：宪法红线禁
+bounce/elastic 曲线；图标 hover 微交互获**限定豁免**（宪法 §1.1）——`--im-spring` 与
+`--ease-*`/`--dur-*` 一起定义在 `styles.css :root`，**只许用于图标 hover/focus 反馈**，
+进场/切换/循环动效仍走 `--ease-quint`/`--ease-expo`。transition 时长直接复用宪法档位：
+`--dur-slow`（常规）/ `--dur-signature`（齿轮旋转）/ `--dur-fast`（按压反馈）。
 
 > 何时才值得上 JS/motion：需要**中断重定向**（hover 一半移出，spring 从当前速度弹回——CSS
 > transition 只会生硬反转）、magnetic 鼠标跟踪（L50-55）、AnimatePresence 式挂载/卸载动画。
@@ -68,7 +73,7 @@ motion 组件成本更高）。spring 手感用**单次过冲贝塞尔**近似�
   里：触屏无 sticky 态，减动效偏好整体关闭（这点比原站做得多）。
 - `:focus-visible` 镜像 hover（对应原站 onFocus/onBlur，L397-398）：键盘 Tab 到按钮同样触发动效。
 - 新图标选效果时**先问语义**（这个动作的动词是什么），语义没有明显动法就用 `im-pop`，
-  不要发明新变体；确要新增 → 必须复用 `--im-spring`/`--im-dur` token，并更新本文对照表。
+  不要发明新变体；确要新增 → 必须复用 `--im-spring` + 宪法时长档位（`--dur-*`），并更新本文对照表。
 
 ## 5. 双图标交换配方（`morph`，按需引入）
 
@@ -77,7 +82,7 @@ hover 装饰**，所以配方放这里、CSS 不预置（避免 dead code）。�
 
 ```css
 .im-swap { display: inline-grid; place-items: center; }
-.im-swap > * { grid-area: 1 / 1; transition: opacity .2s ease, transform var(--im-dur) var(--im-spring); }
+.im-swap > * { grid-area: 1 / 1; transition: opacity .2s ease, transform var(--dur-slow) var(--im-spring); }
 .im-swap > .off { opacity: 0; transform: scale(.5); }   /* L192: initial scale 0.5 + opacity 0 */
 ```
 

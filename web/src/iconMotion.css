@@ -24,13 +24,12 @@
    L41), behind prefers-reduced-motion, and :focus-visible mirrors hover for
    keyboard users (Amicro's onFocus, L397). State-driven swaps (copy→check)
    belong in app state, not here — recipe in docs/icon-motion.md §5.
-   ============================================================================ */
 
-:root {
-  /* ≈ spring(stiffness: 600, damping: 25): fast attack, single small overshoot */
-  --im-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --im-dur: 0.35s;
-}
+   Tokens ride the motion-charter system (styles.css :root): `--im-spring` is a
+   scoped charter exception (icon hover/focus feedback ONLY — see
+   docs/motion-charter.md §1); durations use the charter scale
+   (--dur-slow / --dur-signature / --dur-fast).
+   ============================================================================ */
 
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
   .im .im-pop,
@@ -38,12 +37,12 @@
   .im .im-tilt,
   .im .im-nudge-up,
   .im .im-fill {
-    transition: transform var(--im-dur) var(--im-spring), fill 0.25s ease;
+    transition: transform var(--dur-slow) var(--im-spring), fill 0.25s ease;
   }
 
   /* keyboard focus mirrors hover, like Amicro's onFocus/onBlur (L397-398) */
   .im:hover:not(:disabled) .im-pop, .im:focus-visible .im-pop { transform: scale(1.15); }
-  .im:hover:not(:disabled) .im-rotate, .im:focus-visible .im-rotate { transform: rotate(180deg); transition-duration: 0.45s; }
+  .im:hover:not(:disabled) .im-rotate, .im:focus-visible .im-rotate { transform: rotate(180deg); transition-duration: var(--dur-signature); }
   .im:hover:not(:disabled) .im-tilt, .im:focus-visible .im-tilt { transform: rotate(-12deg) scale(1.08); }
   .im:hover:not(:disabled) .im-nudge-up, .im:focus-visible .im-nudge-up { transform: translate(1.5px, -1.5px) scale(1.06); }
   .im:hover:not(:disabled) .im-fill, .im:focus-visible .im-fill { fill: currentColor; }
@@ -56,7 +55,7 @@
 
   /* Amicro whileTap scale .96 (L411), applied at the icon so button layout is untouched */
   .im:active:not(:disabled) .im-pop,
-  .im:active:not(:disabled) .im-nudge-up { transform: scale(0.9); transition-duration: 0.1s; }
+  .im:active:not(:disabled) .im-nudge-up { transform: scale(0.9); transition-duration: var(--dur-fast); }
 }
 
 /* keyframe ports — value-for-value from AnimatedButton.tsx */
