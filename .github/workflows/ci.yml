@@ -1,6 +1,6 @@
 name: CI
 
-# Keep types clean, tests green, and the web app buildable on every push / PR.
+# Keep types clean, tests green, dependency trees audited, and all shipped assets buildable on every push / PR.
 on:
   push:
     branches: [main]
@@ -28,6 +28,9 @@ jobs:
       - name: Install web deps
         run: npm ci --prefix web
 
+      - name: Install docs deps
+        run: npm ci --prefix docs-site
+
       - name: Typecheck (root + web)
         run: npm run typecheck
 
@@ -42,11 +45,14 @@ jobs:
         shell: bash
         run: npx tsx --test --test-force-exit test/*.unit.test.ts src/daemon/*.test.ts
 
-      - name: Security audit (prod deps, high+)
-        run: npm audit --omit=dev --audit-level=high
+      - name: Security audit (root + web + docs, high+)
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm audit --prefix web --audit-level=high
+          npm audit --prefix docs-site --audit-level=high
 
-      - name: Build web
-        run: npm run build --prefix web
+      - name: Build web + docs
+        run: npm run site:build
 
       - name: Build daemon package (@fancyboi999/open-tag-daemon bundle)
         run: npm run pkg:daemon:build
