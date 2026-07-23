@@ -1,7 +1,7 @@
 // daemon control plane: WS /daemon/connect?key= (ServerToMachine / MachineToServer)
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Server } from "node:http";
-import { and, desc, eq, notInArray, or } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { BOOTSTRAP_KEY, hashToken, safeEqual } from "./auth.js";
 import { registerDaemon, unregisterDaemon, resolveDaemonRequest, registerMachineConn, unregisterMachineConn, isCurrentMachineConn } from "./daemonHub.js";
@@ -10,6 +10,10 @@ import { createLogger } from "../log.js";
 import { MACHINE_REJECTED_CODE } from "../daemonProtocol.js";
 import { catchUpAgentsOnMachine } from "./reconnectCatchup.js";
 import { markMachineAgentsOffline } from "./machineLiveness.js";
+import { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog, startAgentActivityRun } from "./agentActivity.js";
+import { finalizeAgentActivityRun } from "./core.js";
+
+export { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog } from "./agentActivity.js";
 
 const log = createLogger("server:ws");
 
@@ -53,10 +57,17 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
       else if (msg.type === "agent:trajectory" && msg.agentId) {
         const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
         await publish(serverId!, { type: "trajectory", agentId: msg.agentId, name: a?.name, entries: msg.entries ?? [] });
-        for (const e of msg.entries ?? []) await logActivity(serverId!, msg.agentId, e); // persist to the activity log
+        const entries = [];
+        for (const e of msg.entries ?? []) {
+          const item = await logActivity(serverId!, msg.agentId, e, { channelId: msg.channelId, streamId: msg.streamId, runSeq: e.runSeq });
+          if (item) entries.push(item);
+        }
+        if (msg.channelId && msg.streamId && entries.length) await publish(serverId!, { type: "agent:reply", agentId: msg.agentId, channelId: msg.channelId, streamId: msg.streamId, name: a?.displayName ?? a?.name, op: "activity", entries });
       }
       else if (msg.type === "agent:reply" && msg.agentId && msg.channelId && msg.streamId) {
         const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
+        if (msg.op === "start") await startAgentActivityRun(serverId!, msg.agentId, msg.channelId, msg.streamId);
+        if (msg.op === "done" || msg.op === "error") await finalizeAgentActivityRun(serverId!, msg.agentId, msg.channelId, msg.streamId, msg.name ?? a?.displayName ?? a?.name ?? "Agent", msg.op === "error" ? "error" : "handled");
         await publish(serverId!, { type: "agent:reply", agentId: msg.agentId, channelId: msg.channelId, streamId: msg.streamId, name: msg.name ?? a?.displayName ?? a?.name, op: msg.op, text: msg.text ?? "" });
       }
       else if (msg.type === "pong" && machineId) {
@@ -141,31 +152,8 @@ async function onAgentUpdate(serverId: string, msg: any): Promise<void> {
   await db.update(schema.agents).set(patch).where(eq(schema.agents.id, msg.agentId));
   const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
   if (a) await publish(serverId, { type: "agent", id: a.id, name: a.name, status: a.status, activity: a.activity, detail: msg.detail ?? "" });
-  if (msg.type === "agent:activity") await logActivity(serverId, msg.agentId, { kind: "status", activity: msg.activity, detail: msg.detail }); // status goes into the activity log
-}
-
-// Per-agent retention cap for the activity log. Agents stream trajectory entries continuously, so this
-// table would otherwise grow unbounded; we keep only the newest ACTIVITY_LOG_CAP rows per agent (pruned on
-// insert). The read endpoint (GET /api/agents/:id/activity-log) already caps at 200, so 500 leaves headroom.
-// Trade-off (high-frequency inserts → a prune per insert) tracked in docs/tech-debt-tracker.md.
-export const ACTIVITY_LOG_CAP = 500;
-
-// Delete all but the newest ACTIVITY_LOG_CAP rows (by ts) for one agent. Uses the (agentId, ts) index.
-export async function pruneAgentActivityLog(agentId: string): Promise<void> {
-  const keep = db.select({ id: schema.agentActivityLog.id }).from(schema.agentActivityLog)
-    .where(eq(schema.agentActivityLog.agentId, agentId)).orderBy(desc(schema.agentActivityLog.ts)).limit(ACTIVITY_LOG_CAP);
-  await db.delete(schema.agentActivityLog).where(and(eq(schema.agentActivityLog.agentId, agentId), notInArray(schema.agentActivityLog.id, keep)));
-}
-
-// Persist activity to the DB (daemon-pushed status/trajectory entries → agent_activity_log, feeds the activity facet history + timeline)
-export async function logActivity(serverId: string, agentId: string, e: any): Promise<void> {
-  const kind = e.kind === "tool" ? "tool_start" : (e.kind || (e.toolName ? "tool_start" : "text"));
-  try {
-    await db.insert(schema.agentActivityLog).values({
-      serverId, agentId, ts: Date.now(), kind,
-      activity: e.activity ?? null, detail: e.detail ?? null, text: e.text ?? null,
-      toolName: e.toolName ?? null, toolInput: e.toolInput ?? null,
-    });
-    await pruneAgentActivityLog(agentId); // keep the table bounded per agent (newest ACTIVITY_LOG_CAP)
-  } catch { /* logging failure must not block */ }
+  if (msg.type === "agent:activity") {
+    const item = await logActivity(serverId, msg.agentId, { kind: "status", activity: msg.activity, detail: msg.detail, runSeq: msg.runSeq }, { channelId: msg.channelId, streamId: msg.streamId, runSeq: msg.runSeq });
+    if (item && msg.channelId && msg.streamId) await publish(serverId, { type: "agent:reply", agentId: msg.agentId, channelId: msg.channelId, streamId: msg.streamId, name: a?.displayName ?? a?.name, op: "activity", entries: [item] });
+  }
 }

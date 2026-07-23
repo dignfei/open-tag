@@ -1,7 +1,6 @@
 // Global state + API + socket.io event bus (React Context). Chat messages and traces are consumed by views via onEvent.
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { io, type Socket } from "socket.io-client";
-import { appendCapped, type TrajItem } from "./trajBuffer.ts";
 import { messageUnreadDelta, threadUnreadDelta } from "./threadUnread";
 import { initialAuthState, TOKEN_KEY, type AuthState } from "./routing.ts";
 
@@ -15,7 +14,8 @@ export interface Me { id: string; name: string; displayName?: string }
 export interface Att { id: string; filename: string; mimeType?: string; sizeBytes?: number }
 export interface Reaction { emoji: string; count: number; reactorIds: string[]; reactorNames: string[] }
 export interface ActionMeta { kind: string; state: "prepared" | "executed"; action: { type: string; name: string; description?: string | null; visibility?: string; initialHumans?: string[]; initialAgents?: string[]; requiredComputer?: string | null; suggestedComputer?: string | null }; executedByUserName?: string | null; result?: { kind: string; id: string; name: string } | null }
-export interface Msg { id: string; seq: number; channelId: string; senderType: string; senderId?: string | null; senderName: string; content: string; messageType?: string; actionMetadata?: ActionMeta | null; createdAt?: string; taskStatus?: string | null; taskNumber?: number | null; taskAssigneeType?: string | null; taskAssigneeId?: string | null; mentions?: { type?: string; id?: string; name: string }[]; attachments?: Att[]; reactions?: Reaction[] }
+export interface AgentActivityItem { timestamp: number; kind: string; activity?: string | null; detail?: string | null; text?: string | null; toolName?: string | null; toolInput?: string | null }
+export interface Msg { id: string; seq: number; channelId: string; senderType: string; senderId?: string | null; senderName: string; content: string; messageType?: string; actionMetadata?: ActionMeta | null; agentActivity?: AgentActivityItem[]; agentActivityStreamId?: string | null; agentActivityState?: string | null; createdAt?: string; taskStatus?: string | null; taskNumber?: number | null; taskAssigneeType?: string | null; taskAssigneeId?: string | null; mentions?: { type?: string; id?: string; name: string }[]; attachments?: Att[]; reactions?: Reaction[] }
 type Ev = { type: string; [k: string]: any };
 
 interface Store {
@@ -32,7 +32,6 @@ interface Store {
   visibleAgents: Agent[]; // agents minus system-seeded showcase demo agents — use for member rosters and every agent picker / @mention candidate list
   machines: Machine[]; humans: Human[];
   latestDaemonVersion: string;                                    // newest published daemon version (packages/daemon); online machines below it are flagged outdated in the system-alert center
-  traj: TrajItem[];                                               // global Agent Live Trace ring buffer (newest TRAJ_CAP entries); survives channel/DM switch, fed by agent:activity
   api: (m: string, p: string, b?: unknown) => Promise<any>;
   reload: () => Promise<void>;
   onEvent: (cb: (e: Ev) => void) => () => void;
@@ -81,7 +80,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [machines, setMachines] = useState<Machine[]>([]);
   const [latestDaemonVersion, setLatestDaemonVersion] = useState(""); // newest published daemon version from the machines endpoint; "" until first load (→ raises no outdated alert)
   const [humans, setHumans] = useState<Human[]>([]);
-  const [traj, setTraj] = useState<TrajItem[]>([]); // global live-trace feed: bounded ring buffer held here (not per Chat view) so it persists across channel/DM switches
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [agentPanelReq, setAgentPanelReq] = useState<string | null>(null); // cross-component signal: LiveAgentBar (sidebar) → Chat view opens the agent profile panel
   const [activeId, setActiveId] = useState(""); // id of the workspace to activate; changing it drives the activation effect (initial pick + every client-side switch)
@@ -264,7 +262,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setReady(false);
     sidRef.current = cur.id; setServerId(cur.id); setSlug(cur.slug || "open-tag"); setMyRole(cur.role || "member"); setCapabilities(cur.capabilities || {});
     setServerAvatar(cur.avatarUrl ? `${cur.avatarUrl}?token=${encodeURIComponent(tokenRef.current)}` : null);
-    setChannels([]); setDms([]); setUnread({}); setAgents([]); setMachines([]); setHumans([]); setTraj([]); setSavedIds(new Set()); setAgentPanelReq(null);
+    setChannels([]); setDms([]); setUnread({}); setAgents([]); setMachines([]); setHumans([]); setSavedIds(new Set()); setAgentPanelReq(null);
     subscribedRef.current = new Set(); // the previous workspace's view-subscriptions don't carry over
     sockRef.current = null; // the previous socket is closed by this effect's cleanup; drop the stale ref until the new one connects
     let lastSeq = 0;
@@ -311,16 +309,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       sock.on("agent:activity", (p: any) => {
         if (p?.entries) {
           dispatch({ type: "trajectory", agentId: p.agentId, name: p.name, entries: p.entries });
-          // Also accumulate into the global live-trace ring buffer (capped at TRAJ_CAP) so the panel keeps history across channel/DM switches. Mapping mirrors the panel's render shape.
-          setTraj((prev) => appendCapped(prev, (p.entries as any[]).map((x) => ({ name: p.name, tool: !!x.toolName, text: x.text || (x.toolName ? `${x.toolName}${x.toolInput ? " — " + x.toolInput : ""}` : "") || x.detail || "" }))));
         }
         else {
           setAgents((as) => as.map((a) => (a.id === p.agentId ? { ...a, status: p.status ?? a.status, activity: p.activity ?? a.activity, activityDetail: p.detail ?? a.activityDetail } : a))); // real-time status dot + activity text used by header and sidebar
-          // Leaving working/thinking ends this agent's turn — mark the live-trace buffer so the next
-          // fragment for the same agent starts a fresh group instead of running on from a finished turn.
-          if (p.activity && p.activity !== "working" && p.activity !== "thinking") {
-            setTraj((prev) => (prev.some((x) => x.name === p.name && !x.boundary) ? appendCapped(prev, [{ name: p.name, text: "", boundary: true }]) : prev));
-          }
           dispatch({ type: "agent", id: p.agentId, name: p.name, activity: p.activity, status: p.status, detail: p.detail });
         }
       });
@@ -353,6 +344,5 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Showcase demo agents (creatorType="system") stay in `agents` so #showcase history still resolves their
   // avatar/name/profile by id — but they are not real members, so every roster / picker uses `visibleAgents`.
   const visibleAgents = agents.filter((a) => a.creatorType !== "system");
-  return <Ctx.Provider value={{ ready, authState, serverId, slug, me, myRole, serverAvatar, servers, capabilities, createServer, switchServer, logout, uploadServerAvatar, uploadAgentAvatar, uploadUserAvatar, channels, dms, unread, agents, visibleAgents, machines, latestDaemonVersion, humans, traj, api, reload, onEvent, subscribeChannel, createChannel, markActionExecuted, createTasks, openDM, joinChannel, leaveChannel, markRead, uploadFiles, uploadOne, attachmentUrl, react, openThread, openAgentPanel, agentPanelReq, clearAgentPanelReq, savedIds, saveMsg, unsaveMsg, listSaved }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ ready, authState, serverId, slug, me, myRole, serverAvatar, servers, capabilities, createServer, switchServer, logout, uploadServerAvatar, uploadAgentAvatar, uploadUserAvatar, channels, dms, unread, agents, visibleAgents, machines, latestDaemonVersion, humans, api, reload, onEvent, subscribeChannel, createChannel, markActionExecuted, createTasks, openDM, joinChannel, leaveChannel, markRead, uploadFiles, uploadOne, attachmentUrl, react, openThread, openAgentPanel, agentPanelReq, clearAgentPanelReq, savedIds, saveMsg, unsaveMsg, listSaved }}>{children}</Ctx.Provider>;
 }
-

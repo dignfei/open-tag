@@ -14,36 +14,37 @@ function ruleBody(selector: string): string {
   return m[1]!;
 }
 
-test("member badge renders on a second header line while agent status text remains", () => {
+test("member badge stays on a second line while message run state stays at the right edge", () => {
   assert.match(chatSrc, /className="msg-subhead"/);
   assert.match(chatSrc, /isMember \? <div className="msg-subhead"><span className="member-badge">\{t\("chat\.memberBadge"\)\}<\/span><\/div> : null/);
-  assert.match(chatSrc, /const agActivity = agentActivityText\(ag\);/);
-  assert.match(chatSrc, /className=\{"msg-activity "\s*\+\s*agLive\}/);
   assert.match(chatSrc, /className="msg-role"/);
-  assert.doesNotMatch(chatSrc, /activityDetail\?\.\trim\(\)/, "message status badge should display activity/status, not runtime detail like hermes/xiaos");
+  assert.match(chatSrc, /function MessageActivityState\(\{ items, state \}/, "message headers should render activity from the message run");
+  assert.match(chatSrc, /const phase = agentRunPhase\(items, state\);/, "message state should derive its live phase from that message's Activity items");
+  assert.match(chatSrc, /phase === "thinking" \? t\("liveBar\.thinking"\)/, "thinking must remain distinct from working");
+  assert.doesNotMatch(chatSrc, /state === "running" \? "working"/, "running must not collapse every Activity phase into working");
+  assert.doesNotMatch(chatSrc, /className=\{"msg-agent-state " \+ agLive\}/, "historical messages must not inherit the agent's current global state");
   assert.doesNotMatch(chatSrc, /dmAgent\.activityDetail/, "DM header should also avoid runtime detail in the status label");
   assert.doesNotMatch(chatSrc, /<div className="msg-head">[\s\S]{0,700}\{isMember \? <span className="member-badge">[^<]*<\/span> : null\}/);
 });
 
-test("agent status badge lives in the header line, pinned to the right, not on its own subhead line", () => {
-  // anchor on the per-message `agActivity` computation — unique to the main channel row (the
-  // action-card and thread-panel rows have their own simpler header markup and don't call this)
-  const anchorIdx = chatSrc.indexOf("const agActivity = agentActivityText(ag);");
-  assert.ok(anchorIdx >= 0, "could not find the main message row's agActivity computation");
-  const window = chatSrc.slice(anchorIdx, anchorIdx + 8000);
+test("channel members control keeps its icon and label separated", () => {
+  const members = ruleBody(".chat-head>.joinbtn");
+  assert.match(members, /display\s*:\s*inline-flex\b/);
+  assert.match(members, /align-items\s*:\s*center\b/);
+  assert.match(members, /gap\s*:\s*6px\b/, `member icon and label need an explicit optical gap: ${members}`);
+});
 
-  const headBlock = /<div className="msg-head">[\s\S]{0,1000}?<\/div>/.exec(window)?.[0];
-  assert.ok(headBlock, `could not locate the .msg-head block after .msg-col: ${window}`);
-  assert.match(headBlock!, /className=\{"msg-activity "\s*\+\s*agLive\}/, `activity badge should render inside .msg-head: ${headBlock}`);
+test("unread thread bar keeps its own row without fading channel messages", () => {
+  const unreadBar = ruleBody(".unread-threads-bar");
+  assert.match(unreadBar, /width\s*:\s*100%\s*;/, `unread thread bar should span the channel pane: ${unreadBar}`);
+  assert.match(unreadBar, /flex\s*:\s*none\b/, `unread thread bar should reserve its own row: ${unreadBar}`);
+  assert.match(chatSrc, /<button className="unread-threads-bar"/);
+  assert.match(chatSrc, /<div key=\{cur\?\.id\} className="scroll ch-view-enter" ref=\{scrollRef\}/);
+  assert.doesNotMatch(chatSrc, /scroll-fade-top/, "the unread bar must not add a fade mask to the message scroller");
+  assert.doesNotMatch(css, /\.scroll-fade-top\s*\{/, "obsolete fade-mask styling should stay removed");
+});
 
-  // the subhead block should only carry the description (msg-role) now, not the activity badge
-  const subheadBlock = /\{ag && ag\.description[\s\S]{0,300}?<\/div> : null\}/.exec(window)?.[0];
-  assert.ok(subheadBlock, `could not locate the description-only subhead block: ${window}`);
-  assert.doesNotMatch(subheadBlock!, /msg-activity/, `activity badge should no longer render inside the description subhead: ${subheadBlock}`);
-
-  const activityCss = ruleBody(".msg-head .msg-activity");
-  assert.match(activityCss, /margin-left\s*:\s*auto\b/, "activity badge should be pinned to the far right of the header line via margin-left:auto");
-
+test("message body keeps breathing room when there is no second header line", () => {
   const gapCss = ruleBody(".msg-head + .mbody");
   assert.match(gapCss, /margin-top\s*:\s*8px\b/, "message body should keep breathing room from the header line even when no subhead follows");
 });
@@ -65,6 +66,9 @@ test("message first line keeps name and timestamp together", () => {
   assert.match(head, /gap\s*:\s*7px\b/);
   const ts = ruleBody(".msg-head .ts");
   assert.match(ts, /margin-left\s*:\s*0\b/, `timestamp spacing should be controlled by .msg-head gap: ${ts}`);
+  const state = ruleBody(".msg-agent-state");
+  assert.match(state, /margin-left\s*:\s*auto\b/, `agent presence should own the right edge: ${state}`);
+  assert.match(state, /white-space\s*:\s*nowrap\b/, `agent presence should stay legible: ${state}`);
 });
 
 test("app chrome headings keep the upstream classic title face", () => {
@@ -97,29 +101,13 @@ test("message body has breathing room after the second header line", () => {
   assert.match(body, /margin-top\s*:\s*8px\b/, `message body should not sit tight against the second header line: ${body}`);
 });
 
-test("markdown body line height and agent thinking placeholder stay readable", () => {
+test("markdown body line height and inline Activity stay readable", () => {
   assert.match(css, /--md-line-height:1\.68\b/, "Markdown body line height should favor bilingual readability");
-
-  const thinking = ruleBody(".agent-reply-placeholder");
-  assert.match(thinking, /font-weight\s*:\s*700\b/, `thinking text should be bold enough to read: ${thinking}`);
-  assert.match(thinking, /font-style\s*:\s*normal\b/, `thinking text should not be italic: ${thinking}`);
-  assert.match(thinking, /color\s*:\s*#8f949b\b/, `thinking text should use a silver-gray base tone: ${thinking}`);
-  assert.match(thinking, /animation\s*:\s*agent-thinking-shimmer/, `thinking text should use a subtle GPT-style shimmer: ${thinking}`);
-  assert.match(thinking, /4s linear infinite\b/, `thinking shimmer should loop every 4s with a constant-speed sweep: ${thinking}`);
-
-  assert.doesNotMatch(css, /\.agent-reply-placeholder::after/, "thinking dots should be part of the localized text so they share the shimmer");
-  assert.match(css, /@keyframes agent-thinking-shimmer/);
-  assert.match(css, /@keyframes agent-thinking-shimmer\{0%\{background-position:100% 0\}50%\{background-position:0% 0\}100%\{background-position:0% 0\}\}/, "thinking shimmer should sweep left-to-right for 2s, then pause until the next 4s cycle");
-  assert.doesNotMatch(css, /@keyframes agent-thinking-dots/);
-});
-
-test("agent activity badge uses a quiet code style without colored outline", () => {
-  const body = ruleBody(".msg-activity");
-  assert.match(body, /border\s*:\s*0\b/, `activity badge must not draw a colored outline: ${body}`);
-  assert.doesNotMatch(body, /border-color\s*:/, `activity badge base rule should not set border-color: ${body}`);
-  assert.match(css, /\.msg-activity\.sleeping\{color:var\(--status-blue\);background:var\(--status-badge-bg\)\}/);
-  assert.match(css, /\.msg-activity\.online,\.msg-activity\.active\{color:var\(--status-green\);background:var\(--status-badge-bg\)\}/);
-  assert.match(css, /\.msg-activity\.working,\.msg-activity\.thinking\{color:var\(--status-orange\);background:var\(--status-badge-bg\)\}/);
+  const toggle = ruleBody(".msg-act-toggle");
+  assert.match(toggle, /min-height\s*:\s*32px\b/, `Activity disclosure needs a stable click target: ${toggle}`);
+  assert.match(toggle, /background\s*:\s*transparent\b/, `Activity should remain visually subordinate to the public message: ${toggle}`);
+  assert.match(css, /\.msg-act\.is-live \.msg-act-state\{color:var\(--status-blue\)\}/);
+  assert.match(css, /\.msg-act-event code\{[^}]*font-family:var\(--mono\)/);
 });
 
 test("avatar status dot pulses only while the agent is working", () => {
@@ -140,13 +128,15 @@ test("generic working status dots reuse the live pulse without animating thinkin
 });
 
 test("message hover uses a subtle border instead of a filled background", () => {
+  assert.match(css, /--chat-card-width:1440px\b/, "channel messages should use the available desktop canvas");
   const base = ruleBody(".msg");
   assert.match(base, /display\s*:\s*grid\b/, `message row should use a fixed avatar column plus content column: ${base}`);
   assert.match(base, /grid-template-columns\s*:\s*44px minmax\(0,1fr\)/, `avatar column should be fixed while content owns the right column: ${base}`);
   assert.match(base, /max-width\s*:\s*var\(--chat-card-width\)/, `message row should use the shared chat card width token: ${base}`);
   assert.match(base, /margin\s*:\s*0 auto 8px\b/, `message row should stay compact now that the reaction footer is restored: ${base}`);
-  assert.match(base, /padding\s*:\s*7px 12px 5px\b/, `outer message row should own the full message card padding: ${base}`);
-  assert.match(base, /transition\s*:\s*box-shadow \.5s ease\b/, `message card shadow should ease softly: ${base}`);
+  assert.match(base, /padding\s*:\s*9px 12px 6px\b/, `outer message row should own the full message card padding: ${base}`);
+  assert.match(base, /border-radius\s*:\s*8px\b/, `message cards should stay compact and operational: ${base}`);
+  assert.match(base, /transition\s*:\s*box-shadow \.32s ease,background-color \.32s ease\b/, `message card shadow should ease softly: ${base}`);
   assert.match(base, /box-shadow\s*:\s*inset 0 0 0 \.5px rgba\(87,96,106,\.10\)/, `message card should keep a permanent 10% hairline: ${base}`);
 
   const hover = ruleBody(".msg:hover");
@@ -156,26 +146,43 @@ test("message hover uses a subtle border instead of a filled background", () => 
   assert.match(col, /min-width\s*:\s*0\b/, `message body column should be allowed to shrink around long Markdown: ${col}`);
   assert.match(col, /padding\s*:\s*0\b/, `message body column should not carry a nested card skin: ${col}`);
   assert.doesNotMatch(css, /\.msg:hover \.msg-col\s*\{/, "message hover skin should stay on the full outer message card");
-  assert.match(ruleBody(".msg .md"), /max-width\s*:\s*calc\(100% - 64px\)/, "message Markdown should reserve roughly the avatar-column width on the right without moving the card border");
+  assert.match(ruleBody(".msg .md"), /max-width\s*:\s*100%(?:;|$)/, "message Markdown should follow the responsive content column instead of leaving half the card empty");
+  assert.doesNotMatch(ruleBody(".msg .md"), /var\(--read-measure\)/, "document reading measure must not constrain operational chat messages");
+});
+
+test("pre-reply activity uses a compact run row rather than a message card", () => {
+  assert.match(chatSrc, /isAgentReplyPreview \|\| isActivityReceipt/);
+  assert.match(chatSrc, /className=\{"agent-run"/);
+  const run = ruleBody(".agent-run");
+  assert.match(run, /grid-template-columns\s*:\s*34px minmax\(0,1fr\)/, `run row should use a smaller avatar rail: ${run}`);
+  assert.match(run, /border-bottom\s*:\s*1px solid var\(--hair\)/, `run row should be an inline trace, not another card: ${run}`);
+  assert.doesNotMatch(run, /box-shadow/, "run row should not look like a full message card");
+  const receipt = ruleBody(".agent-run.is-receipt");
+  assert.match(receipt, /background\s*:\s*transparent\b/, `a no-message receipt should blend into the conversation instead of becoming a white card: ${receipt}`);
+  assert.match(receipt, /border-bottom-color\s*:\s*transparent\b/, `the receipt's inner Activity rule already owns its divider: ${receipt}`);
 });
 
 test("thread message Markdown uses the full content column", () => {
   const body = ruleBody(".thread-panel .msg .md");
   assert.match(body, /max-width\s*:\s*100%(?:;|$)/, `thread messages have no hover toolbar, so their Markdown should not reserve the main-chat toolbar width: ${body}`);
+  const head = ruleBody(".thread-panel .msg-head");
+  assert.match(head, /grid-template-columns\s*:\s*minmax\(0,1fr\) auto/, `thread headers should keep name and status on the first line: ${head}`);
+  assert.match(ruleBody(".thread-parent"), /background\s*:\s*transparent/, "the thread parent should not wrap a message card inside another card");
 });
 
 test("new messages expand from below so existing messages move smoothly", () => {
   const frames = css.match(/@keyframes msg-enter\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
-  assert.match(frames, /transform:\s*translateY\(18px\)/, `message should start below its final position: ${frames}`);
+  assert.match(frames, /transform:\s*translateY\(8px\)/, `message should start just below its final position: ${frames}`);
   assert.match(frames, /max-height:0/, `message should start collapsed so it pushes prior messages smoothly: ${frames}`);
-  assert.match(frames, /max-height:40rem/, `message should expand during enter animation: ${frames}`);
+  assert.match(frames, /max-height:80rem/, `message should expand during enter animation: ${frames}`);
+  assert.match(frames, /clip-path:inset\(0 0 85% 0 round 8px\)/, `message reveal should be spatially anchored instead of only fading: ${frames}`);
   assert.doesNotMatch(frames, /padding-top|padding-bottom/, "message enter should not animate card padding while the row expands");
   const enter = ruleBody(".msg-enter");
   assert.match(enter, /overflow\s*:\s*hidden\b/, `entering messages should clip during height expansion: ${enter}`);
-  assert.match(enter, /animation-duration\s*:\s*1s\b/, `human and persisted messages should finish their enter animation in 1 second: ${enter}`);
+  assert.match(enter, /animation-duration\s*:\s*420ms\b/, `persisted messages should settle without a second-long pop: ${enter}`);
   assert.match(enter, /animation-timing-function\s*:\s*var\(--ease-expo\)/, `enter animation should move fast first and slow down: ${enter}`);
   assert.match(enter, /animation-fill-mode\s*:\s*backwards\b/, `enter animation should not leave max-height constraints after completion: ${enter}`);
-  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{\.msg-enter\{animation:none\}\}/, "reduced-motion users should not get message enter movement");
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{\.msg-enter,\.agent-run-enter\{animation:none\}\}/, "reduced-motion users should not get message enter movement");
 });
 
 test("message toolbar stays inside the message border and exposes save/copy/more directly", () => {
@@ -193,13 +200,6 @@ test("message toolbar stays inside the message border and exposes save/copy/more
   assert.match(toolbar, /box-shadow\s*:\s*none\b/, `toolbar must not cast a floating shadow: ${toolbar}`);
   assert.match(toolbar, /transition\s*:\s*opacity \.5s ease\b/, `toolbar should fade in with the message hairline timing: ${toolbar}`);
   assert.match(ruleBody(".msg-toolbar button.on"), /color\s*:\s*var\(--ink\)/, "saved toolbar button should render as filled/dark");
-});
-
-test("agent status badge fades out on hover so it doesn't collide with the save/copy/more toolbar in the same corner", () => {
-  const activity = ruleBody(".msg-activity");
-  assert.match(activity, /transition\s*:\s*opacity \.5s ease\b/, `activity badge should fade with the same timing as the toolbar it shares a corner with: ${activity}`);
-  const hoverFade = ruleBody(".msg:hover .msg-activity");
-  assert.match(hoverFade, /opacity\s*:\s*0\b/, `activity badge must yield the top-right corner to the toolbar on hover, not overlap it: ${hoverFade}`);
 });
 
 test("reaction footer keeps the upstream add-reaction entry even with no reactions", () => {
@@ -239,7 +239,7 @@ test("composer removes the hard divider and aligns its input with the message co
   assert.match(box, /border\s*:\s*0\b/, `composer should avoid a full 1px border: ${box}`);
   assert.match(box, /box-shadow\s*:\s*inset 0 0 0 \.5px var\(--card-line-strong\),0 10px 30px rgba\(15,23,42,\.055\)/, `composer border should match the fine message hover line: ${box}`);
   assert.match(box, /padding\s*:\s*10px 14px 10px\b/, `composer box should give toolbar icons room without inflating the card: ${box}`);
-  assert.match(box, /transition\s*:\s*box-shadow \.5s ease\b/, `composer focus shadow should ease softly: ${box}`);
+  assert.match(box, /transition\s*:\s*box-shadow \.32s ease\b/, `composer focus shadow should ease softly: ${box}`);
   assert.equal(ruleBody(".composer-box:hover"), "box-shadow:inset 0 0 0 .5px var(--card-line-strong),0 10px 30px rgba(15,23,42,.055)", "composer hover should not change the resting visual state");
   assert.match(ruleBody(".composer-box:focus-within"), /box-shadow\s*:\s*inset 0 0 0 \.5px var\(--card-line-strong\),0 12px 34px rgba\(15,23,42,\.065\)/, "composer focus can keep a slightly stronger depth cue");
 

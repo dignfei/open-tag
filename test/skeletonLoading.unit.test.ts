@@ -3,7 +3,7 @@
 //
 // Guards three things that are easy to silently break:
 //   1. ready=false / switch-in-flight renders a SKELETON, not a blank null (main.tsx route guards).
-//   2. The shell skeleton reuses the real app grid (.app.has-traj) so the swap is layout-shift-free.
+//   2. The shell skeleton reuses the default three-column app grid so the swap is layout-shift-free.
 //   3. The shimmer is disabled under prefers-reduced-motion (accessibility — non-negotiable per DESIGN.md).
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -22,10 +22,8 @@ test("route guards render the skeleton (not a blank null) while bootstrapping / 
 });
 
 test("shell skeleton reuses the real app grid so the swap is layout-shift-free", () => {
-  // WorkspaceSkeleton mounts under the same `.app` grid as <Layout/>, adding the `has-traj` trace column ONLY for
-  // chat routes (mirrors Layout's isChat) so a deep-link/refresh to any route swaps without a column-width shift.
-  assert.match(skeletonTsx, /className=\{"app skel-app"/, "WorkspaceSkeleton must mount under the .app shell grid");
-  assert.match(skeletonTsx, /isChat[\s\S]*has-traj/, "skeleton must add has-traj only for chat routes (mirrors <Layout/>)");
+  assert.match(skeletonTsx, /className="app skel-app"/, "WorkspaceSkeleton must mount under the .app shell grid");
+  assert.doesNotMatch(skeletonTsx, /has-traj|has-panel/, "bootstrap should not reserve a permanent observability column");
   assert.match(skeletonTsx, /className="rail skel-rail"/, "skeleton rail must reuse the real .rail column");
 });
 

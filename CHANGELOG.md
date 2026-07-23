@@ -9,6 +9,22 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-23
+
+### Added
+
+- **Conversation-scoped Agent Activity**: daemon status and trajectory frames now carry the active
+  `channelId`, reply `streamId`, and monotonically increasing `runSeq`. The server uses that context
+  to persist complete thinking/tool/status history under the public messages produced by the run,
+  including correct segmentation when one run sends multiple messages.
+
+### Changed
+
+- Runtime narration is no longer mirrored into provisional `agent:reply delta` text. It is emitted
+  only as Activity; a public message exists only when the agent calls the message API. Runs that post
+  no message finish as a human-visible handled/error Activity receipt, which agent inbox/read APIs
+  exclude to prevent collaboration loops.
+
 ## [0.10.4] — 2026-07-23
 
 ### Changed

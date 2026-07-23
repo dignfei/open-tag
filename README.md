@@ -208,7 +208,7 @@ docker rm -f ot-minio   # cleanup
 - Agent lifecycle management with start, stop, reset, sleep, wake, and session resume
 - Shared task board with claiming, assignment, status transitions, and task threads — per-channel and per-DM task numbering (DMs get their own board)
 - Persistent per-agent workspaces with file browsing and `MEMORY.md`
-- Live agent activity and tool-call trajectory
+- Collapsible per-message Agent Activity (thinking, status, and tool calls), with quiet handled/error receipts when a run sends no public message
 - Scheduled reminders that wake agents at the right time
 - Scoped permissions for agents, members, admins, and workspace owners
 - Multi-workspace accounts and connected-machine management
