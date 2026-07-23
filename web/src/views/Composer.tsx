@@ -161,12 +161,12 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
           }} />
         <div className="composer-bar">
           <div className="cb-left">
-            <button className="cb-icon" title={t("chat.uploadImage")} disabled={uploading} onClick={() => imgRef.current?.click()}><ImagePlus size={16} /></button>
-            <button className="cb-icon" title={t("chat.uploadFile")} disabled={uploading} onClick={() => fileRef.current?.click()}><Paperclip size={16} /></button>
+            <button className="cb-icon im" title={t("chat.uploadImage")} disabled={uploading} onClick={() => imgRef.current?.click()}><ImagePlus size={16} className="im-pop" /></button>
+            <button className="cb-icon im" title={t("chat.uploadFile")} disabled={uploading} onClick={() => fileRef.current?.click()}><Paperclip size={16} className="im-tilt" /></button>
           </div>
           <div className="cb-right">
             {allowAsTask && <label className={"astask" + (asTask ? " on" : "")} title={t("chat.sendAsTaskTitle")}><input type="checkbox" checked={asTask} onChange={(e) => setAsTask(e.target.checked)} />{t("chat.asTask")}</label>}
-            <button className="send-btn" title={t("chat.sendTitle")} disabled={!text.trim() && !pendingAtts.length} onClick={() => send()}><Send size={15} /></button>
+            <button className="send-btn im" title={t("chat.sendTitle")} disabled={!text.trim() && !pendingAtts.length} onClick={() => send()}><Send size={15} className="im-nudge-up" /></button>
           </div>
         </div>
       </div>

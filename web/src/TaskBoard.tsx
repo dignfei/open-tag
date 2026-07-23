@@ -188,7 +188,7 @@ export function TaskBoard({ channelId, onOpenThread }: { channelId: string | nul
     const dm = !channelId && !chan ? dms.find((d) => d.id === task.channelId) : null;
     return (
       <div className="card task" onClick={() => open(task)} title={t("tasks.openThread")}>
-        <button className="tk-del" title={t("tasks.deleteTask")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); delTask(task); }}><Trash2 size={12} /></button>
+        <button className="tk-del im" title={t("tasks.deleteTask")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); delTask(task); }}><Trash2 size={12} className="im-shake" /></button>
         {chan ? <div className="tk-chan">#{chan}</div> : dm ? <div className="tk-chan tk-chan-dm">@{dm.peerDisplayName || dm.peerName || dm.name}</div> : null}
         <div className="tk-num">#{task.taskNumber ?? "-"}</div>
         <div className="tk-title">{task.content}</div>
@@ -278,7 +278,7 @@ export function TaskBoard({ channelId, onOpenThread }: { channelId: string | nul
                   <span className="grow">{task.content}</span>
                   <span className="meta">{task.taskAssigneeId ? nameOf(task.taskAssigneeType, task.taskAssigneeId) : task.senderName}</span>
                   <StatusPill t={task} />
-                  <button className="tk-del-row" title={t("tasks.deleteTaskRow")} onClick={(e) => { e.stopPropagation(); delTask(task); }}><Trash2 size={13} /></button>
+                  <button className="tk-del-row im" title={t("tasks.deleteTaskRow")} onClick={(e) => { e.stopPropagation(); delTask(task); }}><Trash2 size={13} className="im-shake" /></button>
                 </div>
               )),
             ] : [])}

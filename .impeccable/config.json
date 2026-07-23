@@ -4,6 +4,13 @@
     "ignoreFiles": [
       "/Users/nowcoder/Desktop/auto-code-work/open-tag-showcase/src/server/showcaseSeed.ts"
     ],
-    "ignoreValues": []
+    "ignoreValues": [
+      {
+        "rule": "bounce-easing",
+        "value": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+        "createdAt": "2026-07-23T09:28:13.146Z",
+        "reason": "User confirmed: Amicro spring(600,25) replica — the signature overshoot is the point of the icon-motion system (docs/icon-motion.md)"
+      }
+    ]
   }
 }

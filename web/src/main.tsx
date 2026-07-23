@@ -16,6 +16,7 @@ import { Features } from "./views/Features.tsx";
 import { homeRoute } from "./routing.ts";
 import "./i18n";
 import "./styles.css";
+import "./iconMotion.css";
 
 // Public home ("/"). The marketing Landing is for anonymous visitors only; a user who has — or is
 // still resolving — a session must never see it. While the bootstrap runs we show the workspace

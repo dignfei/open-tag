@@ -98,7 +98,7 @@ function Reactions({ m, mine, onReact }: { m: Msg; mine: string; onReact: (emoji
         return <button key={r.emoji} className={"rx-chip" + (did ? " on" : "")} onClick={() => onReact(r.emoji, !!did)}>{r.emoji} {r.count}{names ? <span className="rx-tip" role="tooltip">{names}</span> : null}</button>;
       })}
       <span className="rx-add-wrap">
-        <button className="rx-add" title={i18n.t("chat.addReaction")} onMouseDown={(e) => { e.preventDefault(); setPick((v) => !v); }}><Smile size={17} /></button>
+        <button className="rx-add im" title={i18n.t("chat.addReaction")} onMouseDown={(e) => { e.preventDefault(); setPick((v) => !v); }}><Smile size={17} className="im-pulse" /></button>
         {pick && <span className="rx-pop" onMouseLeave={() => setPick(false)}>{QUICK_EMOJIS.map((e) => <button key={e} onMouseDown={(ev) => { ev.preventDefault(); onReact(e, false); setPick(false); }}>{e}</button>)}</span>}
       </span>
     </div>
@@ -491,9 +491,9 @@ export function Chat() {
                   {dateDivider}
                   <div className={"msg" + (shouldEnter ? " msg-enter" : "")} id={"m-" + m.id} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ m, x: e.clientX, y: e.clientY }); }} style={isNewMsg ? { "--msg-delay": `${staggerIdx * 60}ms` } as CSSProperties : undefined}>
                   <div className="msg-toolbar">
-                    <button className={isSaved ? "on" : ""} title={isSaved ? t("chat.unsave") : t("chat.saveMessage")} onClick={() => { isSaved ? unsaveMsg(m.id) : saveMsg(m.id); }}><Bookmark size={15} fill={isSaved ? "currentColor" : "none"} /></button>
-                    <button title={t("chat.copyMarkdown")} onClick={() => copyMarkdown(m.content)}><Clipboard size={15} /></button>
-                    <button title={t("chat.more")} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ m, x: r.right - 212, y: r.bottom + 4 }); }}><MoreHorizontal size={15} /></button>
+                    <button className={"im" + (isSaved ? " on" : "")} title={isSaved ? t("chat.unsave") : t("chat.saveMessage")} onClick={() => { isSaved ? unsaveMsg(m.id) : saveMsg(m.id); }}><Bookmark size={15} className="im-pop im-fill" fill={isSaved ? "currentColor" : "none"} /></button>
+                    <button className="im" title={t("chat.copyMarkdown")} onClick={() => copyMarkdown(m.content)}><Clipboard size={15} className="im-pop" /></button>
+                    <button className="im" title={t("chat.more")} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ m, x: r.right - 212, y: r.bottom + 4 }); }}><MoreHorizontal size={15} className="im-pop" /></button>
                   </div>
                   {ag
                     ? <span className="msg-av clickable" onClick={() => setProfile({ type: "agent", id: m.senderId! })}
@@ -835,8 +835,8 @@ function ChannelFiles({ channelId }: { channelId: string }) {
               <div className="grow"><div className="who">{f.filename}</div><div className="meta">{fmtSize(f.sizeBytes)} · {f.uploader?.displayName || f.uploader?.name || (f.uploader?.type === "agent" ? t("chat.agentKind") : t("chat.memberKind"))} · {fmtDateTime(f.createdAt)}</div></div>
             </a>
             <div className="file-acts">
-              {f.messageId && <button title={t("chat.jumpToMessage")} onClick={() => nav(`/s/${slug}/channel/${f.channelId}?msg=${f.messageId}`)}><IconExternalLink size={14} /></button>}
-              <a title={t("chat.download")} href={attachmentUrl(f.id)} download={f.filename}><IconDownload size={14} /></a>
+              {f.messageId && <button className="im" title={t("chat.jumpToMessage")} onClick={() => nav(`/s/${slug}/channel/${f.channelId}?msg=${f.messageId}`)}><IconExternalLink size={14} className="im-nudge-up" /></button>}
+              <a className="im" title={t("chat.download")} href={attachmentUrl(f.id)} download={f.filename}><IconDownload size={14} className="im-bounce-down" /></a>
             </div>
           </div>
         ))}
