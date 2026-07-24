@@ -10,7 +10,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
-import type { Runtime, StartOpts, RuntimeCallbacks, RuntimeSession } from "./runtime.js";
+import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession } from "./runtime.js";
 
 const MAX = 4000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -153,8 +153,10 @@ export function hermesRuntimeEnv(baseEnv: NodeJS.ProcessEnv, cwd: string, reques
   return { env, profile };
 }
 
+interface HermesInput { text: string; initial: boolean; admission: ProtocolAdmission }
+
 class HermesRun {
-  private queue: string[] = [];
+  private queue: HermesInput[] = [];
   private turnBusy = false;
   private stopped = false;
   proc: ChildProcess | null = null;
@@ -162,8 +164,11 @@ class HermesRun {
   private readonly env: NodeJS.ProcessEnv;
   private readonly profile: string;
   private sessionId: string | null;
+  private readonly admission: ReturnType<typeof initialTurnAdmission>;
+  private currentInput: HermesInput | null = null;
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
+    this.admission = initialTurnAdmission(cb);
     const requestedProfile = hermesProfile(opts.model, opts.runtimeConfig);
     const resolved = hermesRuntimeEnv(opts.env, opts.cwd, requestedProfile);
     this.env = resolved.env;
@@ -173,13 +178,19 @@ class HermesRun {
     }
     this.sessionId = opts.sessionId ?? null;
     if (this.sessionId) cb.onSession(this.sessionId);
-    if (opts.initialPrompt.trim()) this.enqueue(opts.initialPrompt);
+    if (opts.initialPrompt.trim()) void this.enqueue(opts.initialPrompt, true).catch(() => {});
+    else this.admission.reject(new Error("hermes initial prompt is empty"));
   }
 
-  enqueue(text: string): void {
-    if (this.stopped || !text.trim()) return;
-    this.queue.push(text);
+  enqueue(text: string, initial = false): Promise<void> {
+    const input: HermesInput = { text, initial, admission: protocolAdmission() };
+    if (this.stopped || !text.trim()) {
+      input.admission.reject(new Error(this.stopped ? "hermes stopped before input admission" : "hermes input is empty"));
+      return input.admission.promise;
+    }
+    this.queue.push(input);
     this.pump();
+    return input.admission.promise;
   }
 
   private pump(): void {
@@ -187,7 +198,13 @@ class HermesRun {
     this.runTurn(this.queue.shift()!);
   }
 
-  private runTurn(message: string): void {
+  private rejectQueue(error: Error): void {
+    for (const input of this.queue.splice(0)) input.admission.reject(error);
+  }
+
+  private runTurn(input: HermesInput): void {
+    this.currentInput = input;
+    const message = input.text;
     this.turnBusy = true;
     this.cb.onActivity("working", `hermes/${this.profile}`);
     const prompt = buildHermesPrompt(message, this.opts);
@@ -195,6 +212,7 @@ class HermesRun {
     const turnFile = path.join(tmpdir(), `open-tag-hermes-turn-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
     const proc = spawnSafe("hermes", args, { cwd: this.opts.cwd, stdio: ["ignore", "pipe", "pipe"], env: { ...this.env, OPEN_TAG_TURN_FILE: turnFile } });
     this.proc = proc;
+    proc.once("spawn", () => { input.admission.accept(); if (input.initial) this.admission.accept(); });
     let stdout = "";
     const errTail: string[] = [];
     let errLen = 0;
@@ -209,16 +227,20 @@ class HermesRun {
       while (errLen > 16_384 && errTail.length > 1) errLen -= errTail.shift()!.length;
     });
     proc.on("error", (e) => {
+      input.admission.reject(e);
+      if (input.initial) this.admission.reject(e);
+      if (this.currentInput === input) this.currentInput = null;
       this.proc = null;
       this.turnBusy = false;
       if (this.stopped) return;
       this.cb.log.error("hermes spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "hermes not found");
-      if (!this.everSucceeded) this.cb.onExit(1);
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); }
       else this.pump();
     });
     proc.on("exit", async (code) => {
       this.proc = null;
+      if (this.currentInput === input) this.currentInput = null;
       if (this.stopped) return;
       const out = stdout.trim();
       const tail = errTail.join("").trim();
@@ -240,7 +262,7 @@ class HermesRun {
         this.cb.log.warn("hermes resume session missing; retrying fresh", { sessionId: this.sessionId });
         this.sessionId = null;
         this.cb.onSession(null);
-        this.queue.unshift(message);
+        this.queue.unshift(input);
         this.turnBusy = false;
         this.pump();
         return;
@@ -250,6 +272,7 @@ class HermesRun {
       this.cb.onActivity("error", last.slice(0, 200));
       this.turnBusy = false;
       if (!this.everSucceeded) {
+        this.rejectQueue(new Error(last));
         this.cb.onExit(code ?? 1);
         return;
       }
@@ -316,6 +339,10 @@ class HermesRun {
 
   stop(): void {
     this.stopped = true;
+    const error = new Error("hermes stopped before input admission");
+    this.currentInput?.admission.reject(error);
+    this.currentInput = null;
+    this.rejectQueue(error);
     const p = this.proc;
     this.proc = null;
     if (p) {

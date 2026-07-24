@@ -53,6 +53,18 @@ async function api(base: string, method: string, path: string, headers: Record<s
   return { status: response.status, body: await response.json() as any };
 }
 
+async function waitForTurnDispatch(messageId: string): Promise<void> {
+  for (let i = 0; i < 80; i++) {
+    const [turn] = await db.select({ state: schema.conversationTurns.state })
+      .from(schema.messages)
+      .innerJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
+      .where(eq(schema.messages.id, messageId));
+    if (turn && ["dispatched", "blocked"].includes(turn.state)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Turn did not dispatch for message ${messageId}`);
+}
+
 test("real API: reconnect catch-up and reply coordination preserve their contracts", async () => {
   const suffix = randomUUID().slice(0, 8);
   const tokens = ["codex", "codex2", "worker"].map((name) => ({ name: `${name}-${suffix}`, token: `sk_agent_test_${name}_${suffix}` }));
@@ -101,28 +113,69 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     ]);
     const offlineTrigger = await api(live.base, "POST", "/api/messages", humanHeaders, { channelId: catchupDm!.id, content: "offline backlog" });
     assert.equal(offlineTrigger.status, 200, JSON.stringify(offlineTrigger.body));
+    const ambientOffline = await api(live.base, "POST", "/api/messages", humanHeaders, { channelId: channel!.id, content: "is anyone available?" });
+    assert.equal(ambientOffline.status, 200, JSON.stringify(ambientOffline.body));
+    let ambientOwnerAgentId: string | null = null;
+    for (let i = 0; i < 50; i++) {
+      const turns = await db.select({ messageId: schema.messages.id, state: schema.conversationTurns.state, ownerAgentId: schema.conversationTurns.ownerAgentId })
+        .from(schema.messages)
+        .innerJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
+        .where(inArray(schema.messages.id, [offlineTrigger.body.id, ambientOffline.body.id]));
+      const ambientTurn = turns.find((turn) => turn.messageId === ambientOffline.body.id);
+      if (turns.length === 2 && turns.every((turn) => turn.state === "blocked") && ambientTurn?.ownerAgentId) {
+        ambientOwnerAgentId = ambientTurn.ownerAgentId;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(ambientOwnerAgentId, `offline turns did not settle before reconnect: ${live.logs()}`);
+    const ambientCatchupAgentIds: string[] = [];
     daemonSocket = await new Promise<WebSocket>((resolve, reject) => {
       const ws = new WebSocket(`${live.base.replace("http", "ws")}/daemon/connect?key=${encodeURIComponent(machineKey)}`);
-      const ready = JSON.stringify({ type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"], runningAgents: agents.map((a) => a.id), daemonVersion: "test" });
+      const ready = JSON.stringify({ type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"], capabilities: ["delivery-admission-v1"], runningAgents: agents.map((a) => a.id), daemonVersion: "test" });
       let acknowledged = false;
       let caughtUp = false;
       const timer = setTimeout(() => reject(new Error(`dummy daemon ready/catch-up timeout: ${live.logs()}`)), 3000);
       const finish = () => {
-        if (!acknowledged || !caughtUp) return;
-        clearTimeout(timer);
-        resolve(ws);
+        if (!acknowledged || !caughtUp || ambientCatchupAgentIds.length < 1) return;
+        setTimeout(() => {
+          clearTimeout(timer);
+          resolve(ws);
+        }, 100);
       };
       ws.on("open", () => ws.send(ready));
       ws.on("message", (data) => {
         const msg = JSON.parse(String(data));
         if (msg.type === "ready:ack") acknowledged = true;
         if (msg.type === "agent:start" && msg.agentId === catchupAgent!.id) caughtUp = true;
+        if (msg.type === "agent:deliver" && agents.some((agent) => agent.id === msg.agentId)) ambientCatchupAgentIds.push(msg.agentId);
+        if (msg.type === "agent:deliver" && msg.deliveryId) ws.send(JSON.stringify({ type: "agent:deliver:ack", agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId }));
         if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
         finish();
       });
       ws.on("error", reject);
     });
+    assert.deepEqual(ambientCatchupAgentIds, [ambientOwnerAgentId], "reconnect wakes only the durable ambient owner once");
     const agentHeaders = (i: number) => ({ authorization: `Bearer ${tokens[i]!.token}`, "x-agent-id": agents[i]!.id });
+    const ambientOwnerIndex = agents.findIndex((agent) => agent.id === ambientOwnerAgentId);
+    assert.notEqual(ambientOwnerIndex, -1);
+    const [ambientOwnerDecision] = await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, ambientOffline.body.id),
+      eq(schema.agentMessageDecisions.agentId, ambientOwnerAgentId!),
+    ));
+    assert.deepEqual([ambientOwnerDecision?.grantSlot, ambientOwnerDecision?.grantStatus], ["primary", "active"], "offline fallback preserves a real primary grant");
+    const ambientOwnerCheck = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(ambientOwnerIndex));
+    assert.equal(ambientOwnerCheck.status, 200, JSON.stringify(ambientOwnerCheck.body));
+    assert.equal(ambientOwnerCheck.body.messages.some((message: any) => message.id === ambientOffline.body.id), true);
+    const ambientReply = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(ambientOwnerIndex), {
+      target: `#${channel!.name}`, replyTo: ambientOffline.body.id, content: "yes, I am here",
+    });
+    assert.equal(ambientReply.status, 200, JSON.stringify(ambientReply.body));
+    const [completedOfflineTurn] = await db.select({ state: schema.conversationTurns.state, responsibilityState: schema.conversationTurns.responsibilityState })
+      .from(schema.messages)
+      .innerJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
+      .where(eq(schema.messages.id, ambientOffline.body.id));
+    assert.deepEqual([completedOfflineTurn?.state, completedOfflineTurn?.responsibilityState], ["dispatched", "completed"], "offline blocked Turn reconciles after its eventual reply");
 
     const [dm] = await db.insert(schema.channels).values({ serverId: server!.id, name: `dm:${[user!.id, agents[0]!.id].sort().join(":")}`, type: "dm" }).returning();
     await db.insert(schema.channelMembers).values([
@@ -132,6 +185,7 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     const dmTrigger = await api(live.base, "POST", "/api/messages", humanHeaders, { channelId: dm!.id, content: "hi" });
     assert.equal(dmTrigger.status, 200, JSON.stringify(dmTrigger.body));
     const dmTriggerId = dmTrigger.body.id as string;
+    await waitForTurnDispatch(dmTriggerId);
     const dmCheck = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(0));
     assert.equal(dmCheck.status, 200, JSON.stringify(dmCheck.body));
     const dmCoordination = dmCheck.body.messages.find((m: any) => m.id === dmTriggerId)?.coordination;
@@ -159,6 +213,7 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     const first = await api(live.base, "POST", "/api/messages", humanHeaders, { channelId: channel!.id, content: `write a joke @${tokens[0]!.name}` });
     assert.equal(first.status, 200, JSON.stringify(first.body));
     const triggerId = first.body.id as string;
+    await waitForTurnDispatch(triggerId);
 
     const checks = await Promise.all(agents.map((_, i) => api(live.base, "GET", "/agent-api/message/check", agentHeaders(i))));
     for (const checked of checks) {
@@ -207,6 +262,9 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     const bypass = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), { target: `#${channel!.name}`, sendDraft: true });
     assert.equal(bypass.status, 409);
     assert.equal(bypass.body.code, "REPLY_NOT_GRANTED");
+    await waitForTurnDispatch(second.body.id);
+    const refreshedDelegate = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(1));
+    assert.equal(refreshedDelegate.status, 200);
     const published = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), { target: `#${channel!.name}`, replyTo: triggerId, content: "delegated joke" });
     assert.equal(published.status, 200, JSON.stringify(published.body));
     assert.equal(published.body.replyTo, triggerId);
@@ -230,15 +288,20 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     });
     assert.equal(multi.status, 200, JSON.stringify(multi.body));
     const multiId = multi.body.id as string;
+    await waitForTurnDispatch(multiId);
     const multiChecks = await Promise.all(agents.map((_, i) => api(live.base, "GET", "/agent-api/message/check", agentHeaders(i))));
     const multiCoordination = multiChecks.map((c) => c.body.messages.find((m: any) => m.id === multiId)?.coordination);
     assert.deepEqual(multiCoordination.map((c: any) => [c?.attention, c?.grantStatus, c?.grantSlot]), [
       ["direct", "active", "primary"], ["direct", "active", "directed"], ["ambient", "none", null],
     ]);
-    const backend = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
+    const backendAttempt = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
       target: `#${channel!.name}`, replyTo: multiId, content: `backend answer; @${tokens[2]!.name} verify this`,
     });
+    const backend = backendAttempt.body.held
+      ? await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), { target: `#${channel!.name}`, replyTo: multiId, sendDraft: true })
+      : backendAttempt;
     assert.equal(backend.status, 200, JSON.stringify(backend.body));
+    await waitForTurnDispatch(backend.body.id);
     await api(live.base, "GET", "/agent-api/message/check", agentHeaders(1));
     const frontend = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), {
       target: `#${channel!.name}`, replyTo: multiId, content: "frontend answer",
@@ -266,6 +329,7 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     });
     assert.equal(task.status, 200, JSON.stringify(task.body));
     const taskId = task.body.id as string;
+    await waitForTurnDispatch(taskId);
     await Promise.all(agents.map((_, i) => api(live.base, "GET", "/agent-api/message/check", agentHeaders(i))));
     const contributorClaim = await api(live.base, "POST", "/agent-api/task/claim", agentHeaders(1), { messageId: taskId });
     assert.equal(contributorClaim.status, 409);

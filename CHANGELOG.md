@@ -9,6 +9,44 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-24
+
+### Added
+
+- **Sender-scoped Conversation Turns**: daemon delivery notices now carry a durable Turn id,
+  coalesced message count, attention class, and deterministic delivery id. Separate humans or
+  agents in one channel stay isolated, while short same-sender bursts arrive as one work notice.
+- **Admission-aware delivery fencing**: the daemon de-duplicates a repeated Turn delivery id and ACKs
+  only after explicit runtime admission. A resource-pressure queue stays pending until the runtime
+  accepts the startup nudge; dequeue, stop, spawn, stdin, or `turn/start` failure sends a NACK and
+  clears the fence so the same id can retry. Concurrent retries share one admission result, and an
+  ACK/NACK without the durable delivery id is rejected rather than treated as compatible. Successful
+  ids are persisted across daemon process replacement with a locked read-merge ledger that remains
+  coherent while old and replacement daemon processes overlap, and the server records admission per
+  recipient so a partial multi-recipient retry delivers only unresolved recipients. A busy runtime
+  emits pending heartbeats that renew the transport waiter without producing an early final ACK.
+- **Mixed-version fail-closed gate**: a daemon must advertise `delivery-admission-v1` before it can
+  receive or pull a Conversation Turn. Missing-capability Turns stay active and paused, emit no
+  start/delivery frames, and resume automatically when a capable bound daemon reconnects or the
+  sole capable daemon takes responsibility for a legacy unbound agent.
+- **Settled lifecycle control**: start, stop, reset, and restart now use the
+  `agent-control-ack-v1` request/ACK contract. The server waits for the daemon operation to settle,
+  returns reset failures instead of swallowing them, and never starts the next restart phase after
+  a failed stop/reset. Start waits for initial runtime-protocol admission, stop/reset wait for the
+  old process exit, and a late old exit cannot remove a replacement instance.
+
+### Changed
+
+- Per-agent Activity previews are FIFO: a second Turn waits for the first runtime turn to finish
+  instead of prematurely closing its Activity and stealing subsequent trajectory events.
+- Multi-mention recipients are capability-preflighted as one intent, then delivered concurrently
+  under an attempt-fenced lease. A mixed-version fleet therefore starts none of the named agents
+  instead of half the team. A partial runtime
+  NACK keeps the Turn and explicit grants visible while deterministic same-id retries finish; stale
+  dispatchers cannot overwrite a newer attempt or a reply that already completed.
+- The standing prompt handles every distinct canonical trigger in one inbox check, while preserving
+  one decision and at most one granted public result per agent and trigger.
+
 ## [0.11.0] — 2026-07-23
 
 ### Added

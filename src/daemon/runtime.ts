@@ -11,10 +11,55 @@ export interface TrajectoryEntry {
 
 export interface RuntimeCallbacks {
   onSession(sessionId: string | null): void;          // receive/update/clear session id (claude session_id / codex threadId)
+  onInitialTurnAdmission(error?: Error): void;         // exactly-once result: adapter accepted the initial prompt, or rejected before acceptance
   onActivity(activity: string, detail?: string): void; // working|thinking|online|offline
   onTrajectory(entries: TrajectoryEntry[]): void;      // streaming trajectory: thinking/text/tool entries
   onExit(code: number | null): void;
   log: Logger;
+}
+
+/** Keep the adapter boundary exactly-once even when spawn, write, and exit race. */
+export function initialTurnAdmission(cb: RuntimeCallbacks): { accept(): void; reject(cause: unknown): void } {
+  let settled = false;
+  return {
+    accept() {
+      if (settled) return;
+      settled = true;
+      cb.onInitialTurnAdmission();
+    },
+    reject(cause) {
+      if (settled) return;
+      settled = true;
+      cb.onInitialTurnAdmission(cause instanceof Error ? cause : new Error(String(cause)));
+    },
+  };
+}
+
+export interface ProtocolAdmission {
+  promise: Promise<void>;
+  accept(): void;
+  reject(cause: unknown): void;
+}
+
+/** Promise for one concrete adapter input; queueing alone never settles it. */
+export function protocolAdmission(): ProtocolAdmission {
+  let settled = false;
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+  return {
+    promise,
+    accept() {
+      if (settled) return;
+      settled = true;
+      resolve();
+    },
+    reject(cause) {
+      if (settled) return;
+      settled = true;
+      reject(cause instanceof Error ? cause : new Error(String(cause)));
+    },
+  };
 }
 
 export interface StartOpts {
@@ -29,7 +74,7 @@ export interface StartOpts {
 
 export interface RuntimeSession {
   pid?: number;
-  deliver(text: string): void;     // deliver a new message / wake up → drives one turn (claude=stdin write; codex=turn/start)
+  deliver(text: string): Promise<void>; // resolves only when the concrete runtime protocol accepts this input
   stop(): void;
 }
 

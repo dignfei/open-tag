@@ -39,12 +39,21 @@ async function main() {
           AND reply_grant_slot IS NOT NULL
           AND sender_id IS NOT NULL
     `);
-    await tx.unsafe(`
-      CREATE UNIQUE INDEX IF NOT EXISTS agent_message_decisions_slot_budget_uniq
-        ON agent_message_decisions (message_id, grant_slot)
-        WHERE grant_slot IN ('primary', 'supplemental')
-          AND grant_status IN ('active', 'publishing', 'consumed')
-    `);
+    const [slotIndex] = await tx`
+      SELECT pg_get_expr(i.indpred, i.indrelid) AS predicate
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE c.relname = 'agent_message_decisions_slot_budget_uniq'
+    `;
+    if (!String(slotIndex?.predicate ?? "").includes("reserved")) {
+      await tx.unsafe("DROP INDEX IF EXISTS agent_message_decisions_slot_budget_uniq");
+      await tx.unsafe(`
+        CREATE UNIQUE INDEX agent_message_decisions_slot_budget_uniq
+          ON agent_message_decisions (message_id, grant_slot)
+          WHERE grant_slot IN ('primary', 'supplemental')
+            AND grant_status IN ('reserved', 'active', 'publishing', 'consumed')
+      `);
+    }
 
     await tx.unsafe("DROP INDEX IF EXISTS messages_reply_slot_uniq");
     await tx.unsafe("DROP INDEX IF EXISTS messages_reply_agent_uniq");

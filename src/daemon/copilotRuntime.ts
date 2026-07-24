@@ -10,7 +10,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
-import type { Runtime, StartOpts, RuntimeCallbacks, RuntimeSession, TrajectoryEntry } from "./runtime.js";
+import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -88,16 +88,21 @@ function buildArgs(prompt: string, sessionId: string, model: string | undefined,
 // CopilotRun owns the serial turn queue for one agent session. Mirrors codexRuntime's
 // queue/turnBusy/pump pattern, but each turn is a fresh one-shot process rather than a message to a
 // persistent one.
+interface CopilotInput { text: string; initial: boolean; admission: ProtocolAdmission }
+
 class CopilotRun {
-  private queue: string[] = [];
+  private queue: CopilotInput[] = [];
   private turnBusy = false;
   private stopped = false;
   proc: ChildProcess | null = null;
   private readonly sessionId: string;
   private everSucceeded = false;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly admission: ReturnType<typeof initialTurnAdmission>;
+  private currentInput: CopilotInput | null = null;
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
+    this.admission = initialTurnAdmission(cb);
     // Self-assign the session id (idempotent create-or-resume via --session-id, verified). Announce
     // it up front so the server's resume pointer survives a crash/timeout before any `result` line.
     this.sessionId = opts.sessionId || randomUUID();
@@ -106,22 +111,34 @@ class CopilotRun {
     try { writeFileSync(path.join(opts.cwd, "AGENTS.md"), opts.systemPrompt); }
     catch (e) { cb.log.warn("copilot: AGENTS.md write failed", { detail: String(e) }); }
     cb.onSession(this.sessionId);
-    this.enqueue(opts.initialPrompt);
+    void this.enqueue(opts.initialPrompt, true).catch(() => {});
   }
 
-  enqueue(text: string): void { if (this.stopped) return; this.queue.push(text); this.pump(); }
+  enqueue(text: string, initial = false): Promise<void> {
+    const input: CopilotInput = { text, initial, admission: protocolAdmission() };
+    if (this.stopped) input.admission.reject(new Error("copilot stopped before input admission"));
+    else { this.queue.push(input); this.pump(); }
+    return input.admission.promise;
+  }
 
   private pump(): void {
     if (this.stopped || this.turnBusy || this.queue.length === 0) return;
     this.runTurn(this.queue.shift()!);
   }
 
-  private runTurn(prompt: string): void {
+  private rejectQueue(error: Error): void {
+    for (const input of this.queue.splice(0)) input.admission.reject(error);
+  }
+
+  private runTurn(input: CopilotInput): void {
+    this.currentInput = input;
+    const prompt = input.text;
     this.turnBusy = true;
     this.cb.onActivity("working", "turn");
     const args = buildArgs(prompt, this.sessionId, this.opts.model, reasoningEffort(this.opts.runtimeConfig));
     const proc = spawnSafe("copilot", args, { cwd: this.opts.cwd, stdio: ["ignore", "pipe", "pipe"], env: this.env });
     this.proc = proc;
+    proc.once("spawn", () => { input.admission.accept(); if (input.initial) this.admission.accept(); });
     let buf = "";
     let resultSeen = false;
     const errTail: string[] = [];
@@ -145,14 +162,18 @@ class CopilotRun {
       while (errLen > 4096 && errTail.length > 1) errLen -= errTail.shift()!.length;
     });
     proc.on("error", (e) => {
+      input.admission.reject(e);
+      if (input.initial) this.admission.reject(e);
+      if (this.currentInput === input) this.currentInput = null;
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
       this.cb.log.error("copilot spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "copilot not found");
-      if (!this.everSucceeded) this.cb.onExit(1); else this.pump();
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); } else this.pump();
     });
     proc.on("exit", (code) => {
       if (buf.trim()) processLine(buf); buf = "";
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
+      if (this.currentInput === input) this.currentInput = null;
       if (code === 0 || resultSeen) {
         this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return;
       }
@@ -162,13 +183,16 @@ class CopilotRun {
       const last = tail.split("\n").filter(Boolean).pop() || `copilot exited ${code ?? "signal"}`;
       this.cb.onTrajectory([{ kind: "text", text: "[copilot error] " + clip(tail).slice(0, 500) }]);
       this.cb.onActivity("error", last.slice(0, 200));
-      if (!this.everSucceeded) { this.cb.onExit(code ?? 1); return; } // first-turn hard failure → crashed
+      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.cb.onExit(code ?? 1); return; } // first-turn hard failure → crashed
       this.pump(); // a later turn failed; keep the session alive so the next message can retry
     });
   }
 
   stop(): void {
     this.stopped = true;
+    const error = new Error("copilot stopped before input admission");
+    this.currentInput?.admission.reject(error); this.currentInput = null;
+    this.rejectQueue(error);
     const p = this.proc; this.proc = null;
     if (p) { killTree(p); }
   }

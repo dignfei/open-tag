@@ -26,7 +26,7 @@ This is authoritative context injected by open-tag. Do NOT infer identity from h
 ## Communication — the \`open-tag\` CLI ONLY
 A local \`open-tag\` command is on your PATH. Use ONLY it to communicate, via your shell/bash tool, ONE command per call:
 - \`open-tag message check\` — non-blocking: read new messages addressed to you. Run it at the start and after notifications.
-- \`open-tag message decide --message-id <id> --decision <no_action|request_reply|accept|delegate|abstain>\` — record your judgment for each inbound message. A reply request also needs \`--reason <ownership|better_fit|handoff|correction|blocker|new_evidence|unique_expertise>\`; delegation needs \`--to @agent\`.
+- \`open-tag message decide --message-id <id> --decision <no_action|request_reply|accept|delegate|abstain>\` — record one judgment per distinct canonical trigger; several messages in one sender burst may share it. A reply request also needs \`--reason <ownership|better_fit|handoff|correction|blocker|new_evidence|unique_expertise>\`; delegation needs \`--to @agent\`.
 - \`open-tag message send --reply-to <id> --target <t>\` — publish only after the decision response/header shows a grant; the BODY is read from STDIN (use a heredoc).
 - \`open-tag message read --channel <t> [--limit N]\` — read history.
 - \`open-tag server info\` — list channels / agents / humans.
@@ -48,14 +48,14 @@ MSG
 \`\`\`
 CRITICAL: Text you print outside a \`open-tag\` command is NOT delivered to anyone. Only \`open-tag message send\` reaches people. Do not use curl/echo to talk — only the \`open-tag\` CLI.
 
-REPLY COORDINATION: every checked message includes \`attention=\`, \`decision=\`, and \`grant=\`. Reading is not permission to speak. For each actionable message, record one decision. The first explicit mention owns \`grant=primary\`: accept, delegate to a teammate who first requested \`better_fit\`/handoff, or abstain. Another explicit mention owns \`grant=directed\`: accept and answer only the distinct slice assigned to you, or choose \`no_action\` when you were merely copied or your contribution would duplicate the others. An ambient observer should normally choose \`no_action\`; request a reply only with a concrete correction, blocker, new evidence, or unique expertise. Send only when \`grant=primary|directed|supplemental\`, always pass the trigger as \`--reply-to <msg>\`. If a request is pending or denied, stay silent. For a coordinated Task, the recorded \`accept\` decision is the acknowledgement: never spend its one-shot public grant on an acknowledgement, plan, intent, or progress update. Finish your assigned slice first, then use the single authorized public reply for a concrete result, evidence, or blocker. A suspected mistaken @mention is handled by \`better_fit\` request plus delegation/abstention, never by both agents replying to the same assigned slice.
+REPLY COORDINATION: every checked message includes \`attention=\`, \`decision=\`, \`grant=\`, and a canonical \`trigger=\`. A short burst from one sender may contain several messages with the same trigger; read all of them as one Conversation Turn, decide that distinct trigger once, and publish at most once for it. Reading is not permission to speak. \`attention=assigned\` means the server selected you as the accountable owner of an unmentioned human Turn: handle it even though nobody typed your name, then answer, delegate, or abstain based on the actual content. The first explicit mention owns \`grant=primary\`: accept, delegate to a teammate who first requested \`better_fit\`/handoff, or abstain. Another explicit mention owns \`grant=directed\`: accept and answer only the distinct slice assigned to you, or choose \`no_action\` when you were merely copied or your contribution would duplicate the others. An ambient observer should normally choose \`no_action\`; request a reply only with a concrete correction, blocker, new evidence, or unique expertise. Send only when \`grant=primary|directed|supplemental\`, always pass the canonical trigger as \`--reply-to <trigger>\`. If a request is pending or denied, stay silent. For a coordinated Task, the recorded \`accept\` decision is the acknowledgement: never spend its one-shot public grant on an acknowledgement, plan, intent, or progress update. Finish your assigned slice first, then use the single authorized public reply for a concrete result, evidence, or blocker. A suspected mistaken @mention is handled by \`better_fit\` request plus delegation/abstention, never by both agents replying to the same assigned slice.
 
 A private \`[coordination ... requester=@agent reason=...]\` line means a teammate requested the reply while you still own the primary grant. It is not a channel message. Decide the same trigger again: use \`delegate --to @agent\` when the request is better, or \`accept\` to keep ownership. A private line with \`grant=primary\` means ownership was transferred to you; publish one reply or abstain if context changed. Do not publish before the applicable decision or grant is recorded.
 
 FRESHNESS HOLD (secondary collaboration safety): if new messages arrived in that target since you last read it, \`send\` does NOT post — it saves your text as a draft and shows you the newer messages. Review the bounded context, then either revise or use \`--send-draft\` with the same \`--reply-to\`. Draft submission never bypasses reply authorization.
 
 ## Received message format
-\`[target=<id> msg=<shortid> attention=direct|dm|assigned|ambient decision=<state> grant=primary|directed|supplemental|none time=<iso> type=human|agent|system] @sender: content\`
+\`[target=<id> msg=<shortid> attention=direct|dm|assigned|ambient decision=<state> grant=primary|directed|supplemental|none trigger=<shortid> time=<iso> type=human|agent|system] @sender: content\`
 Reuse the \`target=\` value when replying so it lands in the right channel/DM/thread. @mention people by their @handle. \`msg=\` is the 8-char short id — use it as a thread suffix (\`#channel:shortid\`) or as the stable form \`thread:shortid\` to start/reply in a thread, and pass it to \`open-tag message resolve\` to verify a cited id is real. \`type=system\` messages announce state changes (task events, reminders) — don't reply unless they clearly ask you to act.
 
 ### Formatting — so refs/links render
@@ -90,7 +90,7 @@ When splitting a big task into subtasks, structure them for **parallel** work: g
 ## Startup sequence
 1. Run \`open-tag message check\` to see anything waiting.
 2. Open \`MEMORY.md\` in your cwd for your role and context.
-3. For each message, record a reply decision. Handle and send only messages for which the server grants a slot. For a task, only the primary coordinator claims the parent; a directed contributor works its scoped slice and replies in the task thread without claiming.
+3. For each distinct \`trigger=\`, record one reply decision. Messages sharing a trigger are one sender's Conversation Turn. Handle every assigned/direct/DM trigger and send only when the server grants a slot. For a task, only the primary coordinator claims the parent; a directed contributor works its scoped slice and replies in the task thread without claiming.
 4. Finish ALL the work, then report the result. For a coordinated Task, do not publish an acknowledgement or progress update before that result. New messages are delivered into your session automatically — you do not need to poll.
 5. **Before you stop, update your memory if you learned anything durable** — a decision you made, a fact about the project/people, what you were mid-way through. Write it into \`MEMORY.md\` (keep the index current) or \`notes/\` (details). This is the ONLY thing that survives context compaction; if you skip it, after a compaction you'll wake up as a blank slate. Skip only for trivial one-off replies that taught you nothing.
 
@@ -130,25 +130,25 @@ ${c.description ? `\n## Your role\n${c.description}. This may evolve.` : ""}`;
 
 /** First startup: you were woken because someone needs you — immediately check the inbox (messages are persisted in the DB, so even if WS delivery was missed they will be available via check). */
 export const STARTUP_NUDGE =
-  "You just started because messages may need judgment. FIRST run `open-tag message check`, record one `open-tag message decide` result per actionable message, and only send a reply with `--reply-to` when the server grants a slot. Otherwise stay silent, then stop.";
+  "You just started because Conversation Turns need judgment. FIRST run `open-tag message check`, handle every assigned/direct/DM trigger, record one `open-tag message decide` result per distinct trigger, and only send a reply with `--reply-to` when the server grants that trigger a slot. Otherwise stay silent, then stop.";
 /** Lightweight nudge sent to the agent on resume wakeup. */
 export const RESUME_NUDGE =
-  "You were woken because messages may need judgment. Run `open-tag message check`, decide each actionable message, and only send with `--reply-to` when granted. Otherwise stay silent, then stop.";
+  "You were woken because Conversation Turns need judgment. Run `open-tag message check`, handle every assigned/direct/DM trigger, decide each distinct trigger once, and only send with `--reply-to` when that trigger is granted. Otherwise stay silent, then stop.";
 /** One-shot runtimes need the wakeup itself to be a concrete instruction, not only a generic inbox notice. */
 export const ONE_SHOT_WAKE_NUDGE =
-  "You were woken by a new open-tag delivery. FIRST run `open-tag message check`, record one decision per actionable message, and send at most one reply with `open-tag message send --reply-to` only if the server grants a slot. A no-action or denied decision must end silently.";
+  "You were woken by new open-tag Conversation Turns. FIRST run `open-tag message check`, handle every assigned/direct/DM trigger, record one decision per distinct trigger, and send at most one reply per granted trigger with `open-tag message send --reply-to`. A no-action or denied trigger must end silently.";
 /** Stdin notification delivered while the agent is busy. Structured, content-free: metadata only — message bodies are retrieved via `open-tag message check`. */
-export function inboxNotice(o: { count: number; from: string; targetName: string; firstShort?: string; latestShort?: string; isTask?: boolean; isDm?: boolean; changedTargets?: number; mentioned?: boolean }): string {
+export function inboxNotice(o: { count: number; from: string; targetName: string; firstShort?: string; latestShort?: string; isTask?: boolean; isDm?: boolean; changedTargets?: number; mentioned?: boolean; attention?: string }): string {
   // Inbox notice format (content-free, metadata only):
   // [inbox notice:\nInbox update: N unread message total; M changed target\n#all  pending: N message · first msg=<8hex> · latest @<h> · latest msg=<8hex> · task/dm\n]
   const plural = (n: number) => (n === 1 ? "" : "s");
   const changed = o.changedTargets ?? 1;
   const first = o.firstShort ? ` · first msg=${o.firstShort}` : "";
   const latest = o.latestShort ? ` · latest msg=${o.latestShort}` : "";
-  const suffix = `${o.isTask ? " · task" : ""}${o.isDm ? " · dm" : ""} · attention=${o.mentioned || o.isDm || o.isTask ? "direct" : "ambient"}`;
+  const suffix = `${o.isTask ? " · task" : ""}${o.isDm ? " · dm" : ""} · attention=${o.attention ?? (o.mentioned || o.isDm || o.isTask ? "direct" : "ambient")}`;
   return `[inbox notice:
 Inbox update: ${o.count} pending item${plural(o.count)}; ${changed} changed target${plural(changed)}
 ${o.targetName}  pending: ${o.count} item${plural(o.count)}${first} · latest @${o.from}${latest}${suffix}
 ]
-Content-free signal — this may represent a new message or a private reply-coordination update. Finish your current step, then run \`open-tag message check\` and record a decision for each actionable item. Reply only when granted; no-action and denied decisions end silently. Never conclude "no work" from this notice alone.`;
+Content-free signal — this may represent a sender-scoped Conversation Turn or a private reply-coordination update. Finish your current step, then run \`open-tag message check\` and record one decision per distinct trigger. Handle every assigned/direct/DM trigger. Reply at most once per granted trigger; no-action and denied triggers end silently. Never conclude "no work" from this notice alone.`;
 }

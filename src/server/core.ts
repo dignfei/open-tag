@@ -3,22 +3,32 @@ import { and, eq, ne, desc, gt, inArray, like, sql, or, isNull, isNotNull } from
 import { db, schema } from "../db/index.js";
 import { nextSeq, publish } from "./realtime.js";
 import { nextTaskNumber } from "../redis.js";
-import { broadcastToDaemons, daemonCount, isMachineConnected, sendToMachine } from "./daemonHub.js";
-import { agentHasScope } from "./scopes.js";
-import { newKey, hashToken } from "./auth.js";
+import { agentControlBlockReason, broadcastToDaemons, conversationTurnDeliveryBlockReason, daemonCount, isMachineConnected, requestDaemon, requestDaemonByMachine, sendToMachine } from "./daemonHub.js";
 import { createLogger } from "../log.js";
 import { canUserReadChannel } from "./channelAccess.js";
-import { canAutoJoinMentionedMembers, isWakeable } from "./agentWakePolicy.js";
+import { canAutoJoinMentionedMembers } from "./agentWakePolicy.js";
 import { UUID_RE } from "./util.js";
-import { ensureReplyRecipients, releaseUnavailableReplyGrant, type ReplyRecipient } from "./replyCoordination.js";
+import { ensureReplyRecipients, releaseUnavailableReplyGrant } from "./replyCoordination.js";
 import type { ReplySlot } from "./replyCoordinationPolicy.js";
-import { assignActivityRows, claimPendingAgentActivity, pendingActivityForStream, startAgentActivityRun, type AgentActivityItem } from "./agentActivity.js";
+import { assignActivityRows, claimPendingAgentActivity, pendingActivityForStream, type AgentActivityItem } from "./agentActivity.js";
+import { agentConfig } from "./agentConfig.js";
+import { attachMessageToConversationTurn, scheduleConversationTurn, type ConversationBoundaryKind } from "./conversationTurns.js";
+import { dispatchConversationTurn as dispatchConversationTurnWithDeps, dispatchLegacyMessage, prepareConversationTurnResponsibility, type ConversationTurnDispatchDeps } from "./conversationTurnDispatch.js";
 
 const log = createLogger("server:core");
-const PORT = Number(process.env.PORT ?? 7777);
-const SELF_URL = `http://localhost:${PORT}`;
-// Per-agent raw token cache (server process memory; DB stores hash only). Injected into agent process at spawn; resolveAgent looks up by hash. See slice10.
-const agentRawTokens = new Map<string, string>();
+const conversationTurnDispatchDeps: ConversationTurnDispatchDeps<AgentStartTarget> = {
+  channelMembers,
+  parseMentions,
+  agentStartTarget: conversationTurnAgentStartTarget,
+  sendAgentStart,
+  sendAgentDeliver,
+  markAgentUnavailable,
+  finalizeAgentActivityRun,
+};
+const legacyMessageDispatchDeps: ConversationTurnDispatchDeps<AgentStartTarget> = {
+  ...conversationTurnDispatchDeps,
+  agentStartTarget,
+};
 
 // Member description (bio) length limit (HumanDetailPanel/AgentDetailPanel both maxLength=3000 + "Description must be at most 3000 characters"). Shared by human+agent.
 export const MAX_DESCRIPTION = 3000;
@@ -179,10 +189,6 @@ export function serializeMsg(msg: typeof schema.messages.$inferSelect, mentions:
   };
 }
 
-export function agentReplyStreamId(messageId: string, agentId: string): string {
-  return `${messageId}:${agentId}`;
-}
-
 async function publishThreadUpdated(
   serverId: string,
   ch: typeof schema.channels.$inferSelect | undefined,
@@ -319,26 +325,6 @@ export async function listSaved(serverId: string, memberType: "user" | "agent", 
   return { saved, hasMore };
 }
 
-export async function agentConfig(agentId: string) {
-  // Skip soft-deleted agents (treated as non-existent → null, which every caller already handles): otherwise the
-  // mint branch below would re-set `agentTokenHash` on a deleted row, reverting the clear done on delete (C4).
-  const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, agentId), isNull(schema.agents.deletedAt))))[0];
-  if (!a) return null;
-  // Per-agent independent token (sk_agent_* prefix, slice10):
-  // cache hit → reuse; first time → mint + store hash + cache raw; agent already running (cache lost after server restart but agent still running) → do not re-mint or send new token (daemon ignores agent:start for running agents, agent continues using old token, server verifies via DB hash) → zero desync.
-  let token = agentRawTokens.get(a.id);
-  if (!token && !(a.status === "active" && a.agentTokenHash)) {
-    token = newKey("sk_agent_");
-    agentRawTokens.set(a.id, token);
-    await db.update(schema.agents).set({ agentTokenHash: hashToken(token) }).where(eq(schema.agents.id, a.id));
-  }
-  return {
-    name: a.name, displayName: a.displayName, description: a.description,
-    model: a.model, runtime: a.runtime, runtimeConfig: a.runtimeConfig, sessionId: a.sessionId ?? undefined,
-    serverUrl: SELF_URL, serverId: a.serverId, agentId: a.id, agentToken: token,
-  };
-}
-
 export async function createMessage(opts: {
   serverId: string; channelId: string;
   senderType: "user" | "agent" | "system"; senderId: string | null; senderName: string;
@@ -413,6 +399,31 @@ export async function createMessage(opts: {
       mentions.map((x) => ({ messageId: msg!.id, mentionType: x.type, mentionId: x.id, mentionName: x.name })),
     );
   }
+  const agentMentioned = mentions.some((m) => m.type === "agent");
+  const boundaryKind: ConversationBoundaryKind = opts.asTask
+    ? "task"
+    : opts.messageType === "action"
+      ? "action"
+      : ch?.type === "dm" || agentMentioned
+        ? "direct"
+        : "ambient";
+  const attachedTurn = opts.senderId && (opts.senderType === "user" || opts.senderType === "agent")
+    && opts.messageType !== "agent_activity_receipt"
+    ? await attachMessageToConversationTurn({
+      serverId: opts.serverId,
+      channelId: opts.channelId,
+      senderType: opts.senderType,
+      senderId: opts.senderId,
+      messageId: msg!.id,
+      seq,
+      boundaryKind,
+      replyToMessageId: opts.replyToMessageId,
+      mergeDirect: ch?.type === "dm",
+    })
+    : null;
+  if (attachedTurn && !attachedTurn.merged) {
+    await prepareConversationTurnResponsibility(attachedTurn.turn, ch, members, mentions);
+  }
   await db.update(schema.channels).set({ lastMessageAt: new Date() }).where(eq(schema.channels.id, opts.channelId));
 
   // Task creation immediately creates a thread (all tasks have a thread, parentMessageId=task message; created before done)
@@ -429,60 +440,25 @@ export async function createMessage(opts: {
     await sysTaskMsg(opts.serverId, opts.channelId, `${opts.senderName} created task #${taskNumber} "${taskTitle(opts.content)}"`, actor); // audit trail (task system messages)
   }
 
-  // Agent-side wake: only wake agents @-mentioned (in channel), or agent members in a DM.
-  const isDm = ch?.type === "dm";
-  const suppressAgentWake = opts.messageType === "agent_activity_receipt"; // human observability row, never collaboration input
   // Message in thread channel → broadcast thread:updated (parentMessageId + replyCount + participantIds)
   await publishThreadUpdated(opts.serverId, ch, opts.senderId, opts.senderType);
-  const mentionedAgents = new Set(mentions.filter((m) => m.type === "agent").map((m) => m.id));
-  // inbox notice uses human-readable target (#name / dm:@sender), not uuid. threads use channel name.
-  const targetName = isDm ? `dm:@${opts.senderName}` : `#${ch?.name ?? opts.channelId}`;
-  const msgShort = msg!.id.slice(0, 8);
-  const woken: string[] = [];
-  const wakeable: { mem: Member; mentioned: boolean; receipt: ReplyRecipient }[] = [];
-  const mentionRank = new Map(mentions.filter((m) => m.type === "agent").map((m, i) => [m.id, i]));
-  const agentMembers = members.filter((m): m is Member => m.type === "agent" && m.id !== opts.senderId)
-    .sort((a, b) => (mentionRank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (mentionRank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
-  for (const mem of agentMembers) {
-    if (mem.type !== "agent" || mem.id === opts.senderId) continue;
-    if (suppressAgentWake) continue;
-    const mentioned = mentionedAgents.has(mem.id);
-    // Channel messages delivered to all agent members (not limited to @; wake even without @, model decides whether to reply).
-    // Ambient wake without @ requires inbox:receive scope; @-mentioned or DM always delivers.
-    if (!isDm && !mentioned) {
-      const a0 = (await db.select({ scopes: schema.agents.scopes }).from(schema.agents).where(eq(schema.agents.id, mem.id)))[0];
-      if (!isWakeable({ channelType: ch?.type ?? "channel", mentioned, hasInboxScope: agentHasScope(a0?.scopes, "inbox:receive"), senderType: opts.senderType })) continue;
-    }
-    wakeable.push({ mem, mentioned, receipt: { agentId: mem.id, attention: mentioned ? "direct" : isDm ? "dm" : "ambient" } });
-  }
-  await ensureReplyRecipients({ serverId: opts.serverId, channelId: opts.channelId, messageId: msg!.id, recipients: wakeable.map((x) => x.receipt) });
-  for (const { mem, mentioned } of wakeable) {
-    const target = await agentStartTarget(opts.serverId, mem.id);
-    if (!target.ok) {
-      await releaseUnavailableReplyGrant(msg!.id, mem.id);
-      if (target.reason !== "agent not found") await markAgentUnavailable(opts.serverId, mem.id, target.reason);
-      continue;
-    }
-    const replyStreamId = agentReplyStreamId(msg!.id, mem.id);
-    const runStart = await startAgentActivityRun(opts.serverId, mem.id, opts.channelId, replyStreamId);
-    await publish(opts.serverId, { type: "agent:reply", agentId: mem.id, channelId: opts.channelId, streamId: replyStreamId, name: mem.displayName || mem.name, triggerMessageId: msg!.id, op: "start", entries: [runStart] });
-    const startSent = sendAgentStart(opts.serverId, target, mem.id);
-    const deliverSent = startSent && sendAgentDeliver(opts.serverId, target, { agentId: mem.id, seq, from: opts.senderName, target: opts.channelId, targetName, msgShort, isTask: !!opts.asTask, message: { content: opts.content }, mentioned, streamId: replyStreamId });
-    if (!deliverSent) {
-      await releaseUnavailableReplyGrant(msg!.id, mem.id);
-      await publish(opts.serverId, { type: "agent:reply", agentId: mem.id, channelId: opts.channelId, streamId: replyStreamId, name: mem.displayName || mem.name, op: "error", text: "machine offline" });
-      await finalizeAgentActivityRun(opts.serverId, mem.id, opts.channelId, replyStreamId, mem.displayName || mem.name, "error");
-      await markAgentUnavailable(opts.serverId, mem.id, "machine offline");
-      continue;
-    }
-    woken.push(mem.name + (mentioned ? "(@)" : ""));
+  if (attachedTurn) {
+    for (const sealedId of attachedTurn.sealedTurnIds) scheduleConversationTurn(sealedId, new Date());
+    scheduleConversationTurn(attachedTurn.turn.id, attachedTurn.turn.dispatchAfter);
+  } else if (opts.messageType !== "agent_activity_receipt") {
+    await dispatchLegacyMessage({ msg: msg!, channel: ch, members, mentions, asTask: !!opts.asTask }, legacyMessageDispatchDeps);
   }
   log.info("message created", {
     seq, channel: opts.channelId, from: opts.senderName, kind: opts.senderType,
     mentions: mentions.map((x) => x.name),
-    wakeAgents: woken,
+    conversationTurnId: attachedTurn?.turn.id ?? null,
+    turnMerged: attachedTurn?.merged ?? false,
   });
   return msg!;
+}
+
+export async function dispatchConversationTurn(turnId: string): Promise<void> {
+  await dispatchConversationTurnWithDeps(turnId, conversationTurnDispatchDeps);
 }
 
 export async function finalizeAgentActivityRun(serverId: string, agentId: string, channelId: string, streamId: string, agentName: string, state: "handled" | "error"): Promise<void> {
@@ -885,6 +861,7 @@ async function markAgentUnavailable(serverId: string, agentId: string, reason: s
 }
 type AgentStartTarget = { ok: true; machineId: string | null; cfg: NonNullable<Awaited<ReturnType<typeof agentConfig>>> };
 type AgentControlTarget = { ok: true; machineId: string | null };
+type AgentControlResult = { ok: boolean; reason?: string };
 
 function sendAgentStart(serverId: string, target: AgentStartTarget, agentId: string): boolean {
   const msg = { type: "agent:start", agentId, config: target.cfg };
@@ -926,6 +903,17 @@ function sendAgentControl(serverId: string, target: AgentControlTarget, msg: Rec
   return true;
 }
 
+async function requestAgentControl(serverId: string, target: AgentControlTarget, msg: Record<string, unknown>): Promise<AgentControlResult> {
+  const blocked = agentControlBlockReason(serverId, target.machineId);
+  if (blocked) return { ok: false, reason: blocked };
+  const response = target.machineId
+    ? await requestDaemonByMachine(target.machineId, msg, 30_000)
+    : await requestDaemon(serverId, msg, 30_000, true);
+  if (response?.error) return { ok: false, reason: String(response.error) };
+  if (response?.type !== "rpc:ack") return { ok: false, reason: "invalid daemon control response" };
+  return { ok: true };
+}
+
 async function agentStartTarget(serverId: string, agentId: string): Promise<AgentStartTarget | { ok: false; reason: string }> {
   const a = (await db.select({
     machineId: schema.agents.machineId,
@@ -950,6 +938,13 @@ async function agentStartTarget(serverId: string, agentId: string): Promise<Agen
   if (!cfg) return { ok: false, reason: "agent not found" };
   return { ok: true, machineId: a.machineId, cfg };
 }
+
+async function conversationTurnAgentStartTarget(serverId: string, agentId: string): Promise<AgentStartTarget | { ok: false; reason: string; retryable?: boolean }> {
+  const target = await agentStartTarget(serverId, agentId);
+  if (!target.ok) return target.reason === "no daemon online" ? { ...target, retryable: false } : target;
+  const reason = conversationTurnDeliveryBlockReason(serverId, target.machineId);
+  return reason ? { ok: false, reason, retryable: false } : target;
+}
 async function agentControlTarget(serverId: string, agentId: string): Promise<AgentControlTarget | { ok: false; reason: string }> {
   const a = (await db.select({
     machineId: schema.agents.machineId,
@@ -972,23 +967,19 @@ export async function startAgent(serverId: string, agentId: string): Promise<{ o
     if (target.reason !== "agent not found") await markAgentUnavailable(serverId, agentId, target.reason);
     return { ok: false, reason: target.reason };
   }
-  if (!sendAgentStart(serverId, target, agentId)) {
-    await markAgentUnavailable(serverId, agentId, "machine offline");
-    return { ok: false, reason: "machine offline" };
-  }
+  const result = await requestAgentControl(serverId, target, { type: "agent:start", agentId, config: target.cfg });
+  if (!result.ok) { await markAgentUnavailable(serverId, agentId, result.reason ?? "cannot start"); return result; }
   await publishAgentState(serverId, agentId);
   return { ok: true };
 }
-export async function stopAgent(serverId: string, agentId: string): Promise<boolean> {
+export async function stopAgent(serverId: string, agentId: string): Promise<AgentControlResult> {
   const target = await agentControlTarget(serverId, agentId);
-  if (target.ok) {
-    if (!sendAgentControl(serverId, target, { type: "agent:stop", agentId })) log.warn("agent stop target unavailable", { agentId, reason: "machine offline" });
-  } else if (target.reason !== "agent not found") {
-    log.warn("agent stop target unavailable", { agentId, reason: target.reason });
-  }
+  if (!target.ok) return target;
+  const result = await requestAgentControl(serverId, target, { type: "agent:stop", agentId });
+  if (!result.ok) return result;
   await db.update(schema.agents).set({ status: "inactive", activity: "offline" }).where(and(eq(schema.agents.id, agentId), eq(schema.agents.serverId, serverId)));
   await publishAgentState(serverId, agentId);
-  return true;
+  return { ok: true };
 }
 export async function dequeueAgent(serverId: string, agentId: string): Promise<boolean> {
   const target = await agentControlTarget(serverId, agentId);
@@ -1001,16 +992,14 @@ export async function dequeueAgent(serverId: string, agentId: string): Promise<b
   await publishAgentState(serverId, agentId);
   return true;
 }
-export async function resetAgent(serverId: string, agentId: string, wipeWorkspace = false, clearMemory = false): Promise<boolean> {
+export async function resetAgent(serverId: string, agentId: string, wipeWorkspace = false, clearMemory = false): Promise<AgentControlResult> {
   const target = await agentControlTarget(serverId, agentId);
-  if (target.ok) {
-    if (!sendAgentControl(serverId, target, { type: "agent:reset", agentId, wipeWorkspace, clearMemory })) log.warn("agent reset target unavailable", { agentId, reason: "machine offline" });
-  } else if (target.reason !== "agent not found") {
-    log.warn("agent reset target unavailable", { agentId, reason: target.reason });
-  }
+  if (!target.ok) return target;
+  const result = await requestAgentControl(serverId, target, { type: "agent:reset", agentId, wipeWorkspace, clearMemory });
+  if (!result.ok) return result;
   await db.update(schema.agents).set({ status: "inactive", activity: "offline", sessionId: null }).where(and(eq(schema.agents.id, agentId), eq(schema.agents.serverId, serverId)));
   await publishAgentState(serverId, agentId);
-  return true;
+  return { ok: true };
 }
 /** Profile (displayName/description) changed → ask the daemon to sync the workspace MEMORY.md title + `## Role`.
  *  Pass the full current values (not just the changed field); the daemon rewrites only those, preserving the rest. */

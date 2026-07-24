@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildHermesArgs, buildHermesPrompt, hermesBridgeDecision, hermesProfile, hermesProfileHome, hermesRuntimeEnv, parseHermesSessionId, parseHermesTurnEvents, postHermesBridgeMessage } from "./hermesRuntime.js";
+import { buildHermesArgs, buildHermesPrompt, hermesBridgeDecision, hermesProfile, hermesProfileHome, hermesRuntime, hermesRuntimeEnv, parseHermesSessionId, parseHermesTurnEvents, postHermesBridgeMessage } from "./hermesRuntime.js";
 import { discoverHermesProfilesFromRoots } from "./listModels.js";
 
 test("Hermes profile comes from runtimeConfig first, then model, then default", () => {
@@ -151,4 +151,31 @@ test("Hermes bridge does not auto-submit a freshness-held draft", async () => {
   assert.deepEqual(calls, [
     { target: "dm:@User", content: "Final answer" },
   ]);
+});
+
+test("Hermes rejects initial admission exactly once when its argv process cannot spawn", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-hermes-missing-"));
+  const admissions: Array<Error | undefined> = [];
+  let session: ReturnType<typeof hermesRuntime.start> | undefined;
+  try {
+    session = hermesRuntime.start({ cwd: root, env: { PATH: root }, systemPrompt: "system", initialPrompt: "start" }, {
+      onSession: () => {},
+      onInitialTurnAdmission: (error) => admissions.push(error),
+      onActivity: () => {},
+      onTrajectory: () => {},
+      onExit: () => {},
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+    });
+    const runningDelivery = assert.rejects(session.deliver("queued after initial input"));
+    const deadline = Date.now() + 1_000;
+    while (admissions.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(admissions.length, 1);
+    assert.ok(admissions[0] instanceof Error);
+    await runningDelivery;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(admissions.length, 1);
+  } finally {
+    session?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

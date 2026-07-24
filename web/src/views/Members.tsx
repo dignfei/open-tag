@@ -186,7 +186,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
     if (mode === "restart") r = await api("POST", `/api/agents/${id}/restart`);
     else if (mode === "reset") r = await api("POST", `/api/agents/${id}/reset`, { restart: true });
     else r = await api("POST", `/api/agents/${id}/reset`, { wipeWorkspace: true, restart: true });
-    if (r?.error) startFail(r); // pure restart returns 503 when daemon offline; reset/full return ok (restart leg stays best-effort)
+    if (r?.error) startFail(r); // lifecycle RPCs settle before return; a failed reset/stop returns 503 and aborts the restart phase
     setTimeout(refetch, 500);
   };
   const del = async () => { if (!(await confirm({ title: t("members.deleteAgentTitle", { name: a.name }), message: t("members.deleteAgentMessage"), confirmLabel: t("members.delete"), danger: true }))) return; await api("DELETE", "/api/agents/" + id); await reload(); onDeleted(); };

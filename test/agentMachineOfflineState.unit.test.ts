@@ -43,7 +43,7 @@ test("startAgent refuses a disconnected target machine before marking the agent 
     /export function isMachineConnected\(machineId: string\): boolean/,
     "daemonHub should expose the current websocket connection state",
   );
-  assert.match(coreSrc, /import \{ broadcastToDaemons, daemonCount, isMachineConnected, sendToMachine \} from "\.\/daemonHub\.js";/);
+  assert.match(coreSrc, /import \{[^}]*\bisMachineConnected\b[^}]*\} from "\.\/daemonHub\.js";/);
   assert.match(
     coreSrc,
     /a\.machineStatus !== "online" \|\| !isMachineConnected\(a\.machineId\)/,

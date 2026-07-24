@@ -16,6 +16,8 @@ import { reconcileMachinesOnBoot, startMachineSweeper } from "./machineLiveness.
 import { sendJson, sendErr } from "./util.js";
 import { createLogger } from "../log.js";
 import { shouldServeAppShell } from "./staticRoutes.js";
+import { dispatchConversationTurn } from "./core.js";
+import { startConversationTurnScheduler } from "./conversationTurns.js";
 
 // ── Security headers (helmet) ────────────────────────────────────────────────
 // CSP, COEP, and CORP are disabled here: the Vite-built frontend uses inline
@@ -153,6 +155,7 @@ reconcileCounters()
   // Before listening (so no daemon can reconnect first), flip stale "online" machines to offline —
   // a fresh server instance has zero daemons connected; they re-mark online on reconnect.
   .then(() => reconcileMachinesOnBoot().catch((e) => log.error("machine reconcile failed (continuing)", { detail: String(e?.message ?? e) })))
+  .then(() => startConversationTurnScheduler(dispatchConversationTurn).catch((e) => log.error("conversation turn scheduler failed (continuing)", { detail: String(e?.message ?? e) })))
   .finally(() => server.listen(PORT, () => {
     log.info("control plane up", { url: `http://localhost:${PORT}`, logs: "~/.open-tag/logs/" });
     startMachineSweeper(); // backstop: offline machines whose daemon died without a clean WS close

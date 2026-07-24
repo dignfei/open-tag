@@ -1,10 +1,10 @@
 // daemon control plane: WS /daemon/connect?key= (ServerToMachine / MachineToServer)
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import type { Server } from "node:http";
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { BOOTSTRAP_KEY, hashToken, safeEqual } from "./auth.js";
-import { registerDaemon, unregisterDaemon, resolveDaemonRequest, registerMachineConn, unregisterMachineConn, isCurrentMachineConn } from "./daemonHub.js";
+import { conversationTurnDeliveryBlockReason, registerDaemon, registerDaemonCapabilities, unregisterDaemon, resolveDaemonRequest, registerMachineConn, unregisterMachineConn, isCurrentMachineConn } from "./daemonHub.js";
 import { publish } from "./realtime.js";
 import { createLogger } from "../log.js";
 import { MACHINE_REJECTED_CODE } from "../daemonProtocol.js";
@@ -12,7 +12,9 @@ import { catchUpAgentsOnMachine } from "./reconnectCatchup.js";
 import { markMachineAgentsOffline } from "./machineLiveness.js";
 import { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog, startAgentActivityRun } from "./agentActivity.js";
 import { finalizeAgentActivityRun } from "./core.js";
+import { acceptAgentDeliveryAck, noteAgentDeliveryPending, rejectAgentDeliveryAck } from "./agentDeliveryAck.js";
 import { createWsFrameGate } from "./wsFrameGate.js";
+import { handleConversationTurnDaemonTopologyChange, resumeConversationTurnsForMachine } from "./conversationTurnRecovery.js";
 
 export { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog } from "./agentActivity.js";
 
@@ -57,12 +59,23 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
       if (msg.type === "ready") {
         const runningIds: string[] = Array.isArray(msg.runningAgents) ? msg.runningAgents : [];
         machineId = await onReady(serverId!, key, msg);
+        registerDaemonCapabilities(ws, msg.capabilities);
+        const alreadyCurrent = isCurrentMachineConn(machineId, ws);
         registerMachineConn(machineId, ws);
         try { ws.send(JSON.stringify({ type: "ready:ack", machineId })); } catch { /* */ }
         // The machine connection must be indexed before catch-up sends agent:start/deliver to it.
-        void catchUpAgentsOnMachine(serverId!, machineId, runningIds).catch((e: any) => log.error("catch-up failed", { machineId, detail: String(e?.message ?? e) }));
+        void (async () => {
+          if (!alreadyCurrent && !conversationTurnDeliveryBlockReason(serverId!, machineId)) {
+            await resumeConversationTurnsForMachine(serverId!, machineId, false);
+          }
+          await handleConversationTurnDaemonTopologyChange(serverId!);
+          await catchUpAgentsOnMachine(serverId!, machineId, runningIds);
+        })().catch((e: any) => log.error("catch-up failed", { machineId, detail: String(e?.message ?? e) }));
       }
       else if (msg.type === "agent:status" || msg.type === "agent:activity") await onAgentUpdate(serverId!, msg);
+      else if (msg.type === "agent:deliver:pending") noteAgentDeliveryPending(typeof msg.deliveryId === "string" ? msg.deliveryId : undefined);
+      else if (msg.type === "agent:deliver:ack") acceptAgentDeliveryAck(typeof msg.deliveryId === "string" ? msg.deliveryId : undefined, msg.agentId, msg.seq);
+      else if (msg.type === "agent:deliver:nack") rejectAgentDeliveryAck(typeof msg.deliveryId === "string" ? msg.deliveryId : undefined, msg.agentId, msg.seq, typeof msg.error === "string" ? msg.error : undefined);
       else if (msg.type === "agent:session" && msg.agentId) { await db.update(schema.agents).set({ sessionId: msg.sessionId }).where(eq(schema.agents.id, msg.agentId)); await publish(serverId!, { type: "agent:session", agentId: msg.agentId, sessionId: msg.sessionId }); } // forward to the frontend
       else if (msg.type === "agent:trajectory" && msg.agentId) {
         const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
@@ -88,13 +101,15 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
         await db.update(schema.machines).set({ lastHeartbeat: new Date(), status: "online" }).where(eq(schema.machines.id, machineId));
         if (prev && prev.status !== "online") await publish(serverId!, { type: "machine", online: true, machineId });
       }
-      else if ((msg.type === "workspace:file_tree" || msg.type === "workspace:file_content" || msg.type === "workspace:file_write" || msg.type === "workspace:file_delete" || msg.type === "skills:list" || msg.type === "models" || msg.type === "agent:resource-budget" || msg.type === "rpc:nack") && msg.requestId) resolveDaemonRequest(msg.requestId, msg);
+      else if ((msg.type === "workspace:file_tree" || msg.type === "workspace:file_content" || msg.type === "workspace:file_write" || msg.type === "workspace:file_delete" || msg.type === "skills:list" || msg.type === "models" || msg.type === "agent:resource-budget" || msg.type === "rpc:ack" || msg.type === "rpc:nack") && msg.requestId) resolveDaemonRequest(msg.requestId, msg);
     } catch (e: any) { log.error("ws handler error", { type: msg?.type, detail: String(e?.message ?? e) }); }
   });
   ws.on("close", async () => {
     clearInterval(ping);
     const wasCurrent = machineId ? isCurrentMachineConn(machineId, ws) : false;
     unregisterDaemon(ws); unregisterMachineConn(ws);
+    if (serverId) await handleConversationTurnDaemonTopologyChange(serverId)
+      .catch((e: any) => log.error("unbound Turn topology recovery failed", { serverId, detail: String(e?.message ?? e) }));
     // daemon disconnected → mark this machine offline (otherwise the list keeps showing it online)
     if (machineId && wasCurrent) {
       await db.update(schema.machines).set({ status: "offline" }).where(eq(schema.machines.id, machineId)).catch(() => {});
@@ -135,16 +150,25 @@ async function onReady(serverId: string, key: string, msg: any): Promise<string>
   }
   log.info("machine ready", { hostname, os: msg.os, runtimes: msg.runtimes ?? [], daemonVersion: msg.daemonVersion });
   await publish(serverId, { type: "machine", online: true, machineId, hostname, runtimes: msg.runtimes ?? [] }); // machineId in the machine:status payload
-  // Stale-agent reconciliation: on (re)connect the daemon reports the agents it is actually running (ready.runningAgents). An agent marked active in the DB but absent from that list = process is dead
-  // (the case where both server and daemon restarted) → set inactive, so the next spawn lets agentConfig re-mint the token normally (otherwise a stale active leaves agentToken undefined → agent 401).
-  // When only the server restarts and the daemon stays alive → runningAgents includes the live agent → no false reset (keeps zero-desync).
+  // Reconcile both directions against the authenticated machine's process inventory. A live process may have
+  // been marked inactive while its machine was disconnected; restoring active without touching its token keeps
+  // the already-running process authenticated. Conversely, active/queued rows absent from the inventory are stale.
   const runningIds: string[] = Array.isArray(msg.runningAgents) ? msg.runningAgents : [];
-  const onMachine = await db.select().from(schema.agents).where(and(eq(schema.agents.machineId, machineId), or(eq(schema.agents.status, "active"), eq(schema.agents.status, "queued"))));
+  const onMachine = await db.select().from(schema.agents).where(and(eq(schema.agents.machineId, machineId), isNull(schema.agents.deletedAt)));
   for (const a of onMachine) {
-    if (runningIds.includes(a.id)) continue;
-    await db.update(schema.agents).set({ status: "inactive", activity: "offline" }).where(eq(schema.agents.id, a.id));
-    await publish(serverId, { type: "agent", id: a.id, name: a.name, status: "inactive", activity: "offline" });
-    log.info("reconciled stale-active/queued agent → inactive", { agentId: a.id, machineId });
+    if (runningIds.includes(a.id)) {
+      if (a.status !== "active") {
+        await db.update(schema.agents).set({ status: "active" }).where(eq(schema.agents.id, a.id));
+        await publish(serverId, { type: "agent", id: a.id, name: a.name, status: "active", activity: a.activity });
+        log.info("reconciled reported running agent → active", { agentId: a.id, machineId });
+      }
+      continue;
+    }
+    if (a.status === "active" || a.status === "queued") {
+      await db.update(schema.agents).set({ status: "inactive", activity: "offline" }).where(eq(schema.agents.id, a.id));
+      await publish(serverId, { type: "agent", id: a.id, name: a.name, status: "inactive", activity: "offline" });
+      log.info("reconciled stale-active/queued agent → inactive", { agentId: a.id, machineId });
+    }
   }
   return machineId;
 }
