@@ -432,13 +432,7 @@ main.content-col > .composer{position:absolute;left:0;right:var(--scrollbar-gutt
 .card-overlay{cursor:grabbing;box-shadow:0 16px 36px rgba(12,10,9,.20)}
 .card-overlay .card.task{margin-bottom:0;border-color:var(--hair-strong);transform:scale(1.03)}
 @media (prefers-reduced-motion:reduce){.card-overlay .card.task{transform:none}}
-.actlog{display:flex;flex-direction:column;gap:2px}
-.act{display:flex;align-items:baseline;gap:10px;padding:5px 6px;border-radius:6px;font-size:14px;line-height:1.5}
-.act:hover{background:var(--surface-strong)}
-.act .act-t{flex:none;width:64px;font-size:11px;color:var(--muted-soft);font-family:ui-monospace,monospace}
-.act .act-tool{flex:none;color:var(--muted);font-weight:600}
-.act .act-x{flex:1;min-width:0;color:var(--body);overflow-wrap:anywhere}
-.act .act-x.muted{color:var(--muted)} .act .act-x.mono{font-family:ui-monospace,monospace;font-size:13px;color:var(--muted)}
+.actlog{display:flex;flex-direction:column;gap:2px;padding:4px 2px} /* rows are the shared .msg-act-event timeline (AgentActivity.tsx) — same renderer as chat disclosures */
 .chtabs{display:flex;gap:2px;margin-left:10px}
 .chtabs button{background:none;border:0;padding:4px 11px;font-size:13px;color:var(--muted);cursor:pointer;border-radius:8px}
 .chtabs button:hover{background:var(--surface-strong)}
@@ -632,13 +626,9 @@ main.content-col>.scroll .msg-head>.msg-agent-state{padding-right:76px}
 .msg-act-event-content{min-width:0;overflow-wrap:anywhere}
 .msg-act-kind{display:inline-flex;align-items:center;gap:5px;color:var(--ink-2);font-size:12px}
 .msg-act-event code{display:block;margin-top:3px;padding:6px 8px;border-radius:4px;background:var(--surface-strong);color:var(--ink-2);font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
-.msg-act.is-receipt{position:relative;margin-top:5px;margin-bottom:0}
-.msg-act.is-receipt::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:var(--hair);transform-origin:left;animation:msg-act-settle var(--dur-signature) var(--ease-decel) both}
-.msg-act.is-receipt .msg-act-state{width:20px;height:20px;border:1px solid var(--hair-strong);border-radius:50%;color:var(--ink-2);animation:msg-act-check var(--dur-slow) var(--ease-quint) both}
+.msg-act.is-receipt{margin-top:5px;margin-bottom:0} /* receipt disclosure = same look as the message-attached one (no underline/badge — deliberate) */
 @keyframes msg-act-pulse{0%{box-shadow:0 0 0 0 var(--status-blue)}70%,100%{box-shadow:0 0 0 5px transparent}}
-@keyframes msg-act-check{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
-@keyframes msg-act-settle{from{transform:scaleX(0)}to{transform:scaleX(1)}}
-@media (prefers-reduced-motion:reduce){.msg-act-event.is-current .msg-act-mark,.msg-act.is-receipt::after,.msg-act.is-receipt .msg-act-state{animation:none}.msg-act-chevron{transition:none}}
+@media (prefers-reduced-motion:reduce){.msg-act-event.is-current .msg-act-mark{animation:none}.msg-act-chevron{transition:none}}
 .av-status{position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-radius:50%;border:2px solid var(--surface);background:var(--muted-soft)}
 .av-status.sleeping{background:var(--status-blue)}
 .av-status.offline,.av-status.inactive{background:var(--muted-soft)}

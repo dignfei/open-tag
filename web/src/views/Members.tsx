@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageCircle, X, Wrench, ChevronRight, Check, Copy, Eye, EyeOff } from "lucide-react";
+import { MessageCircle, X, ChevronRight, Check, Copy, Eye, EyeOff } from "lucide-react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,6 +10,7 @@ import { useStore } from "../store.tsx";
 import { fmtDateTime } from "../format";
 import { IconMonitor } from "../icons.tsx";
 import { Avatar, AvatarPicker, resolveAvatar } from "../Avatar.tsx";
+import { ActivityEventRow } from "../AgentActivity.tsx";
 import { Select } from "../Select.tsx";
 import { useConfirm, useEscClose } from "../ConfirmModal.tsx";
 import { useToast } from "../toast.tsx";
@@ -436,18 +437,14 @@ function ActivityTab({ id, name }: { id: string; name: string }) {
     else if (e.type === "trajectory" && e.agentId === id) setItems((x) => [...x, ...(e.entries || []).map((en: any) => ({ timestamp: Date.now(), entry: { kind: en.kind === "tool" ? "tool_start" : (en.kind || (en.toolName ? "tool_start" : "text")), text: en.text, toolName: en.toolName, toolInput: en.toolInput, activity: en.activity, detail: en.detail } }))]);
   }), [id]);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [items]);
-  const time = (ts: number) => { try { return new Date(ts).toLocaleTimeString(undefined, { hour12: false }); } catch { return ""; } };
   const entryOf = (e: any) => ({ ...e, kind: e.kind === "tool" ? "tool_start" : e.kind });
   const visible = (e: any) => !(e.kind === "status" && !e.activity && !e.detail) && !(e.kind === "tool_start" && e.toolName === "agentMessage" && !e.text);
   return (
     <div className="scroll" ref={scrollRef}>
       {items.length === 0 ? <div className="empty">{t("members.activityEmpty", { name })}</div>
-        : <div className="actlog">{items.filter((it) => visible(entryOf(it.entry))).map((it, i) => {
-          const e = entryOf(it.entry); const t2 = time(it.timestamp);
-          if (e.kind === "tool_start") return <div className="act" key={i}><span className="act-t">{t2}</span><span className="act-tool"><Wrench size={11} /> {e.toolName}</span><span className="act-x mono">{e.toolInput}</span></div>;
-          if (e.kind === "text") return <div className="act" key={i}><span className="act-t">{t2}</span><span className="act-x">{e.text}</span></div>;
-          return <div className="act" key={i}><span className="act-t">{t2}</span><span className={"dot " + (e.activity || "")} /><span className="act-x muted">{e.activity}{e.detail ? " · " + e.detail : ""}</span></div>;
-        })}</div>}
+        : <div className="actlog">{items.filter((it) => visible(entryOf(it.entry))).map((it, i) => (
+          <ActivityEventRow key={i} item={{ ...entryOf(it.entry), timestamp: it.timestamp }} />
+        ))}</div>}
     </div>
   );
 }
