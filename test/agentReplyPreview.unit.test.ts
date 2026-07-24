@@ -147,11 +147,12 @@ test("channel and thread render the same Activity disclosure and no permanent Li
 test("daemon and server preserve the run context while runtime narration stays out of public text", () => {
   const daemon = fs.readFileSync(new URL("../src/daemon/agentManager.ts", import.meta.url), "utf8");
   const core = fs.readFileSync(new URL("../src/server/core.ts", import.meta.url), "utf8");
+  const turnDispatch = fs.readFileSync(new URL("../src/server/conversationTurnDispatch.ts", import.meta.url), "utf8");
   const routes = fs.readFileSync(new URL("../src/server/routes-agent.ts", import.meta.url), "utf8");
   assert.match(daemon, /channelId: preview\?\.channelId, streamId: preview\?\.streamId/);
   assert.match(daemon, /runSeq: preview \? \+\+preview\.eventSeq : undefined/);
   assert.doesNotMatch(daemon, /sendReplyPreviewDelta/);
-  assert.match(core, /startAgentActivityRun/);
+  assert.match(turnDispatch, /startAgentActivityRun/);
   assert.match(core, /agentActivityState: opts\.agentActivityState \?\? \(claimedActivity \? "running" : null\)/);
   assert.match(core, /for \(const segment of closedActivitySegments\)[\s\S]*type: "message:updated"/);
   assert.match(routes, /ne\(schema\.messages\.messageType, "agent_activity_receipt"\)/);

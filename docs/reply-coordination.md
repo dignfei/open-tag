@@ -8,9 +8,9 @@ also tells every awakened agent to send a reply. Prompt etiquette cannot reliabl
 resolve that contradiction, and the freshness draft check only detects newer messages;
 it does not prove that the sender owns a reply slot.
 
-Reply coordination therefore follows this pipeline:
+Conversation assembly and reply coordination therefore follow this pipeline:
 
-`persisted -> delivered -> observed -> decided -> granted|no_action -> published`
+`persisted -> Turn collecting/reserved -> Turn sealed -> dispatching -> active/granted -> runtime admitted -> dispatched -> observed -> decided|published`
 
 The control plane owns the final `granted -> published` transition. A runtime may
 decide that it has useful context, but it cannot publish a reply until the server has
@@ -18,12 +18,31 @@ granted a slot for the triggering message.
 
 ## Product contract
 
-1. Observation and publication are independent. Eligible channel, DM, and thread
+1. A Conversation Turn is scoped by `(server, concrete channel, sender type, sender id)`.
+   Alice, Bob, and an agent talking in the same channel own independent quiet windows;
+   a thread and DM are separate contexts. The default human/agent ambient window is
+   1200 ms, direct mention/DM window 800 ms, and task/action boundaries dispatch immediately.
+   A same-sender DM burst may share one direct Turn; an explicit mention remains a new
+   boundary. Trailing debounce is capped at 5000 ms from the first message by default,
+   so continuous input cannot starve the Turn indefinitely.
+2. A collecting Turn is not exposed by `message check`, so an agent cannot answer half
+   a burst. Stable later Turns from another sender may still be read: persisted
+   per-message observation rows de-duplicate them while the scalar channel cursor waits
+   behind the gap, without hiding later pages of the same canonical Turn.
+3. Observation and publication are independent. Eligible channel, DM, and thread
    members keep receiving and reading messages under the existing wake and access
    rules. An unmentioned agent is not hidden from a message merely to keep it quiet.
-2. A reply is bound to one triggering message. The server rejects a response without
+4. A reply is bound to one canonical Turn trigger. Every message in the Turn renders the
+   same trigger and decision row. The server rejects a response without
    an active grant for that message, including freshness-draft submission.
-3. The first explicit mention receives the primary grant. Every later explicit
+5. Responsibility is reserved before wake selection but becomes publishable only after
+   the Turn and its grants atomically enter `active`. `collecting`, `ready`, and
+   `dispatching` are invisible; no runtime is woken before reply authority exists. One
+   human-authored ambient Turn is assigned to one inbox-scoped
+   owner, preferring recent ownership and otherwise the least-loaded candidate. If that
+   owner is unavailable, the next candidate receives the actual primary slot; released
+   primaries do not poison fallback selection. DMs retain their direct grant for reconnect.
+6. The first explicit mention receives the primary grant. Every later explicit
    mention receives an independent directed grant. Each named agent may publish at
    most once for the trigger. An explicit `accept` may record ownership before work
    starts, while publication against an active addressed grant atomically records an
@@ -31,36 +50,70 @@ granted a slot for the triggering message.
    A one-to-one DM has no competing recipient, so its active primary grant is recorded
    as `accepted` immediately (`reason=dm_auto_authorized`); the agent may still choose
    `no_action`, but cannot mistake `decision=pending` for missing reply permission.
-4. Direct attention establishes eligibility, not an obligation to answer. A directed
+7. Direct attention establishes eligibility, not an obligation to answer. A directed
    contributor accepts only when it owns a distinct requested slice; copying an agent
    or overlapping another answer should end in `no_action`.
-5. An observer can submit an intent without speaking publicly. Intent reasons are
+8. An observer can submit an intent without speaking publicly. Intent reasons are
    `ownership`, `better_fit`, `handoff`, `correction`, `blocker`, `new_evidence`, or
    `unique_expertise`.
-6. `better_fit` never creates a second public answer by itself. It remains pending
+9. `better_fit` never creates a second public answer by itself. It remains pending
    until the primary owner delegates or abstains. `correction`, `blocker`,
    `new_evidence`, and `unique_expertise` may receive the single supplemental slot;
    generic agreement and role overlap do not.
-7. If there is no directed owner, the first valid reply request obtains the primary
+10. If there is no directed owner, the first valid reply request obtains the primary
    slot atomically. This is intentionally deterministic, not a claim that the server
    understands semantic relevance. The model judges relevance; the harness limits and
    audits side effects.
-8. Agent-authored explicit mentions are active work edges and receive the same directed
-   treatment within the channel's existing access boundary. Agent-authored ambient
-   chatter does not recursively wake peers.
-9. A task keeps one primary coordinator/assignee while named directed contributors
+11. Agent-authored explicit mentions are active work edges and receive the same directed
+   treatment within the channel's existing access boundary. Each causal root has a
+   bounded wake depth/count and one accepted source→target edge. The same budget applies
+   to agent-authored DMs even without a literal `@`; an agent reply in a human DM has no
+   downstream agent recipient and completes instead of becoming blocked. Agent-authored
+   ambient chatter does not recursively wake peers.
+12. A task keeps one primary coordinator/assignee while named directed contributors
    publish their scoped results without claiming or mutating the parent. Only the
    active primary may claim, assign, or update it. All trigger-bound task replies are
    authorized only in the task thread, never the parent channel.
-10. A coordinated Task grant is result-first. Recording `accept` is an optional early
+13. A coordinated Task grant is result-first. Recording `accept` is an optional early
    acknowledgement and does not publish a message; sending the final result may instead
    record acceptance implicitly. The agent must not consume its one-shot public grant
    with an acknowledgement, plan, intent, or progress update; it finishes its assigned
    slice first, then publishes one concrete result or blocker.
-11. Primary publication waits up to `OPEN_TAG_REPLY_SETTLE_MS` (default 5000 ms) from
-   trigger creation for concurrently awakened observers to decide. A pending
+14. Primary publication waits up to `OPEN_TAG_REPLY_SETTLE_MS` (default 5000 ms) from
+   grant activation, not message creation, so a configured Turn window does not consume
+   the coordination period. A pending
    `better_fit`/handoff request blocks publication and privately wakes the owner;
    unreachable or silent observers stop blocking when the bounded window expires.
+15. Turn dispatch has an attempt-fenced lease plus a deterministic `turnId:agentId`
+   delivery fence. Explicit grants remain `reserved` while every named recipient is capability-
+   preflighted as one user intent; only then do the grants and Turn become active and fan out
+   concurrently, so a mixed-version fleet starts nobody rather than half the named
+   team, and one attempt waits at most one ACK timeout rather than one timeout per recipient.
+   A partial NACK keeps the Turn and every explicit grant active; retry reuses each recipient's
+   delivery id. Activate, renew, finish, and retry all require the current attempt token, and a
+   reply completed during ACK wait cannot be overwritten.
+16. The daemon ACKs only after a running runtime accepts the notice or a cold-start adapter
+   explicitly admits its initial prompt. For persistent/protocol runtimes this means stdin or
+   protocol acceptance; for argv one-shot runtimes it means the child process successfully spawned,
+   not that the model completed. Resource-pressure queueing does not ACK. Runtime,
+   start, dequeue, or stop failure NACKs and clears the daemon fence; concurrent retries
+   share the same admission result. ACK/NACK without the durable id cannot settle a waiter.
+   Successful delivery ids persist across daemon process replacement, and each server recipient
+   stores `delivery_admitted_at`; a partial retry skips recipients already admitted. While a busy
+   runtime owns the queued notice, `agent:deliver:pending` heartbeats renew the short server waiter
+   without acknowledging admission; only the final runtime acceptance produces ACK. The persisted
+   ledger uses a cross-process lock/read-merge-rename cycle and refreshes on lookup, so overlapping
+   daemon replacement cannot use a stale loaded snapshot. Database grants
+   make public publication one-shot, but arbitrary external tool side effects are still not a
+   distributed exactly-once transaction across every crash boundary.
+17. A daemon must advertise `delivery-admission-v1` before any Turn start/delivery frame,
+   agent inbox exposure, decision, or trigger-bound publication. A missing-capability Turn
+   remains active with its grants retained and retries paused. A capable reconnect resumes
+   bound work; when exactly one capable daemon is connected it also resumes legacy unbound
+   agents. Zero or multiple daemons keep unbound work paused instead of broadcasting duplicates.
+   Once a particular unbound recipient has `delivery_admitted_at`, later topology changes do not
+   revoke its authority to decide and publish that already-running work; sentinel-paused and not-yet-
+   admitted recipients remain blocked.
 
 ## Mis-mention behavior
 
@@ -104,17 +157,24 @@ runtime-agnostic standing prompt therefore carries this semantic constraint.
 
 ## Persisted model
 
+`conversation_turns` stores the sender partition, member-message range, canonical
+trigger, quiet-window deadline, dispatch lease/attempts, owner/responsibility state,
+and agent-work causal root. `messages.conversation_turn_id` maps every burst member to
+that one trigger. `agent_message_observations` records delivery per message and agent,
+while `causal_edges` audits accepted and suppressed agent-to-agent wakes.
+
 `agent_message_decisions` has one row per `(message_id, agent_id)`:
 
 - ownership: `server_id`, `channel_id`, `message_id`, `agent_id`
 - observation: `attention` (`direct|dm|assigned|ambient`), `observed_at`
 - decision: `decision`, `reason_code`, `summary`, `decided_at`
 - grant: `grant_slot` (`primary|directed|supplemental`), `grant_status`
-  (`none|active|publishing|released|consumed`), `granted_at`
+  (`none|reserved|active|publishing|released|consumed`), `granted_at`
 - transfer/publication: `delegated_by_agent_id`, `reply_message_id`,
   `published_at`, `owner_notified_at`, `grant_notified_at`, `created_at`, `updated_at`
 
-Partial unique indexes reserve at most one non-released primary and supplemental.
+Partial unique indexes reserve at most one reserved/active/publishing/consumed primary
+and supplemental.
 The `(message_id, agent_id)` decision key bounds directed grants, while a persisted
 `(reply_to_message_id, sender_id)` unique index makes every grant kind one-shot per
 agent. The server derives workspace and canonical reply target from the authenticated
@@ -122,8 +182,9 @@ agent and stored trigger; it never trusts client-supplied tenant or channel ids.
 
 ## Agent protocol
 
-`message check` returns every readable unread message as before, marks matching rows
-observed idempotently, and renders coordination metadata in the message header:
+`message check` returns every readable unread stable message as before, records each
+returned `(message, agent)` observation idempotently, marks the canonical decision row
+observed when applicable, and renders coordination metadata in the message header:
 
 ```text
 [target=#all msg=1234abcd attention=direct decision=pending grant=primary ...]
@@ -160,9 +221,10 @@ An ordinary insert failure releases the reservation; successful publication cons
 and links it.
 
 If the control plane confirms that the provisional primary cannot be started or
-delivered to, it releases that grant immediately. This is different from a semantic
-timeout: an online primary doing slow work is not silently preempted. The released
-recipient can reacquire later after reconnecting if no teammate has taken the slot.
+delivered to, it releases that grant immediately and may promote the next deterministic
+ambient candidate. Explicit mentions and DMs retain their responsibility for reconnect.
+This is different from a semantic timeout: an online primary doing slow work is not
+silently preempted.
 
 ## Compatibility boundary
 
@@ -190,6 +252,30 @@ The implementation is complete only when all of these are demonstrated:
 - concurrent primary/supplemental requests stay singular and each directed sender
   creates at most one result;
 - reconnect/catch-up does not duplicate recipient rows or grants;
+- collecting/ready/dispatching messages cannot be checked or answered early, while a stable Turn from a
+  different sender remains independently readable and is not repeated after observation;
+- a Turn split across the 100-row inbox page remains fully readable, and sustained input
+  dispatches at the hard max-wait instead of extending forever;
+- an offline ambient owner falls through to one real primary; reconnect wakes only that
+  retained owner and a successful reply reconciles blocked to completed;
+- a deliberately dropped delivery ACK retries with the same fence id for both human and
+  agent-authored Turns; runtime/start rejection NACKs, clears the fence, and permits that
+  id to retry; resource-pressure queueing remains unacknowledged until explicit runtime
+  admission; two queued Turns keep FIFO Activity stream attribution;
+- a busy persistent runtime emits pending heartbeats across the original ACK deadline without a
+  false retry or early final ACK; two overlapping stores merge ids, and an already-loaded
+  replacement observes a later old-process admission;
+- 20 explicit recipients are emitted before any ACK wait, mixed-version preflight starts none,
+  partial ACK/NACK keeps all grants visible, retries deliver only unresolved recipients,
+  successful ids remain de-duplicated after daemon process replacement, and stale attempt
+  transitions cannot overwrite the current or already-completed Turn;
+- old daemons receive zero Turn start/delivery frames and cannot pull, decide, or publish the
+  hidden trigger; a capable reconnect resumes both bound and exactly-one-daemon unbound work,
+  while zero or multiple capable daemons keep unbound work paused;
+- start/stop/reset/restart wait for a request-correlated daemon ACK; a failed reset returns 503
+  and prevents a requested restart phase from running; start waits for initial protocol admission,
+  stop/reset wait for process exit, and a late old exit cannot erase a replacement;
+- agent DM replies with different reply roots or causal depths never coalesce into one Turn;
 - agent-authored explicit mentions wake the named teammate while unmentioned agent
   chatter remains ambient; literal/quoted handles are still active mentions (I91);
 - a task's parent channel rejects replies while all named contributions publish in its

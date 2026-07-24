@@ -1,12 +1,14 @@
 import { and, asc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { evaluateReplyIntent, type ReplyReason, type ReplySlot } from "./replyCoordinationPolicy.js";
+import { canonicalReplyTriggerMessageId, completeConversationTurnIfSettled } from "./conversationTurns.js";
 
 export type ReplyAttention = "direct" | "dm" | "assigned" | "ambient";
 export type ReplyRecipient = { agentId: string; attention: ReplyAttention };
 type DecisionRow = typeof schema.agentMessageDecisions.$inferSelect;
 
 const SLOT_STATUSES = ["active", "publishing", "consumed"];
+const RESERVED_SLOT_STATUSES = ["reserved", ...SLOT_STATUSES];
 const configuredSettleMs = Number(process.env.OPEN_TAG_REPLY_SETTLE_MS ?? 5000);
 const REPLY_SETTLE_MS = Number.isFinite(configuredSettleMs) && configuredSettleMs >= 0 ? configuredSettleMs : 5000;
 
@@ -15,12 +17,13 @@ function conflictCode(e: unknown): string | undefined {
   return x.code ?? x.cause?.code;
 }
 
-export async function ensureReplyRecipients(o: {
+async function assignReplyRecipients(o: {
   serverId: string;
   channelId: string;
   messageId: string;
   recipients: ReplyRecipient[];
-}): Promise<void> {
+}, grantStatus: "reserved" | "active"): Promise<void> {
+  o = { ...o, messageId: await canonicalReplyTriggerMessageId(o.messageId) };
   if (!o.recipients.length) return;
   await db.insert(schema.agentMessageDecisions).values(o.recipients.map((r) => ({
     serverId: o.serverId,
@@ -29,13 +32,34 @@ export async function ensureReplyRecipients(o: {
     agentId: r.agentId,
     attention: r.attention,
   }))).onConflictDoNothing();
+  for (const recipient of o.recipients) {
+    if (recipient.attention === "ambient") continue;
+    await db.update(schema.agentMessageDecisions).set({ attention: recipient.attention, updatedAt: new Date() }).where(and(
+      eq(schema.agentMessageDecisions.messageId, o.messageId),
+      eq(schema.agentMessageDecisions.agentId, recipient.agentId),
+      eq(schema.agentMessageDecisions.attention, "ambient"),
+    ));
+  }
 
   const directed = o.recipients.filter((r) => r.attention !== "ambient");
   if (!directed.length) return;
+  if (grantStatus === "active") {
+    await db.update(schema.agentMessageDecisions).set({
+      grantStatus: "active",
+      grantedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(schema.agentMessageDecisions.messageId, o.messageId),
+      inArray(schema.agentMessageDecisions.agentId, directed.map((recipient) => recipient.agentId)),
+      eq(schema.agentMessageDecisions.grantStatus, "reserved"),
+      inArray(schema.agentMessageDecisions.decision, ["pending", "requested", "accepted"]),
+    ));
+  }
   const existingPrimary = (await db.select({ agentId: schema.agentMessageDecisions.agentId })
     .from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, o.messageId),
       eq(schema.agentMessageDecisions.grantSlot, "primary"),
+      inArray(schema.agentMessageDecisions.grantStatus, RESERVED_SLOT_STATUSES),
     )).limit(1))[0];
   let primaryAssigned = !!existingPrimary;
   for (const recipient of directed) {
@@ -43,7 +67,7 @@ export async function ensureReplyRecipients(o: {
     try {
       const updated = await db.update(schema.agentMessageDecisions).set({
         grantSlot: slot,
-        grantStatus: "active",
+        grantStatus,
         grantedAt: new Date(),
         updatedAt: new Date(),
       }).where(and(
@@ -57,7 +81,7 @@ export async function ensureReplyRecipients(o: {
       primaryAssigned = true;
       slot = "directed";
       await db.update(schema.agentMessageDecisions).set({
-        grantSlot: slot, grantStatus: "active", grantedAt: new Date(), updatedAt: new Date(),
+        grantSlot: slot, grantStatus, grantedAt: new Date(), updatedAt: new Date(),
       }).where(and(
         eq(schema.agentMessageDecisions.messageId, o.messageId),
         eq(schema.agentMessageDecisions.agentId, recipient.agentId),
@@ -84,8 +108,30 @@ export async function ensureReplyRecipients(o: {
   }
 }
 
+export async function reserveReplyRecipients(o: {
+  serverId: string;
+  channelId: string;
+  messageId: string;
+  recipients: ReplyRecipient[];
+}): Promise<void> {
+  await assignReplyRecipients(o, "reserved");
+}
+
+export async function ensureReplyRecipients(o: {
+  serverId: string;
+  channelId: string;
+  messageId: string;
+  recipients: ReplyRecipient[];
+}): Promise<void> {
+  await assignReplyRecipients(o, "active");
+}
+
 export async function markReplyMessagesObserved(agentId: string, messageIds: string[]): Promise<Map<string, DecisionRow>> {
   if (!messageIds.length) return new Map();
+  const originalIds = messageIds;
+  const canonicalByOriginal = new Map<string, string>();
+  for (const id of originalIds) canonicalByOriginal.set(id, await canonicalReplyTriggerMessageId(id));
+  messageIds = [...new Set(canonicalByOriginal.values())];
   const now = new Date();
   await db.update(schema.agentMessageDecisions).set({ observedAt: now, updatedAt: now }).where(and(
     eq(schema.agentMessageDecisions.agentId, agentId),
@@ -96,7 +142,11 @@ export async function markReplyMessagesObserved(agentId: string, messageIds: str
     eq(schema.agentMessageDecisions.agentId, agentId),
     inArray(schema.agentMessageDecisions.messageId, messageIds),
   ));
-  return new Map(rows.map((r) => [r.messageId, r]));
+  const byCanonical = new Map(rows.map((r) => [r.messageId, r]));
+  return new Map(originalIds.flatMap((id) => {
+    const row = byCanonical.get(canonicalByOriginal.get(id)!);
+    return row ? [[id, row] as const] : [];
+  }));
 }
 
 export async function authorizePendingDmGrants(agentId: string): Promise<number> {
@@ -118,7 +168,7 @@ export async function authorizePendingDmGrants(agentId: string): Promise<number>
 export function coordinationHeader(row: DecisionRow | undefined): string {
   if (!row) return "";
   const grant = row.grantStatus === "active" ? row.grantSlot : null;
-  return ` attention=${row.attention} decision=${row.decision} grant=${grant ?? "none"}`;
+  return ` attention=${row.attention} decision=${row.decision} grant=${grant ?? "none"} trigger=${row.messageId.slice(0, 8)}`;
 }
 
 async function slotState(messageId: string): Promise<{ primaryState: "none" | "active" | "consumed"; supplementalTaken: boolean }> {
@@ -159,7 +209,7 @@ export async function releaseUnavailableReplyGrant(messageId: string, agentId: s
   }).where(and(
     eq(schema.agentMessageDecisions.messageId, messageId),
     eq(schema.agentMessageDecisions.agentId, agentId),
-    eq(schema.agentMessageDecisions.grantStatus, "active"),
+    inArray(schema.agentMessageDecisions.grantStatus, ["reserved", "active"]),
   ));
 }
 
@@ -192,6 +242,7 @@ export async function decideReply(o: {
   summary?: string;
   delegateToAgentId?: string;
 }): Promise<DecideResult> {
+  o = { ...o, messageId: await canonicalReplyTriggerMessageId(o.messageId) };
   const row = (await db.select().from(schema.agentMessageDecisions).where(and(
     eq(schema.agentMessageDecisions.serverId, o.serverId),
     eq(schema.agentMessageDecisions.messageId, o.messageId),
@@ -252,7 +303,7 @@ export async function decideReply(o: {
   if (o.decision === "no_action" || o.decision === "abstain") {
     const nextDecision = o.decision === "no_action" ? "no_action" : "abstained";
     const ownedPrimary = row.grantSlot === "primary" && row.grantStatus === "active";
-    const ownedGrant = row.grantStatus === "active";
+    const ownedGrant = row.grantStatus === "active" || row.grantStatus === "reserved";
     const [updated] = await db.update(schema.agentMessageDecisions).set({
       decision: nextDecision,
       grantStatus: ownedGrant ? "released" : row.grantStatus,
@@ -260,6 +311,7 @@ export async function decideReply(o: {
       updatedAt: now,
     }).where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId))).returning();
     const promoted = ownedPrimary ? await promoteBetterFit(o.messageId) : null;
+    await completeConversationTurnIfSettled(o.messageId);
     return { ok: true, row: updated!, promotedAgentId: promoted?.agentId };
   }
 
@@ -323,8 +375,13 @@ export async function claimReplyCoordination(agentId: string): Promise<Array<{
 }
 
 async function waitForReplySettlement(messageId: string, ownerAgentId: string): Promise<"settled" | "coordination_required"> {
-  const [message] = await db.select({ createdAt: schema.messages.createdAt }).from(schema.messages).where(eq(schema.messages.id, messageId));
-  const deadline = (message?.createdAt?.getTime() ?? Date.now()) + REPLY_SETTLE_MS;
+  const [owner] = await db.select({ grantedAt: schema.agentMessageDecisions.grantedAt })
+    .from(schema.agentMessageDecisions)
+    .where(and(
+      eq(schema.agentMessageDecisions.messageId, messageId),
+      eq(schema.agentMessageDecisions.agentId, ownerAgentId),
+    ));
+  const deadline = (owner?.grantedAt?.getTime() ?? Date.now()) + REPLY_SETTLE_MS;
   while (true) {
     const others = await db.select({ decision: schema.agentMessageDecisions.decision, reason: schema.agentMessageDecisions.reasonCode })
       .from(schema.agentMessageDecisions).where(and(
@@ -340,6 +397,7 @@ async function waitForReplySettlement(messageId: string, ownerAgentId: string): 
 export async function reserveReplyGrant(o: { serverId: string; agentId: string; messageId: string; channelId: string }): Promise<
   { ok: true; slot: ReplySlot } | { ok: false; code: string }
 > {
+  o = { ...o, messageId: await canonicalReplyTriggerMessageId(o.messageId) };
   const current = (await db.select().from(schema.agentMessageDecisions).where(and(
     eq(schema.agentMessageDecisions.serverId, o.serverId),
     eq(schema.agentMessageDecisions.messageId, o.messageId),
@@ -405,6 +463,7 @@ export async function reserveReplyGrant(o: { serverId: string; agentId: string; 
 export async function checkReplyGrant(o: { serverId: string; agentId: string; messageId: string; channelId: string }): Promise<
   { ok: true; slot: ReplySlot } | { ok: false; code: string }
 > {
+  o = { ...o, messageId: await canonicalReplyTriggerMessageId(o.messageId) };
   const row = (await db.select().from(schema.agentMessageDecisions).where(and(
     eq(schema.agentMessageDecisions.serverId, o.serverId),
     eq(schema.agentMessageDecisions.messageId, o.messageId),
@@ -418,6 +477,7 @@ export async function checkReplyGrant(o: { serverId: string; agentId: string; me
 }
 
 export async function finishReplyPublication(o: { messageId: string; agentId: string; replyMessageId: string }): Promise<void> {
+  o = { ...o, messageId: await canonicalReplyTriggerMessageId(o.messageId) };
   await db.update(schema.agentMessageDecisions).set({
     decision: "published", grantStatus: "consumed", replyMessageId: o.replyMessageId,
     publishedAt: new Date(), updatedAt: new Date(),
@@ -426,9 +486,11 @@ export async function finishReplyPublication(o: { messageId: string; agentId: st
     eq(schema.agentMessageDecisions.agentId, o.agentId),
     eq(schema.agentMessageDecisions.grantStatus, "publishing"),
   ));
+  await completeConversationTurnIfSettled(o.messageId);
 }
 
 export async function releaseReplyReservation(messageId: string, agentId: string): Promise<void> {
+  messageId = await canonicalReplyTriggerMessageId(messageId);
   await db.update(schema.agentMessageDecisions).set({ grantStatus: "active", updatedAt: new Date() }).where(and(
     eq(schema.agentMessageDecisions.messageId, messageId),
     eq(schema.agentMessageDecisions.agentId, agentId),

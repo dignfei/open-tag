@@ -12,7 +12,7 @@ import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Runtime, StartOpts, RuntimeCallbacks, RuntimeSession, TrajectoryEntry } from "./runtime.js";
+import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -65,39 +65,56 @@ function buildArgs(prompt: string, model: string | undefined, sessionId: string 
 
 // KimiRun owns the serial turn queue for one agent (mirrors opencode/copilot's queue/pump): each turn
 // is a fresh one-shot `kimi -p` process resumed by the captured session id.
+interface KimiInput { text: string; initial: boolean; admission: ProtocolAdmission }
+
 class KimiRun {
-  private queue: string[] = [];
+  private queue: KimiInput[] = [];
   private turnBusy = false;
   private stopped = false;
   proc: ChildProcess | null = null;
   private sessionId: string | null;
   private everSucceeded = false;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly admission: ReturnType<typeof initialTurnAdmission>;
+  private currentInput: KimiInput | null = null;
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
+    this.admission = initialTurnAdmission(cb);
     this.sessionId = opts.sessionId ?? null;
     this.env = { ...opts.env, PWD: opts.cwd };
     delete this.env.NODE_OPTIONS; // kimi's bundled node rejects proxy flags (e.g. --use-env-proxy)
     try { writeFileSync(path.join(opts.cwd, "AGENTS.md"), opts.systemPrompt); }
     catch (e) { cb.log.warn("kimi: AGENTS.md write failed", { detail: String(e) }); }
     if (this.sessionId) cb.onSession(this.sessionId);
-    this.enqueue(opts.initialPrompt);
+    void this.enqueue(opts.initialPrompt, true).catch(() => {});
   }
 
-  enqueue(text: string): void { if (this.stopped) return; this.queue.push(text); this.pump(); }
+  enqueue(text: string, initial = false): Promise<void> {
+    const input: KimiInput = { text, initial, admission: protocolAdmission() };
+    if (this.stopped) input.admission.reject(new Error("kimi stopped before input admission"));
+    else { this.queue.push(input); this.pump(); }
+    return input.admission.promise;
+  }
 
   private pump(): void {
     if (this.stopped || this.turnBusy || this.queue.length === 0) return;
     this.runTurn(this.queue.shift()!);
   }
 
-  private runTurn(prompt: string): void {
+  private rejectQueue(error: Error): void {
+    for (const input of this.queue.splice(0)) input.admission.reject(error);
+  }
+
+  private runTurn(input: KimiInput): void {
+    this.currentInput = input;
+    const prompt = input.text;
     this.turnBusy = true;
     this.cb.onActivity("working", "turn");
     const args = buildArgs(prompt, this.opts.model, this.sessionId);
     // stdin "ignore": kimi -p takes the prompt as argv; a live stdin is unnecessary (and risks blocking).
     const proc = spawnSafe("kimi", args, { cwd: this.opts.cwd, stdio: ["ignore", "pipe", "pipe"], env: this.env });
     this.proc = proc;
+    proc.once("spawn", () => { input.admission.accept(); if (input.initial) this.admission.accept(); });
     let buf = "";
     const errTail: string[] = [];
     let errLen = 0;
@@ -119,14 +136,18 @@ class KimiRun {
       while (errLen > 4096 && errTail.length > 1) errLen -= errTail.shift()!.length;
     });
     proc.on("error", (e) => {
+      input.admission.reject(e);
+      if (input.initial) this.admission.reject(e);
+      if (this.currentInput === input) this.currentInput = null;
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
       this.cb.log.error("kimi spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "kimi not found");
-      if (!this.everSucceeded) this.cb.onExit(1); else this.pump();
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); } else this.pump();
     });
     proc.on("exit", (code) => {
       if (buf.trim()) processLine(buf); buf = "";
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
+      if (this.currentInput === input) this.currentInput = null;
       if (code === 0) { this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return; }
       const tail = errTail.join("").trim();
       // Stale session: if kimi can't find the session (server restarted, TTL expired), clear it so the
@@ -135,13 +156,16 @@ class KimiRun {
       const last = tail.split("\n").filter(Boolean).pop() || `kimi exited ${code ?? "signal"}`;
       this.cb.onTrajectory([{ kind: "text", text: "[kimi error] " + clip(tail).slice(0, 500) }]);
       this.cb.onActivity("error", last.slice(0, 200));
-      if (!this.everSucceeded) { this.cb.onExit(code ?? 1); return; } // first-turn hard failure (bad config/auth) → crashed
+      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.cb.onExit(code ?? 1); return; } // first-turn hard failure (bad config/auth) → crashed
       this.pump();
     });
   }
 
   stop(): void {
     this.stopped = true;
+    const error = new Error("kimi stopped before input admission");
+    this.currentInput?.admission.reject(error); this.currentInput = null;
+    this.rejectQueue(error);
     const p = this.proc; this.proc = null;
     if (p) { killTree(p); }
   }

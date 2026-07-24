@@ -11,6 +11,9 @@ import { readObject } from "./storage.js";
 import { authorizePendingDmGrants, canAgentManageCoordinatedTask, checkReplyGrant, claimReplyCoordination, coordinationHeader, decideReply, ensureReplyRecipients, finishReplyPublication, hasOutstandingReplyDecision, markReplyMessagesObserved, releaseReplyReservation, reserveReplyGrant } from "./replyCoordination.js";
 import type { ReplySlot } from "./replyCoordinationPolicy.js";
 import { validateDecisionInput } from "./replyCoordinationPolicy.js";
+import { canonicalReplyTriggerMessageId } from "./conversationTurns.js";
+import { conversationTurnDeliveryBlockReason } from "./daemonHub.js";
+import { isConversationTurnCapabilityPaused } from "./conversationTurnRecovery.js";
 
 // Freshness-hold draft buffer (prevents agent↔agent duplicate replies): when the agent sends
 // and new messages have arrived since last read → save as draft + surface bounded context, do not post immediately.
@@ -47,6 +50,42 @@ function requiredScope(p: string): string | null {
 
 async function agentChannels(agentId: string) {
   return db.select().from(schema.channelMembers).where(and(eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agentId)));
+}
+
+async function durableTurnActionBlockReason(serverId: string, machineId: string | null, agentId: string, messageId: string): Promise<string | null> {
+  const row = (await db.select({
+    turnId: schema.messages.conversationTurnId,
+    state: schema.conversationTurns.state,
+    dispatchLeaseUntil: schema.conversationTurns.dispatchLeaseUntil,
+  }).from(schema.messages)
+    .leftJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
+    .where(and(eq(schema.messages.id, messageId), eq(schema.messages.serverId, serverId))).limit(1))[0];
+  if (!row?.turnId) return null;
+  if (row.state && isConversationTurnCapabilityPaused({ state: row.state, dispatchLeaseUntil: row.dispatchLeaseUntil })) {
+    return "conversation turn paused for daemon capability";
+  }
+  const admitted = (await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt })
+    .from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, messageId),
+      eq(schema.agentMessageDecisions.agentId, agentId),
+      isNotNull(schema.agentMessageDecisions.deliveryAdmittedAt),
+    )).limit(1))[0];
+  if (admitted) return null;
+  return conversationTurnDeliveryBlockReason(serverId, machineId);
+}
+
+async function agentHasCapabilityPausedTurn(agentId: string): Promise<boolean> {
+  const rows = await db.select({
+    state: schema.conversationTurns.state,
+    dispatchLeaseUntil: schema.conversationTurns.dispatchLeaseUntil,
+  }).from(schema.agentMessageDecisions)
+    .innerJoin(schema.conversationTurns, eq(schema.conversationTurns.triggerMessageId, schema.agentMessageDecisions.messageId))
+    .where(and(
+      eq(schema.agentMessageDecisions.agentId, agentId),
+      inArray(schema.agentMessageDecisions.grantStatus, ["reserved", "active", "publishing"]),
+      eq(schema.conversationTurns.state, "active"),
+    ));
+  return rows.some(isConversationTurnCapabilityPaused);
 }
 
 /** Human-readable addressable target: channel → #name; DM → dm:@peer; thread → <parentChannelTarget>:parentMessageShortId. Agent uses this to reply back to the same location. */
@@ -101,14 +140,59 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
 
   // Poll for new messages (non-blocking): messages in agent's channels with seq > lastReadSeq, then advance lastReadSeq
   if (p === "/agent-api/message/check" && method === "GET") {
-    await authorizePendingDmGrants(agent.id);
+    const durableDeliveryBlock = conversationTurnDeliveryBlockReason(serverId, agent.machineId);
+    let capabilityPaused = await agentHasCapabilityPausedTurn(agent.id);
+    let topologyBlocked = false;
+    if (!durableDeliveryBlock) await authorizePendingDmGrants(agent.id);
     const cms = await agentChannels(agent.id);
     const out: any[] = [];
     for (const cm of cms) {
       const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, cm.channelId)))[0];
       if (!ch || ch.deletedAt) continue;
-      const msgs = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, cm.channelId), ne(schema.messages.messageType, "agent_activity_receipt"), gt(schema.messages.seq, cm.lastReadSeq))).orderBy(asc(schema.messages.seq)).limit(100);
-      const fresh = msgs.filter((m) => m.senderId !== agent.id);
+      const unread = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, cm.channelId), ne(schema.messages.messageType, "agent_activity_receipt"), gt(schema.messages.seq, cm.lastReadSeq))).orderBy(asc(schema.messages.seq)).limit(100);
+      const turnIds = [...new Set(unread.flatMap((message) => message.conversationTurnId ? [message.conversationTurnId] : []))];
+      const turnRows = turnIds.length
+        ? await db.select({
+          id: schema.conversationTurns.id,
+          state: schema.conversationTurns.state,
+          triggerMessageId: schema.conversationTurns.triggerMessageId,
+          dispatchLeaseUntil: schema.conversationTurns.dispatchLeaseUntil,
+        }).from(schema.conversationTurns).where(inArray(schema.conversationTurns.id, turnIds))
+        : [];
+      const turnById = new Map(turnRows.map((turn) => [turn.id, turn]));
+      const turnTriggerIds = [...new Set(turnRows.map((turn) => turn.triggerMessageId))];
+      const admittedRows = turnTriggerIds.length
+        ? await db.select({ messageId: schema.agentMessageDecisions.messageId }).from(schema.agentMessageDecisions).where(and(
+          eq(schema.agentMessageDecisions.agentId, agent.id),
+          inArray(schema.agentMessageDecisions.messageId, turnTriggerIds),
+          isNotNull(schema.agentMessageDecisions.deliveryAdmittedAt),
+        ))
+        : [];
+      const admitted = new Set(admittedRows.map((row) => row.messageId));
+      const stableTurnStates = new Set(["active", "dispatched", "blocked"]);
+      const stableTurn = (turnId: string | null) => {
+        if (!turnId) return true;
+        const turn = turnById.get(turnId);
+        if (!turn) return false;
+        if (isConversationTurnCapabilityPaused(turn)) { capabilityPaused = true; return false; }
+        if (durableDeliveryBlock && !admitted.has(turn.triggerMessageId)) { topologyBlocked = true; return false; }
+        return stableTurnStates.has(turn.state);
+      };
+      const blockedIndex = unread.findIndex((message) => message.senderId !== agent.id
+        && !!message.conversationTurnId
+        && !stableTurn(message.conversationTurnId));
+      const stable = unread.filter((message) => message.senderId === agent.id
+        || !message.conversationTurnId
+        || stableTurn(message.conversationTurnId));
+      const stableForeign = stable.filter((message) => message.senderId !== agent.id);
+      const observedRows = stableForeign.length
+        ? await db.select({ messageId: schema.agentMessageObservations.messageId }).from(schema.agentMessageObservations).where(and(
+          eq(schema.agentMessageObservations.agentId, agent.id),
+          inArray(schema.agentMessageObservations.messageId, stableForeign.map((message) => message.id)),
+        ))
+        : [];
+      const observed = new Set(observedRows.map((row) => row.messageId));
+      const fresh = stableForeign.filter((message) => !observed.has(message.id));
       if (fresh.length) {
         const target = await addressableTarget(ch, agent.id);
         // A check can expose non-wakeable ambient agent chatter alongside another delivery. Backfill its
@@ -125,17 +209,25 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
           recipients: [{ agentId: agent.id, attention: ch.type === "dm" ? "dm" : mentionedIds.has(message.id) ? "direct" : "ambient" }],
         });
         const coordination = await markReplyMessagesObserved(agent.id, fresh.map((m) => m.id));
+        await db.insert(schema.agentMessageObservations).values(fresh.map((message) => ({
+          messageId: message.id,
+          agentId: agent.id,
+          serverId,
+        }))).onConflictDoNothing();
         // Batch-load attachments → append attachment suffix to message header
         const atts = await db.select().from(schema.attachments).where(inArray(schema.attachments.messageId, fresh.map((m) => m.id)));
         const byMsg = new Map<string, { filename: string; id: string }[]>();
         for (const a of atts) { const k = a.messageId!; const arr = byMsg.get(k) ?? []; arr.push({ filename: a.filename, id: a.id }); byMsg.set(k, arr); }
         out.push(...fresh.map((m) => ({ ...serialize(m), coordination: coordination.get(m.id) ?? null, text: fmt(m, target, byMsg.get(m.id) ?? [], coordination.get(m.id)) })));
       }
-      if (msgs.length) await db.update(schema.channelMembers).set({ lastReadSeq: msgs[msgs.length - 1]!.seq })
+      // Persisted observation de-duplicates stable messages beyond a collecting gap. The scalar channel
+      // cursor advances only through the contiguous prefix, so the hidden Turn cannot be skipped forever.
+      const cursorPrefix = blockedIndex >= 0 ? unread.slice(0, blockedIndex) : unread;
+      if (cursorPrefix.length) await db.update(schema.channelMembers).set({ lastReadSeq: cursorPrefix[cursorPrefix.length - 1]!.seq })
         .where(and(eq(schema.channelMembers.channelId, cm.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id)));
     }
     const coordination: any[] = [];
-    for (const update of await claimReplyCoordination(agent.id)) {
+    for (const update of durableDeliveryBlock ? [] : await claimReplyCoordination(agent.id)) {
       const requester = (await db.select({ name: schema.agents.name }).from(schema.agents).where(and(
         eq(schema.agents.id, update.requesterAgentId), eq(schema.agents.serverId, serverId),
       )))[0];
@@ -151,15 +243,25 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
         kind: update.kind, reason: update.reasonCode, target, grant: "primary", text,
       });
     }
-    return (sendJson(res, 200, { messages: out, coordination }), true);
+    return (sendJson(res, 200, {
+      messages: out,
+      coordination,
+      warnings: topologyBlocked || capabilityPaused ? [{
+        code: "DELIVERY_ADMISSION_REQUIRED",
+        detail: topologyBlocked ? durableDeliveryBlock : "conversation turn paused for daemon capability",
+      }] : [],
+    }), true);
   }
 
   if (p === "/agent-api/message/decide" && method === "POST") {
     const b = await readJson(req);
     const valid = validateDecisionInput({ decision: b.decision, reason: b.reason, toAgentId: b.to });
     if (!valid.ok) return (sendErr(res, 400, "invalid reply decision", { code: valid.code }), true);
-    const messageId = await resolveMessageId(serverId, b.messageId, agent.id);
-    if (!messageId) return (sendErr(res, 404, "message not found", { code: "MESSAGE_NOT_FOUND" }), true);
+    const resolvedMessageId = await resolveMessageId(serverId, b.messageId, agent.id);
+    if (!resolvedMessageId) return (sendErr(res, 404, "message not found", { code: "MESSAGE_NOT_FOUND" }), true);
+    const messageId = await canonicalReplyTriggerMessageId(resolvedMessageId);
+    const durableActionBlock = await durableTurnActionBlockReason(serverId, agent.machineId, agent.id, messageId);
+    if (durableActionBlock) return (sendErr(res, 409, "durable delivery admission required", { code: "DELIVERY_ADMISSION_REQUIRED", detail: durableActionBlock }), true);
     let delegateToAgentId: string | undefined;
     if (valid.decision === "delegate") {
       const name = String(b.to ?? "").trim().replace(/^@/, "");
@@ -191,12 +293,17 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const tgt = await resolveTarget(serverId, b.target, agent.id);
     if (!tgt) return (sendErr(res, 404, "target not found", { code: "TARGET_FAILED" }), true);
     const draftKey = `${agent.id}:${tgt.channelId}`;
-    const resolveTrigger = async (raw: unknown): Promise<string | null> => raw ? resolveMessageId(serverId, String(raw), agent.id) : null;
+    const resolveTrigger = async (raw: unknown): Promise<string | null> => {
+      const resolved = raw ? await resolveMessageId(serverId, String(raw), agent.id) : null;
+      return resolved ? canonicalReplyTriggerMessageId(resolved) : null;
+    };
     let replyToMessageId = await resolveTrigger(b.replyTo);
     if (b.replyTo && !replyToMessageId) return (sendErr(res, 404, "reply trigger not found", { code: "REPLY_TRIGGER_NOT_FOUND" }), true);
     const savedDraft = b.sendDraft ? drafts.get(draftKey) : undefined;
     replyToMessageId = savedDraft?.replyToMessageId ?? replyToMessageId;
     if (replyToMessageId) {
+      const durableActionBlock = await durableTurnActionBlockReason(serverId, agent.machineId, agent.id, replyToMessageId);
+      if (durableActionBlock) return (sendErr(res, 409, "durable delivery admission required", { code: "DELIVERY_ADMISSION_REQUIRED", detail: durableActionBlock }), true);
       const preflight = await checkReplyGrant({ serverId, agentId: agent.id, messageId: replyToMessageId, channelId: tgt.channelId });
       if (!preflight.ok) return (sendErr(res, 409, "reply not granted", { code: preflight.code }), true);
     } else if (await hasOutstandingReplyDecision(agent.id, tgt.channelId)) {
@@ -481,7 +588,8 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const parent = await findParent(b.parent, b.channel ?? b.target ?? null);
     if (!parent) return (sendErr(res, 404, "parent message not found"), true);
     const th = await getOrCreateThread(serverId, parent.id, { type: "agent", id: agent.id });
-    const replyToMessageId = b.replyTo ? await resolveMessageId(serverId, String(b.replyTo), agent.id) : null;
+    const resolvedReplyToMessageId = b.replyTo ? await resolveMessageId(serverId, String(b.replyTo), agent.id) : null;
+    const replyToMessageId = resolvedReplyToMessageId ? await canonicalReplyTriggerMessageId(resolvedReplyToMessageId) : null;
     if (b.replyTo && !replyToMessageId) return (sendErr(res, 404, "reply trigger not found", { code: "REPLY_TRIGGER_NOT_FOUND" }), true);
     if (!replyToMessageId && await hasOutstandingReplyDecision(agent.id, th.id)) {
       return (sendErr(res, 409, "reply context required", { code: "REPLY_CONTEXT_REQUIRED" }), true);

@@ -523,6 +523,12 @@ sudo systemctl restart open-tag-daemon
 > (`@fancyboi999/open-tag-daemon`). A merged server change does **not** automatically
 > reach running daemon processes — they keep running the version they were started with.
 > Watch the repository releases for daemon updates and bounce the process after publishing.
+> Conversation Turns require daemon capability `delivery-admission-v1`, and settled agent
+> lifecycle controls require `agent-control-ack-v1` (both daemon 0.12.0+).
+> During a mixed-version rollout, the server fails closed: affected Turns remain paused,
+> old daemons receive no Turn work, and their agent API cannot pull or publish that trigger.
+> Upgrade/restart daemons promptly; the same retained Turns resume automatically when a capable
+> bound daemon reconnects, or when exactly one capable daemon owns a legacy unbound agent.
 
 ---
 
@@ -546,6 +552,12 @@ sudo systemctl restart open-tag-daemon
 | `OPEN_TAG_S3_SECRET` | if `s3` | — | Secret key |
 | `OPEN_TAG_S3_REGION` | no | `us-east-1` | S3 region |
 | `OPEN_TAG_IDLE_MS` | no | `600000` | Agent idle-sleep timeout in ms (default 10 min) |
+| `OPEN_TAG_TURN_DEBOUNCE_MS` | no | `1200` | Human/agent ambient burst window in ms; scoped independently per sender and concrete channel (max 30000) |
+| `OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS` | no | `800` | Explicit-mention/DM burst window in ms (max 30000); task/action boundaries dispatch immediately |
+| `OPEN_TAG_TURN_MAX_WAIT_MS` | no | `5000` | Hard cap from the first message to Turn dispatch, even when a sender keeps extending the trailing quiet window (max 30000) |
+| `OPEN_TAG_REPLY_SETTLE_MS` | no | `5000` | Reply-intent settlement window, measured from grant activation after Turn dispatch |
+| `OPEN_TAG_AGENT_DELIVERY_ACK_MS` | no | `2000` | Wait for daemon admission ACK/NACK before retrying the same deterministic Turn delivery id. A capable daemon emits pending heartbeats while a busy runtime queue still owns the delivery; those renew this timeout but do not count as ACK. For persistent/protocol runtimes final ACK means stdin/protocol acceptance; for argv one-shot runtimes it means the child process spawned, not model completion. Resource-pressure queueing stays pending. |
+| `OPEN_TAG_DELIVERY_PENDING_HEARTBEAT_MS` | no | `750` | Daemon heartbeat interval while a Turn delivery is still waiting for runtime admission (minimum 250 ms). Must remain below `OPEN_TAG_AGENT_DELIVERY_ACK_MS`; heartbeat is transport liveness, never final admission. |
 
 > The server has **no built-in fallback** for `JWT_SECRET` or `DAEMON_BOOTSTRAP_KEY` —
 > `requireEnv()` (`src/server/auth.ts`) fails at startup if either is missing. (The literal

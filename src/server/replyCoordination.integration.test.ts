@@ -348,10 +348,13 @@ test("thread messages and task assignments stay observable with directed grants"
       serverId: f.server.id, channelId: thread.id, senderType: "user", senderId: f.user.id,
       senderName: f.user.name, content: `thread question @${codex!.name}`,
     });
+    await ensureReplyRecipients({ serverId: f.server.id, channelId: thread.id, messageId: threadMessage.id, recipients: [
+      { agentId: codex2!.id, attention: "ambient" }, { agentId: worker!.id, attention: "ambient" },
+    ] });
     const threadRows = await db.select().from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, threadMessage.id));
     assert.equal(threadRows.length, 3);
     assert.equal(threadRows.find((r) => r.agentId === codex!.id)?.grantSlot, "primary");
-    assert.equal(threadRows.find((r) => r.agentId === codex!.id)?.grantStatus, "released", "confirmed offline recipient must not block peers forever");
+    assert.equal(threadRows.find((r) => r.agentId === codex!.id)?.grantStatus, "reserved", "responsibility stays reserved until Turn dispatch starts");
     assert.equal(threadRows.find((r) => r.agentId === codex2!.id)?.attention, "ambient");
     assert.equal(threadRows.find((r) => r.agentId === worker!.id)?.attention, "ambient");
 
@@ -392,11 +395,11 @@ test("multi-mention order chooses a primary plus directed contributors and a DM 
     });
     const multiRows = await db.select().from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, multi.id));
     assert.equal(multiRows.find((r) => r.agentId === codex2!.id)?.grantSlot, "primary", "first explicit mention owns priority");
-    assert.equal(multiRows.find((r) => r.agentId === codex2!.id)?.grantStatus, "released");
+    assert.equal(multiRows.find((r) => r.agentId === codex2!.id)?.grantStatus, "reserved");
     assert.equal(multiRows.find((r) => r.agentId === codex!.id)?.attention, "direct");
     assert.equal(multiRows.find((r) => r.agentId === codex!.id)?.grantSlot, "directed");
-    assert.equal(multiRows.find((r) => r.agentId === codex!.id)?.grantStatus, "released");
-    assert.equal(multiRows.find((r) => r.agentId === worker!.id)?.attention, "ambient");
+    assert.equal(multiRows.find((r) => r.agentId === codex!.id)?.grantStatus, "reserved");
+    assert.equal(multiRows.find((r) => r.agentId === worker!.id), undefined, "unmentioned observers create an ambient audit row only when they actually check");
 
     const [dm] = await db.insert(schema.channels).values({ serverId: f.server.id, name: `dm:${f.user.id}:${codex!.id}`, type: "dm" }).returning();
     await db.insert(schema.channelMembers).values([
@@ -410,6 +413,6 @@ test("multi-mention order chooses a primary plus directed contributors and a DM 
     const [dmDecision] = await db.select().from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, dmMessage.id));
     assert.equal(dmDecision?.attention, "dm");
     assert.equal(dmDecision?.grantSlot, "primary");
-    assert.equal(dmDecision?.grantStatus, "released");
+    assert.equal(dmDecision?.grantStatus, "reserved");
   } finally { await f.cleanup(); }
 });

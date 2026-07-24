@@ -12,8 +12,10 @@ import { detectRuntimes } from "./runtimes.js";
 import { listModels } from "./listModels.js";
 import { createLogger } from "../log.js";
 import { machineIdFile } from "../paths.js";
+import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY } from "../daemonProtocol.js";
 
 const log = createLogger("daemon");
+const DELIVERY_PENDING_HEARTBEAT_MS = Math.max(250, Number(process.env.OPEN_TAG_DELIVERY_PENDING_HEARTBEAT_MS ?? 750));
 const args = process.argv.slice(2);
 let serverUrl = "", apiKey = "";
 for (let i = 0; i < args.length; i++) {
@@ -41,6 +43,19 @@ const saveMachineId = (id: string): void => { try { fs.mkdirSync(path.dirname(MI
 let conn: Connection;
 const mgr = new AgentManager((m) => conn.send(m));
 
+function runAgentControl(msg: any, operation: () => void | Promise<void>): void {
+  void mgr.runControl(msg.agentId, operation).then(
+    () => {
+      if (typeof msg.requestId === "string" && msg.requestId) conn.send({ type: "rpc:ack", requestId: msg.requestId });
+    },
+    (cause) => {
+      const error = String(cause instanceof Error ? cause.message : cause);
+      log.error("agent control failed", { type: msg.type, agentId: msg.agentId, detail: error });
+      if (typeof msg.requestId === "string" && msg.requestId) conn.send({ type: "rpc:nack", requestId: msg.requestId, error });
+    },
+  );
+}
+
 conn = new Connection(serverUrl, apiKey, (msg) => {
   if (msg.type !== "ping") log.debug("recv", { type: msg.type, agentId: msg.agentId });
   switch (msg.type) {
@@ -48,11 +63,22 @@ conn = new Connection(serverUrl, apiKey, (msg) => {
     // Agent dials the same server URL this daemon connected with (proven reachable), overriding the
     // server-reported config.serverUrl (SELF_URL = localhost:PORT on the server box — wrong whenever the
     // daemon runs on a different host than the server, e.g. local daemon ↔ getopentag.com).
-    case "agent:start": void mgr.start(msg.agentId, { ...msg.config, serverUrl }); break;
-    case "agent:deliver": mgr.deliver(msg.agentId, msg.from ?? "someone", msg.target ?? "", !!msg.mentioned, { targetName: msg.targetName, msgShort: msg.msgShort, isTask: msg.isTask, streamId: msg.streamId }); conn.send({ type: "agent:deliver:ack", agentId: msg.agentId, seq: msg.seq }); break;
-    case "agent:stop": mgr.stop(msg.agentId); break;
-    case "agent:sleep": mgr.sleep(msg.agentId); break;
-    case "agent:reset": void mgr.reset(msg.agentId, !!msg.wipeWorkspace, !!msg.clearMemory); break;
+    case "agent:start": runAgentControl(msg, () => mgr.start(msg.agentId, { ...msg.config, serverUrl })); break;
+    case "agent:deliver": {
+      const admission = mgr.deliver(msg.agentId, msg.from ?? "someone", msg.target ?? "", !!msg.mentioned, { targetName: msg.targetName, msgShort: msg.msgShort, isTask: msg.isTask, streamId: msg.streamId, turnId: msg.turnId, turnMessageCount: msg.turnMessageCount, attention: msg.attention, deliveryId: msg.deliveryId });
+      const sendPending = () => conn.send({ type: "agent:deliver:pending", agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId });
+      sendPending();
+      const pendingHeartbeat = setInterval(sendPending, DELIVERY_PENDING_HEARTBEAT_MS);
+      pendingHeartbeat.unref?.();
+      void admission.then(
+        () => { clearInterval(pendingHeartbeat); conn.send({ type: "agent:deliver:ack", agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId }); },
+        (error) => { clearInterval(pendingHeartbeat); conn.send({ type: "agent:deliver:nack", agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId, error: String(error instanceof Error ? error.message : error) }); },
+      );
+      break;
+    }
+    case "agent:stop": runAgentControl(msg, () => mgr.stop(msg.agentId)); break;
+    case "agent:sleep": runAgentControl(msg, () => mgr.sleep(msg.agentId)); break;
+    case "agent:reset": runAgentControl(msg, () => mgr.reset(msg.agentId, !!msg.wipeWorkspace, !!msg.clearMemory)); break;
     case "agent:profile": void mgr.syncProfile(msg.agentId, msg.displayName ?? "", msg.description); break;
     case "agent:workspace:list": void listWorkspace(msg.agentId, msg.path ?? "").then((r) => conn.send({ type: "workspace:file_tree", requestId: msg.requestId, agentId: msg.agentId, ...r })); break;
     case "agent:workspace:read": void readWorkspaceFile(msg.agentId, msg.path ?? "").then((r) => conn.send({ type: "workspace:file_content", requestId: msg.requestId, agentId: msg.agentId, ...r })); break;
@@ -73,7 +99,7 @@ conn = new Connection(serverUrl, apiKey, (msg) => {
   const runtimes = detectRuntimes();
   log.info("ready", { runtimes, hostname: os.hostname() });
   conn.send({
-    type: "ready", capabilities: ["agent:start", "agent:stop", "agent:sleep", "agent:reset", "agent:profile", "agent:deliver", "agent:workspace", "resource:limits"],
+    type: "ready", capabilities: ["agent:start", "agent:stop", "agent:sleep", "agent:reset", "agent:profile", "agent:deliver", "agent:workspace", "resource:limits", DELIVERY_ADMISSION_CAPABILITY, AGENT_CONTROL_ACK_CAPABILITY],
     runtimes, runningAgents: mgr.running(), hostname: os.hostname(), os: `${os.platform()} ${os.arch()}`, daemonVersion: process.env.DAEMON_VERSION ?? "dev",
     machineId: readMachineId(), // Stable identity: empty on first connection; server sends it back via ready:ack for persistence.
   });

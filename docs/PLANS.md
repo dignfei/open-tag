@@ -38,6 +38,9 @@ their verified end state is recorded in `FEATURES.md`:
   Tasks retain one coordinator while named contributors publish in-thread, and active
   agent-authored mentions remain work edges. Evidence:
   [`docs/exec-plans/completed/directed-reply-coordination.md`](./exec-plans/completed/directed-reply-coordination.md).
+- **Conversation Turns** — sender/channel-scoped burst admission, durable responsibility,
+  stable-check visibility, idempotent daemon delivery, and bounded agent causality. Evidence:
+  [`docs/exec-plans/active/conversation-turns.md`](./exec-plans/active/conversation-turns.md).
 - **01 Agent communication loop + agent ↔ agent collaboration** ✅ (FEATURES P5)
 - **02 Saved Messages** ✅ (FEATURES P3)
 - **03 / 03b Tasks end-to-end + interaction rework** ✅ (FEATURES P4 — board move UX, layout toggle, DM tasks, handoff)
