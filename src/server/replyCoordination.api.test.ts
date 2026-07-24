@@ -117,6 +117,12 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     const dmCheck = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(0));
     const dmCoordination = dmCheck.body.messages.find((m: any) => m.id === dmTriggerId)?.coordination;
     assert.deepEqual([dmCoordination?.attention, dmCoordination?.decision, dmCoordination?.grantSlot, dmCoordination?.grantStatus], ["dm", "accepted", "primary", "active"]);
+    await db.update(schema.agentMessageDecisions).set({ decision: "pending", reasonCode: null, decidedAt: null }).where(eq(schema.agentMessageDecisions.messageId, dmTriggerId));
+    const dmRecheck = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(0));
+    assert.equal(dmRecheck.status, 200);
+    assert.equal(dmRecheck.body.messages.some((m: any) => m.id === dmTriggerId), false, "the legacy DM is already read");
+    const [upgradedDm] = await db.select().from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, dmTriggerId));
+    assert.deepEqual([upgradedDm?.decision, upgradedDm?.reasonCode, upgradedDm?.grantStatus], ["accepted", "dm_auto_authorized", "active"]);
     const dmReply = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
       target: `dm:@${user!.name}`, replyTo: dmTriggerId, content: "hello from codex",
     });

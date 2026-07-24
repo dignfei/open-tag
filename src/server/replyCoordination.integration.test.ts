@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { db, schema, sql } from "../db/index.js";
 import { pub, redis, sub } from "../redis.js";
-import { canAgentManageCoordinatedTask, checkReplyGrant, claimReplyCoordination, decideReply, ensureReplyRecipients, finishReplyPublication, markReplyMessagesObserved, reserveReplyGrant } from "./replyCoordination.js";
+import { authorizePendingDmGrants, canAgentManageCoordinatedTask, checkReplyGrant, claimReplyCoordination, decideReply, ensureReplyRecipients, finishReplyPublication, markReplyMessagesObserved, reserveReplyGrant } from "./replyCoordination.js";
 import { assignTask, createMessage, getOrCreateThread } from "./core.js";
 
 after(async () => {
@@ -116,15 +116,14 @@ test("DM grants are pre-authorized while channel recipients still decide", async
       eq(schema.agentMessageDecisions.messageId, message.id),
       eq(schema.agentMessageDecisions.agentId, codex!.id),
     ));
-    await ensureReplyRecipients({ serverId: f.server.id, channelId: f.channel.id, messageId: message.id, recipients: [
-      { agentId: codex!.id, attention: "dm" },
-    ] });
+    assert.equal(await authorizePendingDmGrants(codex!.id), 1);
     const [upgraded] = await db.select().from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, message.id),
       eq(schema.agentMessageDecisions.agentId, codex!.id),
     ));
     assert.equal(upgraded?.decision, "accepted", "existing active pending DMs are upgraded on check");
     assert.equal(upgraded?.reasonCode, "dm_auto_authorized");
+    assert.equal(await authorizePendingDmGrants(codex!.id), 0, "the upgrade is idempotent");
   } finally { await f.cleanup(); }
 });
 

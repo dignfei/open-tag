@@ -99,6 +99,22 @@ export async function markReplyMessagesObserved(agentId: string, messageIds: str
   return new Map(rows.map((r) => [r.messageId, r]));
 }
 
+export async function authorizePendingDmGrants(agentId: string): Promise<number> {
+  const now = new Date();
+  const upgraded = await db.update(schema.agentMessageDecisions).set({
+    decision: "accepted",
+    reasonCode: "dm_auto_authorized",
+    decidedAt: now,
+    updatedAt: now,
+  }).where(and(
+    eq(schema.agentMessageDecisions.agentId, agentId),
+    eq(schema.agentMessageDecisions.attention, "dm"),
+    eq(schema.agentMessageDecisions.decision, "pending"),
+    eq(schema.agentMessageDecisions.grantStatus, "active"),
+  )).returning({ messageId: schema.agentMessageDecisions.messageId });
+  return upgraded.length;
+}
+
 export function coordinationHeader(row: DecisionRow | undefined): string {
   if (!row) return "";
   const grant = row.grantStatus === "active" ? row.grantSlot : null;
