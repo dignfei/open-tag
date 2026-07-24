@@ -93,12 +93,11 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     daemonSocket = await new Promise<WebSocket>((resolve, reject) => {
       const ws = new WebSocket(`${live.base.replace("http", "ws")}/daemon/connect?key=${encodeURIComponent(machineKey)}`);
       const ready = JSON.stringify({ type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"], runningAgents: agents.map((a) => a.id), daemonVersion: "test" });
-      let retry: NodeJS.Timeout | undefined;
-      const timer = setTimeout(() => { if (retry) clearInterval(retry); reject(new Error(`dummy daemon ready timeout: ${live.logs()}`)); }, 3000);
-      ws.on("open", () => { ws.send(ready); retry = setInterval(() => ws.send(ready), 100); });
+      const timer = setTimeout(() => reject(new Error(`dummy daemon ready timeout: ${live.logs()}`)), 3000);
+      ws.on("open", () => ws.send(ready));
       ws.on("message", (data) => {
         const msg = JSON.parse(String(data));
-        if (msg.type === "ready:ack") { clearTimeout(timer); if (retry) clearInterval(retry); resolve(ws); }
+        if (msg.type === "ready:ack") { clearTimeout(timer); resolve(ws); }
         if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
       });
       ws.on("error", reject);

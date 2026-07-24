@@ -1,5 +1,5 @@
 // daemon control plane: WS /daemon/connect?key= (ServerToMachine / MachineToServer)
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import type { Server } from "node:http";
 import { and, eq, or } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
@@ -12,6 +12,7 @@ import { catchUpAgentsOnMachine } from "./reconnectCatchup.js";
 import { markMachineAgentsOffline } from "./machineLiveness.js";
 import { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog, startAgentActivityRun } from "./agentActivity.js";
 import { finalizeAgentActivityRun } from "./core.js";
+import { createWsFrameGate } from "./wsFrameGate.js";
 
 export { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog } from "./agentActivity.js";
 
@@ -31,6 +32,8 @@ export function attachWs(server: Server): void {
 async function onDaemon(ws: WebSocket, key: string): Promise<void> {
   let serverId: string | null = null;
   let machineId: string | null = null;
+  const frames = createWsFrameGate<RawData>();
+  ws.on("message", (data) => frames.dispatch(data));
   if (safeEqual(key, BOOTSTRAP_KEY)) {
     serverId = (await db.select().from(schema.servers).where(eq(schema.servers.slug, "open-tag")))[0]?.id ?? null;
   } else {
@@ -48,7 +51,7 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
   log.info("daemon connected", { serverId });
   const ping = setInterval(() => { try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* */ } }, 30000);
 
-  ws.on("message", async (data) => {
+  frames.open(async (data) => {
     let msg: any; try { msg = JSON.parse(data.toString()); } catch { return; }
     try {
       if (msg.type === "ready") { machineId = await onReady(serverId!, key, msg); registerMachineConn(machineId, ws); try { ws.send(JSON.stringify({ type: "ready:ack", machineId })); } catch { /* */ } }
