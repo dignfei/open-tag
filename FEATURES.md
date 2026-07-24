@@ -13,7 +13,7 @@
 - [x] Bootstrap seed: default `open-tag` workspace + owner + #all only; machines and agents are created explicitly through onboarding
 
 ## P1 Control Plane (server ↔ daemon) — Verified end-to-end
-- [x] WS `/daemon/connect?key=` TS implementation + machine registration/heartbeat persistence + push to frontend (machine ready verified)
+- [x] WS `/daemon/connect?key=` TS implementation + machine registration/heartbeat persistence + push to frontend (one-shot machine ready is buffered across async authentication and verified)
 - [x] Message protocol: agent:start/deliver + ready/status/activity/trajectory/session (daemon↔server fully wired)
 - [x] `--resume` wake-up supported; machine online status persisted
 - [x] **Single-turn cold-start wake**: deliveries queued while an agent workspace/runtime starts are consumed by the existing STARTUP/RESUME inbox-check nudge instead of being flushed again as a second inbox notice; already-running agents keep the 3 s batched delivery path. This prevents one message from driving duplicate replies after a cold wake (`agentManager.test.ts`).
