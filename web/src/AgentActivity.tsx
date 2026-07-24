@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AlertCircle, Check, ChevronRight, Terminal } from "lucide-react";
+import { Activity, AlertCircle, Brain, Check, ChevronRight, FilePen, FileText, Globe, ListTodo, MessageSquare, Search, Terminal, Wrench, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentActivityItem } from "./store.tsx";
 
@@ -23,6 +23,40 @@ export function agentRunPhase(items: AgentActivityItem[] = [], state?: string | 
 
 function eventTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+// toolName is runtime-raw (codex `commandExecution`/`patch_apply`, claude `Bash`/`Read`/`WebSearch`, arbitrary
+// function names elsewhere), so icons match by keyword, not exact name. Order matters: more specific families
+// (todo/web) before broader ones (write/search) so e.g. `TodoWrite` → list, `webSearch` → globe.
+const TOOL_ICON_RULES: [RegExp, LucideIcon][] = [
+  [/command|exec|bash|shell|terminal|script/i, Terminal],
+  [/todo|task|plan/i, ListTodo],
+  [/web|fetch|http|browser|url|crawl/i, Globe],
+  [/search|grep|find|query/i, Search],
+  [/read|cat|view|glob|open/i, FileText],
+  [/write|edit|patch|apply|change|create|save|notebook/i, FilePen],
+  [/message|say|send|reply|speak/i, MessageSquare],
+  [/think|reason/i, Brain],
+];
+function toolIcon(name?: string | null): LucideIcon {
+  if (name) for (const [re, icon] of TOOL_ICON_RULES) if (re.test(name)) return icon;
+  return Wrench;
+}
+
+/** One timeline event row — the single renderer for run events, shared by the per-message
+ *  disclosure below and the Agent Profile activity tab (Members.tsx), so both stay identical. */
+export function ActivityEventRow({ item, current = false }: { item: AgentActivityItem; current?: boolean }) {
+  const tool = item.kind === "tool_start";
+  const text = tool ? item.toolName : item.text || [item.activity, item.detail].filter(Boolean).join(" · ");
+  const ToolIcon = toolIcon(item.toolName);
+  return <div className={`msg-act-event${tool ? " is-tool" : ""}${current ? " is-current" : ""}`}>
+    <time>{eventTime(item.timestamp)}</time>
+    <span className="msg-act-mark" />
+    <div className="msg-act-event-content">
+      {tool ? <><span className="msg-act-kind"><ToolIcon size={12} />{text}</span>{item.toolInput ? <code>{item.toolInput}</code> : null}</>
+        : <span>{text}</span>}
+    </div>
+  </div>;
 }
 
 function eventSummary(item?: AgentActivityItem): string {
@@ -64,18 +98,9 @@ export function AgentActivityDisclosure({ items = [], state = "handled", receipt
         <ChevronRight className="msg-act-chevron" size={14} aria-hidden="true" />
       </button>
       <div className={`msg-act-reveal${open ? " is-open" : ""}`} aria-hidden={!open}><div className="msg-act-body">
-        {items.map((item, index) => {
-          const tool = item.kind === "tool_start";
-          const text = tool ? item.toolName : item.text || [item.activity, item.detail].filter(Boolean).join(" · ");
-          return <div className={`msg-act-event${tool ? " is-tool" : ""}${live && index === items.length - 1 ? " is-current" : ""}`} key={`${item.timestamp}-${index}`}>
-            <time>{eventTime(item.timestamp)}</time>
-            <span className="msg-act-mark" />
-            <div className="msg-act-event-content">
-              {tool ? <><span className="msg-act-kind"><Terminal size={12} />{text}</span>{item.toolInput ? <code>{item.toolInput}</code> : null}</>
-                : <span>{text}</span>}
-            </div>
-          </div>;
-        })}
+        {items.map((item, index) => (
+          <ActivityEventRow key={`${item.timestamp}-${index}`} item={item} current={live && index === items.length - 1} />
+        ))}
       </div></div>
     </div>
   );
