@@ -8,7 +8,7 @@ import { createMessage, resolveTarget, channelMembers, addChannelMembers, addRea
 import { agentHasScope } from "./scopes.js";
 import { parseUpload } from "./attachments.js";
 import { readObject } from "./storage.js";
-import { canAgentManageCoordinatedTask, checkReplyGrant, claimReplyCoordination, coordinationHeader, decideReply, ensureReplyRecipients, finishReplyPublication, hasOutstandingReplyDecision, markReplyMessagesObserved, releaseReplyReservation, reserveReplyGrant } from "./replyCoordination.js";
+import { authorizePendingDmGrants, canAgentManageCoordinatedTask, checkReplyGrant, claimReplyCoordination, coordinationHeader, decideReply, ensureReplyRecipients, finishReplyPublication, hasOutstandingReplyDecision, markReplyMessagesObserved, releaseReplyReservation, reserveReplyGrant } from "./replyCoordination.js";
 import type { ReplySlot } from "./replyCoordinationPolicy.js";
 import { validateDecisionInput } from "./replyCoordinationPolicy.js";
 
@@ -101,6 +101,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
 
   // Poll for new messages (non-blocking): messages in agent's channels with seq > lastReadSeq, then advance lastReadSeq
   if (p === "/agent-api/message/check" && method === "GET") {
+    await authorizePendingDmGrants(agent.id);
     const cms = await agentChannels(agent.id);
     const out: any[] = [];
     for (const cm of cms) {
