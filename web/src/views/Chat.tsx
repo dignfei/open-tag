@@ -417,9 +417,11 @@ export function Chat() {
             ? <span className="head-status"><span className={"dot " + (agentLiveState(dmAgent) || "offline")} />{agentStateLabel(dmAgent)}</span>
             : <small>{sub || cur?.description || ""}</small>}
           {cur && <div className="chtabs">{(isDm ? ["chat", "tasks"] : ["chat", "tasks", "files"]).map((tt) => <button key={tt} className={chatTab === tt ? "on" : ""} onClick={() => setTab(tt)}>{tt === "chat" ? t("nav.channel") : tt === "tasks" ? t("nav.tasks") : t("common.files")}</button>)}</div>}
-          {!isDm && cur && cur.type !== "showcase" && <button className="joinbtn" style={{ marginLeft: "auto" }} title={t("chat.channelMembers")} onClick={() => setShowMembers(true)}><Users size={14} /><span className="joinbtn-label">{t("chat.members")}</span></button>}
-          {!isDm && cur && cur.type !== "showcase" && capabilities.manageChannels && (
-            <button className="joinbtn" title={t("chat.channelSettings")} onClick={() => setShowEdit(true)}>⋯</button>
+          {!isDm && cur && cur.type !== "showcase" && (
+            <div className="chat-head-actions">
+              <button className="joinbtn" title={t("chat.channelMembers")} onClick={() => setShowMembers(true)}><Users size={16} /><span className="joinbtn-label">{t("chat.members")}</span></button>
+              {capabilities.manageChannels && <button className="joinbtn" title={t("chat.channelSettings")} onClick={() => setShowEdit(true)}>⋯</button>}
+            </div>
           )}
         </div>
         {chatTab === "tasks" && cur ? <TaskBoard channelId={cur.id} onOpenThread={startThread} />
