@@ -65,6 +65,23 @@ export async function ensureReplyRecipients(o: {
       ));
     }
   }
+
+  const dmAgentIds = directed.filter((r) => r.attention === "dm").map((r) => r.agentId);
+  if (dmAgentIds.length) {
+    const now = new Date();
+    await db.update(schema.agentMessageDecisions).set({
+      decision: "accepted",
+      reasonCode: "dm_auto_authorized",
+      decidedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(schema.agentMessageDecisions.messageId, o.messageId),
+      inArray(schema.agentMessageDecisions.agentId, dmAgentIds),
+      eq(schema.agentMessageDecisions.attention, "dm"),
+      eq(schema.agentMessageDecisions.decision, "pending"),
+      eq(schema.agentMessageDecisions.grantStatus, "active"),
+    ));
+  }
 }
 
 export async function markReplyMessagesObserved(agentId: string, messageIds: string[]): Promise<Map<string, DecisionRow>> {
