@@ -116,7 +116,7 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     const dmTriggerId = dmTrigger.body.id as string;
     const dmCheck = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(0));
     const dmCoordination = dmCheck.body.messages.find((m: any) => m.id === dmTriggerId)?.coordination;
-    assert.deepEqual([dmCoordination?.attention, dmCoordination?.decision, dmCoordination?.grantSlot, dmCoordination?.grantStatus], ["dm", "pending", "primary", "active"]);
+    assert.deepEqual([dmCoordination?.attention, dmCoordination?.decision, dmCoordination?.grantSlot, dmCoordination?.grantStatus], ["dm", "accepted", "primary", "active"]);
     const dmReply = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
       target: `dm:@${user!.name}`, replyTo: dmTriggerId, content: "hello from codex",
     });
@@ -124,6 +124,7 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     assert.equal(dmReply.body.replySlot, "primary");
     const [dmAudit] = await db.select().from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, dmTriggerId));
     assert.deepEqual([dmAudit?.decision, dmAudit?.grantStatus, dmAudit?.replyMessageId], ["published", "consumed", dmReply.body.id]);
+    assert.equal(dmAudit?.reasonCode, "dm_auto_authorized");
     const duplicateDmReply = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), {
       target: `dm:@${user!.name}`, replyTo: dmTriggerId, content: "duplicate",
     });

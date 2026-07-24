@@ -94,6 +94,40 @@ test("active addressed grants treat publication as implicit acceptance", async (
   } finally { await f.cleanup(); }
 });
 
+test("DM grants are pre-authorized while channel recipients still decide", async () => {
+  const f = await fixture("dm-authorized");
+  try {
+    const [codex, codex2, worker] = f.agents;
+    const message = await f.makeMessage(9_100_033);
+    await ensureReplyRecipients({ serverId: f.server.id, channelId: f.channel.id, messageId: message.id, recipients: [
+      { agentId: codex!.id, attention: "dm" },
+      { agentId: codex2!.id, attention: "direct" },
+      { agentId: worker!.id, attention: "ambient" },
+    ] });
+    const first = await db.select().from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, message.id));
+    const dmRow = first.find((r) => r.agentId === codex!.id);
+    assert.equal(dmRow?.decision, "accepted");
+    assert.equal(dmRow?.reasonCode, "dm_auto_authorized");
+    assert.ok(dmRow?.decidedAt);
+    assert.equal(first.find((r) => r.agentId === codex2!.id)?.decision, "pending");
+    assert.equal(first.find((r) => r.agentId === worker!.id)?.decision, "pending");
+
+    await db.update(schema.agentMessageDecisions).set({ decision: "pending", decidedAt: null }).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id),
+      eq(schema.agentMessageDecisions.agentId, codex!.id),
+    ));
+    await ensureReplyRecipients({ serverId: f.server.id, channelId: f.channel.id, messageId: message.id, recipients: [
+      { agentId: codex!.id, attention: "dm" },
+    ] });
+    const [upgraded] = await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id),
+      eq(schema.agentMessageDecisions.agentId, codex!.id),
+    ));
+    assert.equal(upgraded?.decision, "accepted", "existing active pending DMs are upgraded on check");
+    assert.equal(upgraded?.reasonCode, "dm_auto_authorized");
+  } finally { await f.cleanup(); }
+});
+
 test("every explicit mention can accept one independent directed reply", async () => {
   const f = await fixture("multi-directed");
   try {

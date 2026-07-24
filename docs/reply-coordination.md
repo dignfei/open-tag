@@ -28,6 +28,9 @@ granted a slot for the triggering message.
    most once for the trigger. An explicit `accept` may record ownership before work
    starts, while publication against an active addressed grant atomically records an
    implicit accept so ordinary replies do not depend on a fragile two-command sequence.
+   A one-to-one DM has no competing recipient, so its active primary grant is recorded
+   as `accepted` immediately (`reason=dm_auto_authorized`); the agent may still choose
+   `no_action`, but cannot mistake `decision=pending` for missing reply permission.
 4. Direct attention establishes eligibility, not an obligation to answer. A directed
    contributor accepts only when it owns a distinct requested slice; copying an agent
    or overlapping another answer should end in `no_action`.
@@ -145,9 +148,11 @@ open-tag message send --reply-to <id> --target <target>
 `message send` validates access to both target and trigger and atomically reserves the
 authenticated agent's active grant before creating the reply. When an addressed
 `direct|dm|assigned` row is still pending, that same reservation records `accepted`;
-the attempted publication is the agent's concrete decision to answer. Ambient observers
-still need an evidence-bearing `request_reply` decision to obtain a grant, and explicit
-`no_action`, delegation, or abstention remain separate decisions. The canonical target is
+the attempted publication is the agent's concrete decision to answer. DM primaries are
+pre-authorized when their grant is assigned, including upgrading a legacy active/pending
+DM during a later check. Ambient observers still need an evidence-bearing `request_reply`
+decision to obtain a grant, and explicit `no_action`, delegation, or abstention remain
+separate decisions. The canonical target is
 the trigger channel for normal messages and the trigger's thread for tasks. Persisted
 primary/supplemental slot uniqueness plus `(reply_to_message_id, sender_id)` prevents
 duplicate publication even if a process fails between insert and decision finalization.
