@@ -27,11 +27,27 @@ test("member badge stays on a second line while message run state stays at the r
   assert.doesNotMatch(chatSrc, /<div className="msg-head">[\s\S]{0,700}\{isMember \? <span className="member-badge">[^<]*<\/span> : null\}/);
 });
 
-test("channel members control keeps its icon and label separated", () => {
-  const members = ruleBody(".chat-head>.joinbtn");
-  assert.match(members, /display\s*:\s*inline-flex\b/);
-  assert.match(members, /align-items\s*:\s*center\b/);
-  assert.match(members, /gap\s*:\s*6px\b/, `member icon and label need an explicit optical gap: ${members}`);
+test("channel header actions share a centered, stable control row", () => {
+  assert.match(chatSrc, /className="chat-head-actions"/);
+  assert.doesNotMatch(chatSrc, /style=\{\{ marginLeft: "auto" \}\}/, "the action group should own right-edge alignment");
+  assert.match(chatSrc, /<Users size=\{16\} \/>/, "the members icon should match the header control scale");
+
+  const head = ruleBody(".chat-head");
+  assert.match(head, /align-items\s*:\s*center\b/, `channel header controls should share one vertical center: ${head}`);
+
+  const group = ruleBody(".chat-head-actions");
+  assert.match(group, /display\s*:\s*flex\b/);
+  assert.match(group, /align-items\s*:\s*center\b/);
+  assert.match(group, /gap\s*:\s*8px\b/, `header actions need a stable group rhythm: ${group}`);
+  assert.match(group, /margin-left\s*:\s*auto\b/, `the action group should own the right edge: ${group}`);
+
+  const button = ruleBody(".chat-head-actions>.joinbtn");
+  assert.match(button, /display\s*:\s*inline-flex\b/);
+  assert.match(button, /align-items\s*:\s*center\b/);
+  assert.match(button, /height\s*:\s*32px\b/, `header actions should not look smaller than the tab row: ${button}`);
+  assert.match(button, /min-width\s*:\s*32px\b/, `icon-only header actions need a stable control box: ${button}`);
+  assert.match(button, /font-size\s*:\s*13px\b/, `header actions should use the app-shell UI size: ${button}`);
+  assert.match(button, /gap\s*:\s*6px\b/, `member icon and label need an explicit optical gap: ${button}`);
 });
 
 test("unread thread bar keeps its own row without fading channel messages", () => {

@@ -110,7 +110,8 @@ button{font-family:inherit}
 .item.ghost:hover{background:transparent}
 .joinbtn{border:1px solid var(--hair-strong);background:var(--surface);color:var(--ink);border-radius:6px;font-size:11px;padding:2px 9px;cursor:pointer;flex:none}
 .joinbtn:hover{background:var(--surface-strong)}
-.chat-head>.joinbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.chat-head-actions{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none}
+.chat-head-actions>.joinbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;min-width:32px;padding:0 10px;font-size:13px;line-height:1}
 .dm-pick{margin:0 0 4px;padding:4px;border:1px solid var(--hair);border-radius:8px;background:var(--surface)}
 .inline-create{width:100%;font-size:15px;padding:6px 10px;border:1px solid var(--hair-strong);border-radius:8px;outline:none;margin-bottom:6px;background:var(--canvas)}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--muted-soft);flex:none}
@@ -230,7 +231,7 @@ main.content-col{display:flex;flex-direction:column;height:100vh;background:var(
    keep name + description + tabs on ONE row. The description shrinks to an ellipsis instead of wrapping — wrapping
    otherwise multiplied the header height and dropped the channel name to the bottom when the column got narrow
    (e.g. a wide right panel). Name + tabs never shrink, so the tab row stays intact instead of being pushed around. */
-.chat-head{position:relative;min-height:58px;padding-top:12px;padding-bottom:12px;border-bottom:0;background:var(--surface);z-index:11}
+.chat-head{position:relative;align-items:center;min-height:58px;padding-top:12px;padding-bottom:12px;border-bottom:0;background:var(--surface);z-index:11}
 .chat-head::after{content:"";position:absolute;left:0;right:0;bottom:-24px;height:24px;background:linear-gradient(to bottom,var(--surface),rgba(255,255,255,.72) 32%,rgba(255,255,255,0));pointer-events:none}
 .chat-head>h1{flex-shrink:0}
 .chat-head>small,.chat-head>.head-status{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -951,7 +952,8 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
   main.content-col{grid-row:1;min-width:0;height:auto;min-height:0}  /* overrides desktop height:100vh, delegated to grid 1fr; otherwise fills viewport and pushes bottom bar off screen */
   .chat-head{gap:7px;padding-right:9px}
   .chat-head>small,.chat-head>.head-status{display:none}
-  .chat-head>.joinbtn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;flex:none}
+  .chat-head-actions{gap:6px}
+  .chat-head-actions>.joinbtn{width:32px;height:32px;padding:0}
   .chat-head .joinbtn-label{display:none}
   .showcase-shell{grid-row:1;height:auto;min-height:0}  /* same delegation: the showcase wrapper is the grid cell here (its inner .content-col gets height:auto via the rule above; the thread panel goes fullscreen via .thread-panel) */
   /* sidebar (channels/members etc.) → left drawer, collapsed by default, hamburger toggles body.sb-open */
