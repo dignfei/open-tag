@@ -53,7 +53,7 @@ async function api(base: string, method: string, path: string, headers: Record<s
   return { status: response.status, body: await response.json() as any };
 }
 
-test("real API: all agents observe a mistaken mention, only delegated agent publishes", async () => {
+test("real API: reconnect catch-up and reply coordination preserve their contracts", async () => {
   const suffix = randomUUID().slice(0, 8);
   const tokens = ["codex", "codex2", "worker"].map((name) => ({ name: `${name}-${suffix}`, token: `sk_agent_test_${name}_${suffix}` }));
   const machineKey = `sk_machine_test_${suffix}`;
@@ -68,6 +68,9 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
   const agents = await db.insert(schema.agents).values(tokens.map((t) => ({
     serverId: server!.id, machineId: machine!.id, name: t.name, displayName: t.name, agentTokenHash: hashToken(t.token), runtime: "codex", status: "active",
   }))).returning();
+  const [catchupAgent] = await db.insert(schema.agents).values({
+    serverId: server!.id, machineId: machine!.id, name: `catchup-${suffix}`, displayName: `catchup-${suffix}`, runtime: "codex", status: "inactive",
+  }).returning();
   await db.insert(schema.channelMembers).values([
     { channelId: channel!.id, memberType: "user", memberId: user!.id },
     ...agents.map((a) => ({ channelId: channel!.id, memberType: "agent", memberId: a.id })),
@@ -90,19 +93,35 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
 
   try {
     const live = await startServer();
+    const humanHeaders = { authorization: `Bearer ${signUser(user!.id)}`, "x-server-id": server!.id };
+    const [catchupDm] = await db.insert(schema.channels).values({ serverId: server!.id, name: `dm:catchup-${suffix}`, type: "dm" }).returning();
+    await db.insert(schema.channelMembers).values([
+      { channelId: catchupDm!.id, memberType: "user", memberId: user!.id },
+      { channelId: catchupDm!.id, memberType: "agent", memberId: catchupAgent!.id },
+    ]);
+    const offlineTrigger = await api(live.base, "POST", "/api/messages", humanHeaders, { channelId: catchupDm!.id, content: "offline backlog" });
+    assert.equal(offlineTrigger.status, 200, JSON.stringify(offlineTrigger.body));
     daemonSocket = await new Promise<WebSocket>((resolve, reject) => {
       const ws = new WebSocket(`${live.base.replace("http", "ws")}/daemon/connect?key=${encodeURIComponent(machineKey)}`);
       const ready = JSON.stringify({ type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"], runningAgents: agents.map((a) => a.id), daemonVersion: "test" });
-      const timer = setTimeout(() => reject(new Error(`dummy daemon ready timeout: ${live.logs()}`)), 3000);
+      let acknowledged = false;
+      let caughtUp = false;
+      const timer = setTimeout(() => reject(new Error(`dummy daemon ready/catch-up timeout: ${live.logs()}`)), 3000);
+      const finish = () => {
+        if (!acknowledged || !caughtUp) return;
+        clearTimeout(timer);
+        resolve(ws);
+      };
       ws.on("open", () => ws.send(ready));
       ws.on("message", (data) => {
         const msg = JSON.parse(String(data));
-        if (msg.type === "ready:ack") { clearTimeout(timer); resolve(ws); }
+        if (msg.type === "ready:ack") acknowledged = true;
+        if (msg.type === "agent:start" && msg.agentId === catchupAgent!.id) caughtUp = true;
         if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
+        finish();
       });
       ws.on("error", reject);
     });
-    const humanHeaders = { authorization: `Bearer ${signUser(user!.id)}`, "x-server-id": server!.id };
     const agentHeaders = (i: number) => ({ authorization: `Bearer ${tokens[i]!.token}`, "x-agent-id": agents[i]!.id });
 
     const [dm] = await db.insert(schema.channels).values({ serverId: server!.id, name: `dm:${[user!.id, agents[0]!.id].sort().join(":")}`, type: "dm" }).returning();
@@ -114,6 +133,7 @@ test("real API: all agents observe a mistaken mention, only delegated agent publ
     assert.equal(dmTrigger.status, 200, JSON.stringify(dmTrigger.body));
     const dmTriggerId = dmTrigger.body.id as string;
     const dmCheck = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(0));
+    assert.equal(dmCheck.status, 200, JSON.stringify(dmCheck.body));
     const dmCoordination = dmCheck.body.messages.find((m: any) => m.id === dmTriggerId)?.coordination;
     assert.deepEqual([dmCoordination?.attention, dmCoordination?.decision, dmCoordination?.grantSlot, dmCoordination?.grantStatus], ["dm", "accepted", "primary", "active"]);
     await db.update(schema.agentMessageDecisions).set({ decision: "pending", reasonCode: null, decidedAt: null }).where(eq(schema.agentMessageDecisions.messageId, dmTriggerId));

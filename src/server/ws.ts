@@ -54,7 +54,14 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
   frames.open(async (data) => {
     let msg: any; try { msg = JSON.parse(data.toString()); } catch { return; }
     try {
-      if (msg.type === "ready") { machineId = await onReady(serverId!, key, msg); registerMachineConn(machineId, ws); try { ws.send(JSON.stringify({ type: "ready:ack", machineId })); } catch { /* */ } }
+      if (msg.type === "ready") {
+        const runningIds: string[] = Array.isArray(msg.runningAgents) ? msg.runningAgents : [];
+        machineId = await onReady(serverId!, key, msg);
+        registerMachineConn(machineId, ws);
+        try { ws.send(JSON.stringify({ type: "ready:ack", machineId })); } catch { /* */ }
+        // The machine connection must be indexed before catch-up sends agent:start/deliver to it.
+        void catchUpAgentsOnMachine(serverId!, machineId, runningIds).catch((e: any) => log.error("catch-up failed", { machineId, detail: String(e?.message ?? e) }));
+      }
       else if (msg.type === "agent:status" || msg.type === "agent:activity") await onAgentUpdate(serverId!, msg);
       else if (msg.type === "agent:session" && msg.agentId) { await db.update(schema.agents).set({ sessionId: msg.sessionId }).where(eq(schema.agents.id, msg.agentId)); await publish(serverId!, { type: "agent:session", agentId: msg.agentId, sessionId: msg.sessionId }); } // forward to the frontend
       else if (msg.type === "agent:trajectory" && msg.agentId) {
@@ -139,11 +146,6 @@ async function onReady(serverId: string, key: string, msg: any): Promise<string>
     await publish(serverId, { type: "agent", id: a.id, name: a.name, status: "inactive", activity: "offline" });
     log.info("reconciled stale-active/queued agent → inactive", { agentId: a.id, machineId });
   }
-  // Reconnect catch-up: wake agents on this machine that accumulated a wakeable backlog while it was offline,
-  // so missed @/DM messages get processed instead of sitting unread forever (the symmetric counterpart to the
-  // human side's reconnect message-sync). Fire-and-forget — it must not delay the ready:ack the caller sends
-  // right after, and any failure must never break the connection.
-  void catchUpAgentsOnMachine(serverId, machineId, runningIds).catch((e: any) => log.error("catch-up failed", { machineId, detail: String(e?.message ?? e) }));
   return machineId;
 }
 
