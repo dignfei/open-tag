@@ -28,7 +28,10 @@ granted a slot for the triggering message.
 2. A collecting Turn is not exposed by `message check`, so an agent cannot answer half
    a burst. Stable later Turns from another sender may still be read: persisted
    per-message observation rows de-duplicate them while the scalar channel cursor waits
-   behind the gap, without hiding later pages of the same canonical Turn.
+   behind the gap, without hiding later pages of the same canonical Turn. Send-time
+   freshness is intentionally a different read: unseen ambient collecting context may
+   hold a stale draft, but it does not advance the formal inbox cursor or observation;
+   direct/DM/task work queued behind the current runtime cannot interrupt that reply.
 3. Observation and publication are independent. Eligible channel, DM, and thread
    members keep receiving and reading messages under the existing wake and access
    rules. An unmentioned agent is not hidden from a message merely to keep it quiet.
@@ -92,21 +95,19 @@ granted a slot for the triggering message.
    A partial NACK keeps the Turn and every explicit grant active; retry reuses each recipient's
    delivery id. Activate, renew, finish, and retry all require the current attempt token, and a
    reply completed during ACK wait cannot be overwritten.
-16. The daemon ACKs only after a running runtime accepts the notice or a cold-start adapter
-   explicitly admits its initial prompt. For persistent/protocol runtimes this means stdin or
-   protocol acceptance; for argv one-shot runtimes it means the child process successfully spawned,
-   not that the model completed. Resource-pressure queueing does not ACK. Runtime,
-   start, dequeue, or stop failure NACKs and clears the daemon fence; concurrent retries
-   share the same admission result. ACK/NACK without the durable id cannot settle a waiter.
-   Successful delivery ids persist across daemon process replacement, and each server recipient
-   stores `delivery_admitted_at`; a partial retry skips recipients already admitted. While a busy
-   runtime owns the queued notice, `agent:deliver:pending` heartbeats renew the short server waiter
-   without acknowledging admission; only the final runtime acceptance produces ACK. The persisted
-   ledger uses a cross-process lock/read-merge-rename cycle and refreshes on lookup, so overlapping
-   daemon replacement cannot use a stale loaded snapshot. Database grants
-   make public publication one-shot, but arbitrary external tool side effects are still not a
-   distributed exactly-once transaction across every crash boundary.
-17. A daemon must advertise `delivery-admission-v1` before any Turn start/delivery frame,
+16. Durable delivery uses a two-phase barrier. While queued, `agent:deliver:pending` heartbeats
+   renew transport liveness without opening the inbox. At the per-agent FIFO head the daemon sends
+   `agent:deliver:ready`; the server validates the authenticated current machine, tenant, agent,
+   Turn recipient, and sequence, commits `delivery_admitted_at`, and replies `admitted`. Only then
+   may the daemon write the notice or cold-start nudge into the runtime. Final ACK means the adapter
+   accepted that input; NACK/disconnect releases an unpublished in-flight commit. Cold start admits
+   only the queue head, not every pending Turn. Successful delivery ids persist across daemon process
+   replacement after a completed ledger write, and same-id retries re-run the server commit
+   without repeating ordinary runtime work. The
+   persisted ledger uses a cross-process lock/read-merge-rename cycle and refreshes on lookup.
+   Database grants make public publication one-shot, but arbitrary external tool side effects are
+   still not a distributed exactly-once transaction across every crash boundary.
+17. A daemon must advertise `delivery-admission-v2` before any Turn start/delivery frame,
    agent inbox exposure, decision, or trigger-bound publication. A missing-capability Turn
    remains active with its grants retained and retries paused. A capable reconnect resumes
    bound work; when exactly one capable daemon is connected it also resumes legacy unbound
@@ -114,6 +115,10 @@ granted a slot for the triggering message.
    Once a particular unbound recipient has `delivery_admitted_at`, later topology changes do not
    revoke its authority to decide and publish that already-running work; sentinel-paused and not-yet-
    admitted recipients remain blocked.
+18. Recipient admission gates addressed work, not context. `direct`, `dm`, and `assigned` rows
+   remain hidden and cannot decide/send/thread-reply until their own runtime reaches the FIFO head.
+   Ambient rows remain readable so an unmentioned agent can judge relevance and request a bounded
+   supplemental grant; visibility is not converted into an obligation to reply.
 
 ## Mis-mention behavior
 

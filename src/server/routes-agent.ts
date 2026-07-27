@@ -19,7 +19,7 @@ import { isConversationTurnCapabilityPaused } from "./conversationTurnRecovery.j
 // and new messages have arrived since last read → save as draft + surface bounded context, do not post immediately.
 // Agent can revise (send again to same target) or submit unchanged with `--send-draft`.
 // Key = `agentId:channelId`, short-lived in-process (discarded on restart — acceptable, drafts are ephemeral by design).
-const drafts = new Map<string, { content: string; attachmentIds: string[]; replyToMessageId?: string }>();
+const drafts = new Map<string, { content: string; attachmentIds: string[]; replyToMessageId?: string; reviewedMessageIds: string[] }>();
 
 // /agent-api action → required scope. Default mode grants all; custom mode enforces per granted list.
 function requiredScope(p: string): string | null {
@@ -64,14 +64,17 @@ async function durableTurnActionBlockReason(serverId: string, machineId: string 
   if (row.state && isConversationTurnCapabilityPaused({ state: row.state, dispatchLeaseUntil: row.dispatchLeaseUntil })) {
     return "conversation turn paused for daemon capability";
   }
-  const admitted = (await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt })
+  const recipient = (await db.select({
+    admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt,
+    attention: schema.agentMessageDecisions.attention,
+  })
     .from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, messageId),
       eq(schema.agentMessageDecisions.agentId, agentId),
-      isNotNull(schema.agentMessageDecisions.deliveryAdmittedAt),
     )).limit(1))[0];
-  if (admitted) return null;
-  return conversationTurnDeliveryBlockReason(serverId, machineId);
+  if (recipient?.admittedAt || recipient?.attention === "ambient") return null;
+  return conversationTurnDeliveryBlockReason(serverId, machineId)
+    ?? "conversation turn is queued for runtime delivery";
 }
 
 async function agentHasCapabilityPausedTurn(agentId: string): Promise<boolean> {
@@ -126,6 +129,78 @@ export const fmt = (m: typeof schema.messages.$inferSelect, target: string, atts
   return `[target=${target}${m.threadId ? ":" + m.id.slice(0, 8) : ""} msg=${m.id.slice(0, 8)}${coordinationHeader(coordination)} time=${localTime(m.createdAt)} type=${type}] @${m.senderName}: ${m.content}${taskSuffix}${attSuffix}`;
 };
 
+type InboxMessage = typeof schema.messages.$inferSelect;
+
+async function classifyInboxVisibility(opts: {
+  agentId: string;
+  messages: InboxMessage[];
+  durableDeliveryBlock: string | null;
+  purpose: "inbox" | "freshness";
+}): Promise<{
+  visible: InboxMessage[];
+  cursorPrefix: InboxMessage[];
+  capabilityPaused: boolean;
+  topologyBlocked: boolean;
+}> {
+  const turnIds = [...new Set(opts.messages.flatMap((message) => message.conversationTurnId ? [message.conversationTurnId] : []))];
+  const turnRows = turnIds.length
+    ? await db.select({
+      id: schema.conversationTurns.id,
+      state: schema.conversationTurns.state,
+      boundaryKind: schema.conversationTurns.boundaryKind,
+      triggerMessageId: schema.conversationTurns.triggerMessageId,
+      dispatchLeaseUntil: schema.conversationTurns.dispatchLeaseUntil,
+    }).from(schema.conversationTurns).where(inArray(schema.conversationTurns.id, turnIds))
+    : [];
+  const triggerIds = [...new Set(turnRows.map((turn) => turn.triggerMessageId))];
+  const recipientRows = triggerIds.length
+    ? await db.select({
+      messageId: schema.agentMessageDecisions.messageId,
+      attention: schema.agentMessageDecisions.attention,
+      deliveryAdmittedAt: schema.agentMessageDecisions.deliveryAdmittedAt,
+    }).from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.agentId, opts.agentId),
+      inArray(schema.agentMessageDecisions.messageId, triggerIds),
+    ))
+    : [];
+  const recipientByTrigger = new Map(recipientRows.map((row) => [row.messageId, row]));
+  const stableStates = new Set(["active", "dispatched", "blocked"]);
+  let capabilityPaused = false;
+  let topologyBlocked = false;
+  const turnInboxVisible = new Map<string, boolean>();
+  const turnPurposeVisible = new Map<string, boolean>();
+  for (const turn of turnRows) {
+    if (isConversationTurnCapabilityPaused(turn)) {
+      capabilityPaused = true;
+    }
+    const recipient = recipientByTrigger.get(turn.triggerMessageId);
+    const admissionBlocked = !!recipient && recipient.attention !== "ambient" && !recipient.deliveryAdmittedAt;
+    if (admissionBlocked) {
+      if (opts.durableDeliveryBlock) topologyBlocked = true;
+    }
+    const inboxVisible = !isConversationTurnCapabilityPaused(turn)
+      && !admissionBlocked
+      && stableStates.has(turn.state);
+    turnInboxVisible.set(turn.id, inboxVisible);
+    turnPurposeVisible.set(turn.id, inboxVisible || (opts.purpose === "freshness" && turn.boundaryKind === "ambient"));
+  }
+  const isCursorSafe = (message: InboxMessage) => message.senderId === opts.agentId
+    || !message.conversationTurnId
+    || turnInboxVisible.get(message.conversationTurnId) === true;
+  const isVisible = (message: InboxMessage) => message.senderId === opts.agentId
+    || !message.conversationTurnId
+    || turnPurposeVisible.get(message.conversationTurnId) === true;
+  const blockedIndex = opts.messages.findIndex((message) => message.senderId !== opts.agentId
+    && !!message.conversationTurnId
+    && !isCursorSafe(message));
+  return {
+    visible: opts.messages.filter(isVisible),
+    cursorPrefix: blockedIndex >= 0 ? opts.messages.slice(0, blockedIndex) : opts.messages,
+    capabilityPaused,
+    topologyBlocked,
+  };
+}
+
 export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, url: URL, method: string): Promise<boolean> {
   const p = url.pathname;
   if (!p.startsWith("/agent-api/")) return false;
@@ -150,40 +225,10 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, cm.channelId)))[0];
       if (!ch || ch.deletedAt) continue;
       const unread = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, cm.channelId), ne(schema.messages.messageType, "agent_activity_receipt"), gt(schema.messages.seq, cm.lastReadSeq))).orderBy(asc(schema.messages.seq)).limit(100);
-      const turnIds = [...new Set(unread.flatMap((message) => message.conversationTurnId ? [message.conversationTurnId] : []))];
-      const turnRows = turnIds.length
-        ? await db.select({
-          id: schema.conversationTurns.id,
-          state: schema.conversationTurns.state,
-          triggerMessageId: schema.conversationTurns.triggerMessageId,
-          dispatchLeaseUntil: schema.conversationTurns.dispatchLeaseUntil,
-        }).from(schema.conversationTurns).where(inArray(schema.conversationTurns.id, turnIds))
-        : [];
-      const turnById = new Map(turnRows.map((turn) => [turn.id, turn]));
-      const turnTriggerIds = [...new Set(turnRows.map((turn) => turn.triggerMessageId))];
-      const admittedRows = turnTriggerIds.length
-        ? await db.select({ messageId: schema.agentMessageDecisions.messageId }).from(schema.agentMessageDecisions).where(and(
-          eq(schema.agentMessageDecisions.agentId, agent.id),
-          inArray(schema.agentMessageDecisions.messageId, turnTriggerIds),
-          isNotNull(schema.agentMessageDecisions.deliveryAdmittedAt),
-        ))
-        : [];
-      const admitted = new Set(admittedRows.map((row) => row.messageId));
-      const stableTurnStates = new Set(["active", "dispatched", "blocked"]);
-      const stableTurn = (turnId: string | null) => {
-        if (!turnId) return true;
-        const turn = turnById.get(turnId);
-        if (!turn) return false;
-        if (isConversationTurnCapabilityPaused(turn)) { capabilityPaused = true; return false; }
-        if (durableDeliveryBlock && !admitted.has(turn.triggerMessageId)) { topologyBlocked = true; return false; }
-        return stableTurnStates.has(turn.state);
-      };
-      const blockedIndex = unread.findIndex((message) => message.senderId !== agent.id
-        && !!message.conversationTurnId
-        && !stableTurn(message.conversationTurnId));
-      const stable = unread.filter((message) => message.senderId === agent.id
-        || !message.conversationTurnId
-        || stableTurn(message.conversationTurnId));
+      const visibility = await classifyInboxVisibility({ agentId: agent.id, messages: unread, durableDeliveryBlock, purpose: "inbox" });
+      capabilityPaused ||= visibility.capabilityPaused;
+      topologyBlocked ||= visibility.topologyBlocked;
+      const stable = visibility.visible;
       const stableForeign = stable.filter((message) => message.senderId !== agent.id);
       const observedRows = stableForeign.length
         ? await db.select({ messageId: schema.agentMessageObservations.messageId }).from(schema.agentMessageObservations).where(and(
@@ -222,8 +267,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       }
       // Persisted observation de-duplicates stable messages beyond a collecting gap. The scalar channel
       // cursor advances only through the contiguous prefix, so the hidden Turn cannot be skipped forever.
-      const cursorPrefix = blockedIndex >= 0 ? unread.slice(0, blockedIndex) : unread;
-      if (cursorPrefix.length) await db.update(schema.channelMembers).set({ lastReadSeq: cursorPrefix[cursorPrefix.length - 1]!.seq })
+      if (visibility.cursorPrefix.length) await db.update(schema.channelMembers).set({ lastReadSeq: visibility.cursorPrefix.at(-1)!.seq })
         .where(and(eq(schema.channelMembers.channelId, cm.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id)));
     }
     const coordination: any[] = [];
@@ -299,7 +343,8 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     };
     let replyToMessageId = await resolveTrigger(b.replyTo);
     if (b.replyTo && !replyToMessageId) return (sendErr(res, 404, "reply trigger not found", { code: "REPLY_TRIGGER_NOT_FOUND" }), true);
-    const savedDraft = b.sendDraft ? drafts.get(draftKey) : undefined;
+    const existingDraft = drafts.get(draftKey);
+    const savedDraft = b.sendDraft ? existingDraft : undefined;
     replyToMessageId = savedDraft?.replyToMessageId ?? replyToMessageId;
     if (replyToMessageId) {
       const durableActionBlock = await durableTurnActionBlockReason(serverId, agent.machineId, agent.id, replyToMessageId);
@@ -342,10 +387,30 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     // Freshness-hold: new messages arrived since agent last read (not self / not system) → save draft + surface bounded context, do not post immediately (prevents agent↔agent duplicate replies)
     const cm = (await db.select().from(schema.channelMembers).where(and(eq(schema.channelMembers.channelId, tgt.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id))))[0];
     const lastRead = cm?.lastReadSeq ?? 0;
-    const newer = (await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, tgt.channelId), ne(schema.messages.messageType, "agent_activity_receipt"), gt(schema.messages.seq, lastRead))).orderBy(asc(schema.messages.seq)).limit(20)).filter((m) => m.senderId !== agent.id && m.senderType !== "system");
+    const unread = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, tgt.channelId), ne(schema.messages.messageType, "agent_activity_receipt"), gt(schema.messages.seq, lastRead))).orderBy(asc(schema.messages.seq)).limit(20);
+    const visibility = await classifyInboxVisibility({
+      agentId: agent.id,
+      messages: unread,
+      durableDeliveryBlock: conversationTurnDeliveryBlockReason(serverId, agent.machineId),
+      purpose: "freshness",
+    });
+    const visibleForeign = visibility.visible.filter((m) => m.senderId !== agent.id && m.senderType !== "system");
+    const observedRows = visibleForeign.length
+      ? await db.select({ messageId: schema.agentMessageObservations.messageId }).from(schema.agentMessageObservations).where(and(
+        eq(schema.agentMessageObservations.agentId, agent.id),
+        inArray(schema.agentMessageObservations.messageId, visibleForeign.map((message) => message.id)),
+      ))
+      : [];
+    const alreadyReviewed = new Set([...(existingDraft?.reviewedMessageIds ?? []), ...observedRows.map((row) => row.messageId)]);
+    const newer = visibleForeign.filter((message) => !alreadyReviewed.has(message.id));
     if (newer.length && cm) {
-      drafts.set(draftKey, { content: b.content || "", attachmentIds: atts, replyToMessageId: replyToMessageId ?? undefined });
-      await db.update(schema.channelMembers).set({ lastReadSeq: newer[newer.length - 1]!.seq }).where(and(eq(schema.channelMembers.channelId, tgt.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id))); // Mark this batch as read → next send won't hold again unless further new messages arrive
+      drafts.set(draftKey, {
+        content: b.content || "",
+        attachmentIds: atts,
+        replyToMessageId: replyToMessageId ?? undefined,
+        reviewedMessageIds: [...new Set([...(existingDraft?.reviewedMessageIds ?? []), ...newer.map((message) => message.id)])],
+      });
+      if (visibility.cursorPrefix.length) await db.update(schema.channelMembers).set({ lastReadSeq: visibility.cursorPrefix.at(-1)!.seq }).where(and(eq(schema.channelMembers.channelId, tgt.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id))); // Advance only through the contiguous admitted prefix; a queued Turn must remain unread.
       const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, tgt.channelId)))[0]!;
       const tname = await addressableTarget(ch, agent.id);
       const history = newer.map((m) => fmt(m, tname)).join("\n");
@@ -587,10 +652,14 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     if (!b.parent || !b.content) return (sendErr(res, 400, "parent + content required"), true);
     const parent = await findParent(b.parent, b.channel ?? b.target ?? null);
     if (!parent) return (sendErr(res, 404, "parent message not found"), true);
-    const th = await getOrCreateThread(serverId, parent.id, { type: "agent", id: agent.id });
     const resolvedReplyToMessageId = b.replyTo ? await resolveMessageId(serverId, String(b.replyTo), agent.id) : null;
     const replyToMessageId = resolvedReplyToMessageId ? await canonicalReplyTriggerMessageId(resolvedReplyToMessageId) : null;
     if (b.replyTo && !replyToMessageId) return (sendErr(res, 404, "reply trigger not found", { code: "REPLY_TRIGGER_NOT_FOUND" }), true);
+    if (replyToMessageId) {
+      const durableActionBlock = await durableTurnActionBlockReason(serverId, agent.machineId, agent.id, replyToMessageId);
+      if (durableActionBlock) return (sendErr(res, 409, durableActionBlock, { code: "DELIVERY_ADMISSION_REQUIRED" }), true);
+    }
+    const th = await getOrCreateThread(serverId, parent.id, { type: "agent", id: agent.id });
     if (!replyToMessageId && await hasOutstandingReplyDecision(agent.id, th.id)) {
       return (sendErr(res, 409, "reply context required", { code: "REPLY_CONTEXT_REQUIRED" }), true);
     }

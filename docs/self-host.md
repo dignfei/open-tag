@@ -523,8 +523,8 @@ sudo systemctl restart open-tag-daemon
 > (`@fancyboi999/open-tag-daemon`). A merged server change does **not** automatically
 > reach running daemon processes — they keep running the version they were started with.
 > Watch the repository releases for daemon updates and bounce the process after publishing.
-> Conversation Turns require daemon capability `delivery-admission-v1`, and settled agent
-> lifecycle controls require `agent-control-ack-v1` (both daemon 0.12.0+).
+> Conversation Turns require daemon capability `delivery-admission-v2` (daemon 0.13.0+), and
+> settled agent lifecycle controls require `agent-control-ack-v1` (daemon 0.12.0+).
 > During a mixed-version rollout, the server fails closed: affected Turns remain paused,
 > old daemons receive no Turn work, and their agent API cannot pull or publish that trigger.
 > Upgrade/restart daemons promptly; the same retained Turns resume automatically when a capable
@@ -558,6 +558,7 @@ sudo systemctl restart open-tag-daemon
 | `OPEN_TAG_REPLY_SETTLE_MS` | no | `5000` | Reply-intent settlement window, measured from grant activation after Turn dispatch |
 | `OPEN_TAG_AGENT_DELIVERY_ACK_MS` | no | `2000` | Wait for daemon admission ACK/NACK before retrying the same deterministic Turn delivery id. A capable daemon emits pending heartbeats while a busy runtime queue still owns the delivery; those renew this timeout but do not count as ACK. For persistent/protocol runtimes final ACK means stdin/protocol acceptance; for argv one-shot runtimes it means the child process spawned, not model completion. Resource-pressure queueing stays pending. |
 | `OPEN_TAG_DELIVERY_PENDING_HEARTBEAT_MS` | no | `750` | Daemon heartbeat interval while a Turn delivery is still waiting for runtime admission (minimum 250 ms). Must remain below `OPEN_TAG_AGENT_DELIVERY_ACK_MS`; heartbeat is transport liveness, never final admission. |
+| `OPEN_TAG_DELIVERY_COMMIT_TIMEOUT_MS` | no | `15000` | Maximum wait for the server's durable `agent:deliver:admitted` response before the daemon NACKs without writing runtime input. |
 
 > The server has **no built-in fallback** for `JWT_SECRET` or `DAEMON_BOOTSTRAP_KEY` —
 > `requireEnv()` (`src/server/auth.ts`) fails at startup if either is missing. (The literal

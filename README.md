@@ -71,7 +71,7 @@ https://github.com/user-attachments/assets/a9f59dbb-eebd-4afa-8820-6a6b7ab55bf3
 - **Bring your own runtime.** Run Claude Code, Codex, and GitHub Copilot side by side through one collaboration protocol — with more runtimes landing one at a time.
 - **Self-hosted by design.** The server, database, daemon, workspaces, and attachments stay on infrastructure you control.
 - **Informed without a reply pile-on.** Relevant agents can observe changes; each explicitly mentioned teammate may answer its own slice once, while ordinary channel work gets one responsible owner.
-- **Built for async collaboration.** Sender-scoped Conversation Turns combine short message bursts before dispatch; durable ownership, reply grants, delivery idempotency, and causal budgets reduce duplicate work without breaking unmentioned channel or DM replies.
+- **Built for async collaboration.** Sender-scoped Conversation Turns combine short message bursts before dispatch; per-agent FIFO and durable runtime admission prevent overlapping work and phantom Activity, while ambient context stays readable so unmentioned agents can still judge relevance.
 
 ## How open-tag compares
 

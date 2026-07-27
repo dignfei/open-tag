@@ -26,9 +26,9 @@ export interface AgentConfig {
 }
 interface DeliveryAdmission { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; }
 interface LifecycleSettlement { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; settled: boolean; }
-interface DeliverBuf { count: number; from: string; target: string; targetName: string; firstShort: string; latestShort: string; isTask: boolean; mentioned: boolean; targets: Set<string>; timer: ReturnType<typeof setTimeout>; admissions: DeliveryAdmission[]; streamId?: string; attention?: string; }
-export interface DeliverMeta { targetName?: string; msgShort?: string; isTask?: boolean; streamId?: string; turnId?: string; turnMessageCount?: number; attention?: string; deliveryId?: string; }
-interface Running { session: RuntimeSession; config: AgentConfig; sessionId: string | null; initialAdmission: LifecycleSettlement; exit: LifecycleSettlement; idleTimer?: ReturnType<typeof setTimeout>; deliverBufs?: Map<string, DeliverBuf>; previewQueue?: ActiveReplyPreview[]; pid: number; }
+interface DeliverBuf { count: number; from: string; target: string; targetName: string; firstShort: string; latestShort: string; isTask: boolean; mentioned: boolean; targets: Set<string>; timer: ReturnType<typeof setTimeout>; admissions: DeliveryAdmission[]; streamId?: string; attention?: string; deliveryId?: string; seq?: number; }
+export interface DeliverMeta { targetName?: string; msgShort?: string; isTask?: boolean; streamId?: string; turnId?: string; turnMessageCount?: number; attention?: string; deliveryId?: string; seq?: number; }
+interface Running { session: RuntimeSession; config: AgentConfig; sessionId: string | null; initialAdmission: LifecycleSettlement; exit: LifecycleSettlement; idleTimer?: ReturnType<typeof setTimeout>; deliverBufs?: Map<string, DeliverBuf>; deliveryQueue?: DeliverBuf[]; turnActive: boolean; pid: number; }
 interface QueuedStart { agentId: string; config: AgentConfig; enqueuedAt: number; }
 interface PendingDeliver { from: string; target: string; mentioned: boolean; meta: DeliverMeta; admission: DeliveryAdmission; }
 interface PendingDeliverQueue { items: PendingDeliver[]; timer?: ReturnType<typeof setTimeout>; }
@@ -43,6 +43,7 @@ interface AgentManagerOptions {
   pendingDeliverTtlMs?: number;
   runtimeResolver?: (name: string) => Runtime | null;
   budget?: ResourceBudget;
+  beforeRuntimeDelivery?: (agentId: string, meta: Pick<DeliverMeta, "deliveryId" | "seq">) => Promise<void>;
 }
 
 export class AgentManager {
@@ -51,6 +52,8 @@ export class AgentManager {
   private pendingDelivers = new Map<string, PendingDeliverQueue>();
   private activeReplyPreviews = new Map<string, ActiveReplyPreview>();
   private deliveryAdmissions = new Map<string, DurableDeliveryAdmission>();
+  private deliveryPreparations = new Map<string, Set<Promise<void>>>();
+  private deliveryPreparationTails = new Map<string, Promise<void>>();
   private deliveryAdmissionStore: DeliveryAdmissionStore;
   private deliveryEpochs = new Map<string, number>();
   private deliveryCancellationErrors = new Map<string, Error>();
@@ -62,6 +65,7 @@ export class AgentManager {
   private oneShotDeliverDebounceMs: number;
   private pendingDeliverTtlMs: number;
   private runtimeResolver: (name: string) => Runtime | null;
+  private beforeRuntimeDelivery: (agentId: string, meta: Pick<DeliverMeta, "deliveryId" | "seq">) => Promise<void>;
   private budget: ResourceBudget;
   private startQueue: QueuedStart[] = [];
   private log = createLogger("daemon:agents");
@@ -74,6 +78,7 @@ export class AgentManager {
     this.oneShotDeliverDebounceMs = opts.oneShotDeliverDebounceMs ?? ONE_SHOT_DELIVER_DEBOUNCE_MS;
     this.pendingDeliverTtlMs = opts.pendingDeliverTtlMs ?? PENDING_DELIVER_TTL_MS;
     this.runtimeResolver = opts.runtimeResolver ?? getRuntime;
+    this.beforeRuntimeDelivery = opts.beforeRuntimeDelivery ?? (async () => {});
     // Memory pressure monitor: every 10s, cap running agents if free < 500 MB
     const pressureTimer = setInterval(() => this.checkMemoryPressure(), 10_000);
     pressureTimer.unref?.();
@@ -169,7 +174,6 @@ export class AgentManager {
       if (attempt) await attempt.promise.catch(() => {});
       return !!attempt;
     }
-    r.previewQueue = [];
     this.finishReplyPreview(agentId);
     if (r.idleTimer) clearTimeout(r.idleTimer);
     this.rejectBufferedDeliveries(r, error);
@@ -262,12 +266,7 @@ export class AgentManager {
       name: r.config.displayName || r.config.name || agentId,
       eventSeq: 0,
     };
-    if (existing) {
-      const queue = r.previewQueue ?? [];
-      r.previewQueue = queue;
-      if (!queue.some((queued) => queued.streamId === preview.streamId)) queue.push(preview);
-      return;
-    }
+    if (existing) return;
     this.activeReplyPreviews.set(agentId, preview);
     this.send({ type: "agent:reply", agentId, channelId: preview.channelId, streamId: preview.streamId, name: preview.name, op: "start" });
   }
@@ -289,14 +288,8 @@ export class AgentManager {
     this.activeReplyPreviews.delete(agentId);
     this.send({ type: "agent:reply", agentId, channelId: preview.channelId, streamId: preview.streamId, name: preview.name, op });
     const running = this.agents.get(agentId);
-    const next = running?.previewQueue?.shift();
-    if (next) {
-      this.activeReplyPreviews.set(agentId, next);
-      this.send({ type: "agent:reply", agentId, channelId: next.channelId, streamId: next.streamId, name: next.name, op: "start" });
-      return;
-    }
     // Queue is waiting → sleep this agent so the next one can run
-    if (op === "done" && this.startQueue.length > 0) {
+    if (op === "done" && !running?.deliveryQueue?.length && !running?.deliverBufs?.size && this.startQueue.length > 0) {
       const r = this.agents.get(agentId);
       if (r) {
         this.log.info("reply done, queue waiting — sleeping agent", { agentId });
@@ -391,6 +384,7 @@ export class AgentManager {
       sessionId: config.sessionId ?? null,
       initialAdmission: this.createLifecycleSettlement(),
       exit: this.createLifecycleSettlement(),
+      turnActive: true,
       pid: 0,
     };
     let initialAdmissionSettled = false;
@@ -404,13 +398,21 @@ export class AgentManager {
           this.rejectPendingDeliver(agentId, error);
         } else {
           running.initialAdmission.resolve();
-          this.acceptPendingStartup(agentId, runtime.name);
+          this.acceptPendingStartup(agentId, runtime.name, running);
         }
       },
       onActivity: (activity, detail) => {
         this.resetIdle(agentId);
         this.sendAgentActivity(agentId, activity, detail ?? "");
-        if (activity === "online" || activity === "sleeping" || activity === "offline" || activity === "error") this.finishReplyPreview(agentId, activity === "error" ? "error" : "done");
+        if (activity === "online") {
+          running.turnActive = false;
+          this.finishReplyPreview(agentId);
+          this.startNextQueuedDelivery(agentId, running);
+        } else if (activity === "error") {
+          this.finishReplyPreview(agentId, "error");
+        } else if (activity === "sleeping" || activity === "offline") {
+          this.finishReplyPreview(agentId);
+        }
       },
       onTrajectory: (entries) => { this.sendAgentTrajectory(agentId, entries); },
       onExit: (code) => {
@@ -441,15 +443,16 @@ export class AgentManager {
     // them as an inbox notice would drive a second turn on the same message (agents visibly
     // double-replied on cold start). Messages are persisted server-side — the nudge turn's
     // `message check` pulls them; only the reply preview needs the queued metadata.
+    await this.waitForDeliveryPreparations(agentId);
+    this.assertStartActive(agentId, attempt);
     const pendingDeliverItems = this.pendingDelivers.get(agentId)?.items ?? [];
     const pendingDeliveryCount = pendingDeliverItems.length;
     const useOneShotWakeNudge = !!runtime.oneShotWake && pendingDeliveryCount > 0;
+    const startupDelivery = pendingDeliverItems[0];
+    if (startupDelivery?.meta.deliveryId) await this.beforeRuntimeDelivery(agentId, startupDelivery.meta);
     this.assertStartActive(agentId, attempt);
     this.agents.set(agentId, running);
-    if (pendingDeliveryCount > 0) {
-      const latest = pendingDeliverItems[pendingDeliverItems.length - 1];
-      if (latest) this.startReplyPreview(agentId, running, latest.target, latest.meta.streamId);
-    }
+    if (startupDelivery) this.startReplyPreview(agentId, running, startupDelivery.target, startupDelivery.meta.streamId);
     try {
       running.session = runtime.start({
         cwd: dir, model: config.model, runtimeConfig: config.runtimeConfig, sessionId: config.sessionId, systemPrompt, env,
@@ -475,13 +478,40 @@ export class AgentManager {
     }
   }
 
-  private acceptPendingStartup(agentId: string, runtime: string): void {
+  private acceptPendingStartup(agentId: string, runtime: string, running: Running): void {
     const q = this.pendingDelivers.get(agentId);
     if (!q) return;
-    for (const item of q.items) item.admission.resolve();
-    const count = q.items.length;
+    const [startup, ...queued] = q.items;
+    startup?.admission.resolve();
+    if (queued.length) {
+      const deliveryQueue = running.deliveryQueue ?? [];
+      running.deliveryQueue = deliveryQueue;
+      for (const item of queued) deliveryQueue.push(this.pendingItemToBuffer(item));
+    }
     this.clearPendingDeliver(agentId);
-    this.log.debug("pending deliver consumed by wake nudge", { agentId, runtime, count });
+    this.log.debug("pending deliver consumed by wake nudge", { agentId, runtime, count: startup ? 1 : 0, queued: queued.length });
+  }
+
+  private pendingItemToBuffer(item: PendingDeliver): DeliverBuf {
+    const targetName = item.meta.targetName ?? item.target;
+    const short = item.meta.msgShort ?? "";
+    return {
+      count: item.meta.turnMessageCount ?? 1,
+      from: item.from,
+      target: item.target,
+      targetName,
+      firstShort: short,
+      latestShort: short,
+      isTask: !!item.meta.isTask,
+      mentioned: item.mentioned,
+      targets: new Set([targetName]),
+      timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      admissions: [item.admission],
+      streamId: item.meta.streamId,
+      attention: item.meta.attention,
+      deliveryId: item.meta.deliveryId,
+      seq: item.meta.seq,
+    };
   }
 
   private async failStart(agentId: string, cause: unknown): Promise<void> {
@@ -508,7 +538,46 @@ export class AgentManager {
       clearTimeout(buffer.timer);
       for (const admission of buffer.admissions) admission.reject(error);
     }
+    for (const buffer of running.deliveryQueue ?? []) {
+      for (const admission of buffer.admissions) admission.reject(error);
+    }
     running.deliverBufs = undefined;
+    running.deliveryQueue = undefined;
+  }
+
+  private deliveryNotice(buffer: DeliverBuf): string {
+    return inboxNotice({ count: buffer.count, from: buffer.from, targetName: buffer.targetName, firstShort: buffer.firstShort, latestShort: buffer.latestShort, isTask: buffer.isTask, isDm: buffer.targetName.startsWith("dm:"), changedTargets: buffer.targets.size, mentioned: buffer.mentioned, attention: buffer.attention });
+  }
+
+  private startNextQueuedDelivery(agentId: string, running: Running): void {
+    if (running.turnActive || this.agents.get(agentId) !== running) return;
+    const next = running.deliveryQueue?.shift();
+    if (!running.deliveryQueue?.length) running.deliveryQueue = undefined;
+    if (next) void this.admitBufferedDelivery(agentId, running, next);
+  }
+
+  private async admitBufferedDelivery(agentId: string, running: Running, buffer: DeliverBuf): Promise<void> {
+    if (this.agents.get(agentId) !== running) {
+      const error = new Error(`agent stopped before delivery admission: ${agentId}`);
+      for (const admission of buffer.admissions) admission.reject(error);
+      return;
+    }
+    running.turnActive = true;
+    try {
+      if (buffer.deliveryId) await this.beforeRuntimeDelivery(agentId, buffer);
+      this.startReplyPreview(agentId, running, buffer.target, buffer.streamId);
+      await running.session.deliver(this.deliveryNotice(buffer));
+      this.resetIdle(agentId);
+      for (const admission of buffer.admissions) admission.resolve();
+      this.log.debug("inbox notice -> agent", { agentId, count: buffer.count, mentioned: buffer.mentioned });
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      running.turnActive = false;
+      for (const admission of buffer.admissions) admission.reject(error);
+      this.finishReplyPreview(agentId, "error");
+      this.log.warn("deliver failed", { agentId, detail: String(error) });
+      this.startNextQueuedDelivery(agentId, running);
+    }
   }
 
   private createAdmission(): DeliveryAdmission {
@@ -516,6 +585,22 @@ export class AgentManager {
     let reject!: (error: Error) => void;
     const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
     return { promise, resolve, reject };
+  }
+
+  private trackDeliveryPreparation(agentId: string, preparation: Promise<void>): void {
+    const pending = this.deliveryPreparations.get(agentId) ?? new Set<Promise<void>>();
+    this.deliveryPreparations.set(agentId, pending);
+    pending.add(preparation);
+    void preparation.finally(() => {
+      pending.delete(preparation);
+      if (!pending.size && this.deliveryPreparations.get(agentId) === pending) this.deliveryPreparations.delete(agentId);
+    });
+  }
+
+  private async waitForDeliveryPreparations(agentId: string): Promise<void> {
+    while (this.deliveryPreparations.get(agentId)?.size) {
+      await Promise.all([...this.deliveryPreparations.get(agentId)!]);
+    }
   }
 
   private createLifecycleSettlement(): LifecycleSettlement {
@@ -577,10 +662,19 @@ export class AgentManager {
       const existing = this.deliveryAdmissions.get(meta.deliveryId);
       if (existing && existing.expiresAt > now) {
         this.log.debug("duplicate delivery suppressed", { agentId, deliveryId: meta.deliveryId });
-        return existing.promise;
+        return existing.promise.then(() => this.beforeRuntimeDelivery(agentId, meta));
       }
       if (existing) this.deliveryAdmissions.delete(meta.deliveryId);
-      const promise = this.admitDurableDelivery(agentId, from, target, mentioned, meta);
+      const predecessor = this.deliveryPreparationTails.get(agentId) ?? Promise.resolve();
+      const epoch = this.deliveryEpochs.get(agentId) ?? 0;
+      let markPrepared!: () => void;
+      const preparation = new Promise<void>((resolve) => { markPrepared = resolve; });
+      this.deliveryPreparationTails.set(agentId, preparation);
+      this.trackDeliveryPreparation(agentId, preparation);
+      void preparation.finally(() => {
+        if (this.deliveryPreparationTails.get(agentId) === preparation) this.deliveryPreparationTails.delete(agentId);
+      });
+      const promise = predecessor.catch(() => {}).then(() => this.admitDurableDelivery(agentId, from, target, mentioned, meta, epoch, markPrepared));
       const admission: DurableDeliveryAdmission = { promise, expiresAt: Number.POSITIVE_INFINITY };
       this.deliveryAdmissions.set(meta.deliveryId, admission);
       void promise.then(
@@ -595,24 +689,30 @@ export class AgentManager {
     return this.admitDelivery(agentId, from, target, mentioned, meta);
   }
 
-  private async admitDurableDelivery(agentId: string, from: string, target: string, mentioned: boolean, meta: DeliverMeta): Promise<void> {
+  private async admitDurableDelivery(agentId: string, from: string, target: string, mentioned: boolean, meta: DeliverMeta, epoch: number, markPrepared: () => void): Promise<void> {
     const deliveryId = meta.deliveryId!;
-    const epoch = this.deliveryEpochs.get(agentId) ?? 0;
-    if (await this.deliveryAdmissionStore.has(deliveryId)) {
-      this.log.debug("persisted duplicate delivery suppressed", { agentId, deliveryId });
-      return;
-    }
-    if ((this.deliveryEpochs.get(agentId) ?? 0) !== epoch) {
-      throw this.deliveryCancellationErrors.get(agentId) ?? new Error(`agent lifecycle changed before delivery admission: ${agentId}`);
-    }
-    await this.admitDelivery(agentId, from, target, mentioned, meta);
-    const expiresAt = Date.now() + 24 * 60 * 60_000;
     try {
-      await this.deliveryAdmissionStore.remember(deliveryId, expiresAt);
-    } catch (error) {
-      // Runtime responsibility was already accepted. NACKing here would make the server retry work
-      // that may be running, so ACK and rely on the server's per-recipient admission ledger.
-      this.log.error("delivery admission persistence failed", { agentId, deliveryId, detail: String(error) });
+      if (await this.deliveryAdmissionStore.has(deliveryId)) {
+        this.log.debug("persisted duplicate delivery suppressed", { agentId, deliveryId });
+        await this.beforeRuntimeDelivery(agentId, meta);
+        return;
+      }
+      if ((this.deliveryEpochs.get(agentId) ?? 0) !== epoch) {
+        throw this.deliveryCancellationErrors.get(agentId) ?? new Error(`agent lifecycle changed before delivery admission: ${agentId}`);
+      }
+      const admission = this.admitDelivery(agentId, from, target, mentioned, meta);
+      markPrepared();
+      await admission;
+      const expiresAt = Date.now() + 24 * 60 * 60_000;
+      try {
+        await this.deliveryAdmissionStore.remember(deliveryId, expiresAt);
+      } catch (error) {
+        // Runtime responsibility was already accepted. NACKing here would make the server retry work
+        // that may be running, so ACK and rely on the server's per-recipient admission ledger.
+        this.log.error("delivery admission persistence failed", { agentId, deliveryId, detail: String(error) });
+      }
+    } finally {
+      markPrepared();
     }
   }
 
@@ -638,27 +738,21 @@ export class AgentManager {
     const b = buffers.get(key);
     if (b) { // accumulate: count++, update latest, keep first unchanged, union target set
       clearTimeout(b.timer); b.count = Math.max(b.count + 1, meta.turnMessageCount ?? 0); b.from = from; b.target = target; b.targetName = tname; b.latestShort = short;
-      b.isTask = b.isTask || !!meta.isTask; b.mentioned = b.mentioned || mentioned; b.targets.add(tname); b.streamId = meta.streamId ?? b.streamId; b.attention = meta.attention ?? b.attention;
-      this.startReplyPreview(agentId, r, target, b.streamId);
+      b.isTask = b.isTask || !!meta.isTask; b.mentioned = b.mentioned || mentioned; b.targets.add(tname); b.streamId = meta.streamId ?? b.streamId; b.attention = meta.attention ?? b.attention; b.deliveryId = meta.deliveryId ?? b.deliveryId; b.seq = meta.seq ?? b.seq;
     }
-    const buf: DeliverBuf = b ?? { count: meta.turnMessageCount ?? 1, from, target, targetName: tname, firstShort: short, latestShort: short, isTask: !!meta.isTask, mentioned, targets: new Set([tname]), timer: undefined as any, admissions: [], streamId: meta.streamId, attention: meta.attention };
+    const buf: DeliverBuf = b ?? { count: meta.turnMessageCount ?? 1, from, target, targetName: tname, firstShort: short, latestShort: short, isTask: !!meta.isTask, mentioned, targets: new Set([tname]), timer: undefined as any, admissions: [], streamId: meta.streamId, attention: meta.attention, deliveryId: meta.deliveryId, seq: meta.seq };
     buf.admissions.push(admission);
-    this.startReplyPreview(agentId, r, target, buf.streamId);
     buf.timer = setTimeout(() => void (async () => {
       buffers.delete(key);
       if (!buffers.size) r.deliverBufs = undefined;
-      const note = inboxNotice({ count: buf.count, from: buf.from, targetName: buf.targetName, firstShort: buf.firstShort, latestShort: buf.latestShort, isTask: buf.isTask, isDm: buf.targetName.startsWith("dm:"), changedTargets: buf.targets.size, mentioned: buf.mentioned, attention: buf.attention });
-      try {
-        await r.session.deliver(note);
-        this.resetIdle(agentId);
-        for (const pending of buf.admissions) pending.resolve();
-        this.log.debug("inbox notice -> agent", { agentId, count: buf.count, mentioned: buf.mentioned });
-      } catch (cause) {
-        const error = cause instanceof Error ? cause : new Error(String(cause));
-        for (const pending of buf.admissions) pending.reject(error);
-        this.finishReplyPreview(agentId, "error");
-        this.log.warn("deliver failed", { agentId, detail: String(error) });
+      if (r.turnActive) {
+        const queue = r.deliveryQueue ?? [];
+        r.deliveryQueue = queue;
+        queue.push(buf);
+        this.log.debug("inbox notice queued behind active turn", { agentId, count: buf.count, queued: queue.length });
+        return;
       }
+      await this.admitBufferedDelivery(agentId, r, buf);
     })(), meta.turnId ? 0 : this.debounceMsFor(r));
     buffers.set(key, buf);
     return admission.promise;

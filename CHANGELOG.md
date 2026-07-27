@@ -9,6 +9,35 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-07-27
+
+### Fixed
+
+- **Queued Turn isolation**: each agent now executes durable Conversation Turns in strict FIFO
+  order. A second DM or channel Turn stays invisible to the active runtime and does not create a
+  zero-event Activity placeholder until the prior runtime turn reaches its terminal `online` state.
+  Runtime `error` events no longer advance the queue early, and cold start admits only the queue
+  head instead of exposing every pending Turn to one startup inbox check. A rejected admission
+  barrier now creates neither runtime input nor a phantom Activity receipt.
+- **Two-phase delivery admission**: daemon capability `delivery-admission-v2` adds a
+  `ready -> admitted` barrier. The server verifies tenant, current machine, agent ownership, Turn,
+  recipient, and sequence, durably writes recipient admission, then allows the daemon to notify the
+  runtime. This closes the race where a fast `message check` saw an empty inbox and finished as
+  Handled without replying. Completed delivery ids survive ordinary final-ACK loss and process
+  replacement; NACK or pre-ACK disconnect releases the in-flight admission for retry.
+- **Freshness cursor safety**: send-time stale-draft checks may surface unseen ambient collecting
+  context without consuming its formal inbox observation. Direct/DM queued Turns do not hold the
+  previous reply, and neither freshness nor a later stable message may advance `lastReadSeq` across
+  an unadmitted Turn. Observation and per-draft review ledgers prevent repeated holds across gaps.
+- **Consistent agent identity in chat**: DM sidebar, live Activity, persisted replies, threads, and
+  action cards use the same display identity for generated avatar fallbacks.
+
+### Changed
+
+- Non-ambient `direct`, `dm`, and `assigned` Turn rows require recipient runtime admission before
+  `message check`, decide, message send, or legacy thread reply. Ambient channel context remains
+  readable so unmentioned agents can still judge relevance without being forced to answer.
+
 ## [0.12.0] — 2026-07-24
 
 ### Added

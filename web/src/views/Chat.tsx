@@ -6,6 +6,7 @@ import { useStore, type Msg, type Att } from "../store.tsx";
 import { fmtDateTime, isSameLocalDay, fmtDateDivider } from "../format";
 import { PAGE_SIZE, appendWithCap, nextScrollState } from "../lib/msgPaging";
 import { AGENT_REPLY_PREVIEW_TYPE, AGENT_REPLY_STREAM_TICK_MS, absorbPersistedAgentMessagePreview, applyAgentReplyPreview, dropAgentReplyPreviewsForMessage, hasStreamingAgentReplyPreview, mergePersistedAgentMessageUpdate, renderKeyForMessage, tickAgentReplyPreviews, type AgentReplyEvent, type AgentReplyPreviewMsg } from "../lib/agentReplyPreview";
+import { avatarSeedFor } from "../lib/avatarIdentity";
 import { MessageContent } from "../messageRender.tsx";
 import { nextThreadMeta } from "../threadUnread";
 import { Smile, X, ExternalLink, CheckCircle2, MessageCircle, MoreHorizontal, Link2, Clipboard, Bookmark, CheckSquare, Circle, Play, Eye, Ban, ArrowDown, BellOff, Lock, Globe, Archive, Trash2, Users } from "lucide-react";
@@ -121,7 +122,7 @@ function ActionCardMsg({ m }: { m: Msg }) {
     : <>{t("chat.createAgent", { name: a.name })}</>;
   return (
     <div className="msg action-card-msg" id={"m-" + m.id} key={m.id}>
-      <Avatar seed={m.senderName} url={resolveAvatar(agents.find((a) => a.id === m.senderId)?.avatarUrl, attachmentUrl)} size={36} />
+      <Avatar seed={avatarSeedFor(agents.find((a) => a.id === m.senderId), m.senderName)} url={resolveAvatar(agents.find((a) => a.id === m.senderId)?.avatarUrl, attachmentUrl)} size={36} />
       <div className="msg-col">
         <div className="msg-head"><span className="who">{m.senderName}</span><span className="member-badge">{t("chat.proposed")}</span><span className="ts">{fmtDateTime(m.createdAt)}</span></div>
         <div className="action-card">
@@ -158,8 +159,10 @@ export function Chat() {
   const { t } = useTranslation();
   const { api, channels, dms, unread, agents, humans, slug, me, myRole, capabilities, reload, onEvent, subscribeChannel, openDM, markRead, uploadFiles, uploadOne, attachmentUrl, react, openThread, savedIds, saveMsg, unsaveMsg, agentPanelReq, clearAgentPanelReq } = useStore();
   const avFor = (u?: string | null) => resolveAvatar(u, attachmentUrl);
-  // A message's sender avatar: look the sender up in the loaded agents/humans lists (carry avatarUrl) — no message-schema change needed.
-  const senderAvatar = (m: Msg) => avFor(m.senderType === "agent" ? agents.find((a) => a.id === m.senderId)?.avatarUrl : humans.find((h) => h.userId === m.senderId)?.avatarUrl);
+  const senderIdentity = (m: Msg) => m.senderType === "agent" ? agents.find((a) => a.id === m.senderId) : humans.find((h) => h.userId === m.senderId);
+  // A message's sender avatar: resolve both the image and generated fallback from one member identity.
+  const senderAvatar = (m: Msg) => avFor(senderIdentity(m)?.avatarUrl);
+  const senderAvatarSeed = (m: Msg) => avatarSeedFor(senderIdentity(m), m.senderName);
   const { setChatPanelOpen } = useOutletContext<LayoutOutletContext>();
   const confirm = useConfirm();
   const [showEdit, setShowEdit] = useState(false);
@@ -472,8 +475,8 @@ export function Chat() {
                     {dateDivider}
                     <div className={"agent-run" + (isAgentReplyPreview ? " is-live agent-run-enter" : " is-receipt")} id={"m-" + m.id}>
                       {ag
-                        ? <button className="agent-run-av" onClick={() => setProfile({ type: "agent", id: m.senderId! })} title={m.senderName}><Avatar seed={m.senderName} url={senderAvatar(m)} size={28} /></button>
-                        : <span className="agent-run-av"><Avatar seed={m.senderName} url={senderAvatar(m)} size={28} /></span>}
+                        ? <button className="agent-run-av" onClick={() => setProfile({ type: "agent", id: m.senderId! })} title={m.senderName}><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={28} /></button>
+                        : <span className="agent-run-av"><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={28} /></span>}
                       <div className="agent-run-col">
                         <div className="agent-run-head">
                           <span className="who">{m.senderName}</span>
@@ -500,10 +503,10 @@ export function Chat() {
                   {ag
                     ? <span className="msg-av clickable" onClick={() => setProfile({ type: "agent", id: m.senderId! })}
                         onMouseEnter={(e) => setHoverAgent({ id: m.senderId!, x: e.currentTarget.getBoundingClientRect().right + 8, y: e.currentTarget.getBoundingClientRect().top })}
-                        onMouseLeave={() => setHoverAgent(null)}><Avatar seed={m.senderName} url={senderAvatar(m)} size={36} />{agLive !== "offline" && <span className={"av-status " + agLive} />}</span>
+                        onMouseLeave={() => setHoverAgent(null)}><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={36} />{agLive !== "offline" && <span className={"av-status " + agLive} />}</span>
                     : m.senderId
-                      ? <span className="msg-av clickable" onClick={() => setProfile({ type: "human", id: m.senderId! })}><Avatar seed={m.senderName} url={senderAvatar(m)} size={36} /></span>
-                      : <span className="msg-av"><Avatar seed={m.senderName} url={senderAvatar(m)} size={36} /></span>}
+                      ? <span className="msg-av clickable" onClick={() => setProfile({ type: "human", id: m.senderId! })}><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={36} /></span>
+                      : <span className="msg-av"><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={36} /></span>}
                   <div className="msg-col">
                     <div className="msg-head">
                       {ag
@@ -678,7 +681,9 @@ function EditChannelModal({ channel, onClose, onDone, onDeleted }: { channel: an
 function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId: string; parent: Msg; onClose: () => void; onOpenProfile: (type: "agent" | "human", id: string) => void }) {
   const { t } = useTranslation();
   const { api, onEvent, subscribeChannel, attachmentUrl, me, react, agents, humans, channels, slug } = useStore();
-  const senderAvatar = (m: Msg) => resolveAvatar(m.senderType === "agent" ? agents.find((a) => a.id === m.senderId)?.avatarUrl : humans.find((h) => h.userId === m.senderId)?.avatarUrl, attachmentUrl);
+  const senderIdentity = (m: Msg) => m.senderType === "agent" ? agents.find((a) => a.id === m.senderId) : humans.find((h) => h.userId === m.senderId);
+  const senderAvatar = (m: Msg) => resolveAvatar(senderIdentity(m)?.avatarUrl, attachmentUrl);
+  const senderAvatarSeed = (m: Msg) => avatarSeedFor(senderIdentity(m), m.senderName);
   const nav = useNavigate();
   const navToken = async (type: string, args: string[]) => {
     if (type === "agent") return onOpenProfile("agent", args[0]!); // @agent click inside a thread opens the profile overlay (profile state is owned by the parent component)
@@ -724,8 +729,8 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
         {dateDivider}
         <div className={"agent-run thread-agent-run" + (isAgentReplyPreview ? " is-live agent-run-enter" : " is-receipt")}>
           {ag
-            ? <button className="agent-run-av" onClick={() => onOpenProfile("agent", m.senderId!)} title={m.senderName}><Avatar seed={m.senderName} url={senderAvatar(m)} size={26} /></button>
-            : <span className="agent-run-av"><Avatar seed={m.senderName} url={senderAvatar(m)} size={26} /></span>}
+            ? <button className="agent-run-av" onClick={() => onOpenProfile("agent", m.senderId!)} title={m.senderName}><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={26} /></button>
+            : <span className="agent-run-av"><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={26} /></span>}
           <div className="agent-run-col">
             <div className="agent-run-head"><span className="who">{m.senderName}</span><span className="ts">{fmtDateTime(m.createdAt)}</span><MessageActivityState items={m.agentActivity} state={m.agentActivityState} /></div>
             {isAgentReplyPreview
@@ -739,9 +744,9 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
     <Fragment key={renderKeyForMessage(m)}>
       {dateDivider}
       <div className="msg">
-      {ag ? <span className="msg-av clickable" onClick={() => onOpenProfile("agent", m.senderId!)}><Avatar seed={m.senderName} url={senderAvatar(m)} size={32} />{live !== "offline" && <span className={"av-status " + live} />}</span>
-        : m.senderId ? <span className="msg-av clickable" onClick={() => onOpenProfile("human", m.senderId!)}><Avatar seed={m.senderName} url={senderAvatar(m)} size={32} /></span>
-        : <Avatar seed={m.senderName} url={senderAvatar(m)} size={32} />}
+      {ag ? <span className="msg-av clickable" onClick={() => onOpenProfile("agent", m.senderId!)}><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={32} />{live !== "offline" && <span className={"av-status " + live} />}</span>
+        : m.senderId ? <span className="msg-av clickable" onClick={() => onOpenProfile("human", m.senderId!)}><Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={32} /></span>
+        : <Avatar seed={senderAvatarSeed(m)} url={senderAvatar(m)} size={32} />}
       {/* content column reuses .msg-col (flex:1;min-width:0) like the main chat — without it a flex child defaults to min-width:auto and a long unbreakable token blows the message past this narrow thread panel */}
       <div className="msg-col">
         <div className="msg-head">{ag ? <span className="who clickable" onClick={() => onOpenProfile("agent", m.senderId!)}>{m.senderName}</span>

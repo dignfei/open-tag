@@ -8,9 +8,9 @@
 // daemon backs off to its cap and surfaces an actionable error instead of reconnecting once a second forever.
 export const MACHINE_REJECTED_CODE = 4001;
 
-// A daemon advertising this in its ready frame promises that agent:deliver ACK/NACK settles only after
-// the target runtime has accepted the initial Turn notification, not merely after websocket receipt.
-export const DELIVERY_ADMISSION_CAPABILITY = "delivery-admission-v1";
+// A daemon advertising this in its ready frame uses the two-phase ready/admitted barrier: the server
+// durably opens the recipient inbox before the daemon writes the Turn notification into the runtime.
+export const DELIVERY_ADMISSION_CAPABILITY = "delivery-admission-v2";
 
 // A daemon advertising this capability acknowledges agent lifecycle RPCs only after the requested
 // start/stop/reset operation has settled. Servers use it to avoid reporting a successful reset while

@@ -130,14 +130,16 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     }
     assert.ok(ambientOwnerAgentId, `offline turns did not settle before reconnect: ${live.logs()}`);
     const ambientCatchupAgentIds: string[] = [];
+    const committedCatchupAgentIds: string[] = [];
     daemonSocket = await new Promise<WebSocket>((resolve, reject) => {
       const ws = new WebSocket(`${live.base.replace("http", "ws")}/daemon/connect?key=${encodeURIComponent(machineKey)}`);
-      const ready = JSON.stringify({ type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"], capabilities: ["delivery-admission-v1"], runningAgents: agents.map((a) => a.id), daemonVersion: "test" });
+      const ready = JSON.stringify({ type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"], capabilities: ["delivery-admission-v2"], runningAgents: agents.map((a) => a.id), daemonVersion: "test" });
+      const pendingDeliveries = new Map<string, any>();
       let acknowledged = false;
       let caughtUp = false;
       const timer = setTimeout(() => reject(new Error(`dummy daemon ready/catch-up timeout: ${live.logs()}`)), 3000);
       const finish = () => {
-        if (!acknowledged || !caughtUp || ambientCatchupAgentIds.length < 1) return;
+        if (!acknowledged || !caughtUp || ambientCatchupAgentIds.length < 1 || !committedCatchupAgentIds.includes(ambientOwnerAgentId!)) return;
         setTimeout(() => {
           clearTimeout(timer);
           resolve(ws);
@@ -149,7 +151,17 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
         if (msg.type === "ready:ack") acknowledged = true;
         if (msg.type === "agent:start" && msg.agentId === catchupAgent!.id) caughtUp = true;
         if (msg.type === "agent:deliver" && agents.some((agent) => agent.id === msg.agentId)) ambientCatchupAgentIds.push(msg.agentId);
-        if (msg.type === "agent:deliver" && msg.deliveryId) ws.send(JSON.stringify({ type: "agent:deliver:ack", agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId }));
+        if (msg.type === "agent:deliver" && msg.deliveryId) {
+          pendingDeliveries.set(msg.deliveryId, msg);
+          ws.send(JSON.stringify({ type: "agent:deliver:ready", agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId }));
+        }
+        if (msg.type === "agent:deliver:admitted" && msg.deliveryId) {
+          const delivery = pendingDeliveries.get(msg.deliveryId);
+          if (delivery) {
+            committedCatchupAgentIds.push(delivery.agentId);
+            ws.send(JSON.stringify({ type: "agent:deliver:ack", agentId: delivery.agentId, seq: delivery.seq, deliveryId: delivery.deliveryId }));
+          }
+        }
         if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
         finish();
       });
@@ -218,7 +230,7 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     const checks = await Promise.all(agents.map((_, i) => api(live.base, "GET", "/agent-api/message/check", agentHeaders(i))));
     for (const checked of checks) {
       assert.equal(checked.status, 200);
-      assert.equal(checked.body.messages.some((m: any) => m.id === triggerId), true);
+      assert.equal(checked.body.messages.some((m: any) => m.id === triggerId), true, JSON.stringify(checked.body));
     }
     const coordination = checks.map((c) => c.body.messages.find((m: any) => m.id === triggerId).coordination);
     assert.deepEqual(coordination.map((c: any) => [c.attention, c.grantStatus, c.grantSlot]), [
@@ -244,7 +256,7 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     assert.equal(second.status, 200);
     const held = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), { target: `#${channel!.name}`, replyTo: triggerId, content: "stale owner draft" });
     assert.equal(held.status, 200);
-    assert.equal(held.body.held, true);
+    assert.equal(held.body.held, true, JSON.stringify(held.body));
 
     const request = await api(live.base, "POST", "/agent-api/message/decide", agentHeaders(1), { messageId: triggerId, decision: "request_reply", reason: "better_fit", summary: "humor specialist" });
     assert.equal(request.status, 200, JSON.stringify(request.body));

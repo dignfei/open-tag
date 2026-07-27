@@ -18,11 +18,26 @@ import {
 } from "./conversationTurns.js";
 import { dispatchConversationTurn, prepareConversationTurnResponsibility, type ConversationTurnDispatchDeps, type DispatchMember } from "./conversationTurnDispatch.js";
 import { acceptAgentDeliveryAck, rejectAgentDeliveryAck } from "./agentDeliveryAck.js";
-import { DELIVERY_ADMISSION_CAPABILITY, registerDaemon, registerDaemonCapabilities, unregisterDaemon } from "./daemonHub.js";
+import { DELIVERY_ADMISSION_CAPABILITY, registerDaemon, registerDaemonCapabilities, registerMachineConn, unregisterDaemon, unregisterMachineConn } from "./daemonHub.js";
 import { handleConversationTurnDaemonTopologyChange } from "./conversationTurnRecovery.js";
+import { commitAgentDeliveryAdmission, releaseAgentDeliveryAdmission } from "./agentDeliveryAdmission.js";
 import type { WebSocket } from "ws";
 
 after(async () => { await sql.end(); });
+
+async function commitAndAcceptDelivery(deliveryId: string): Promise<boolean> {
+  const separator = deliveryId.lastIndexOf(":");
+  const turnId = deliveryId.slice(0, separator);
+  const agentId = deliveryId.slice(separator + 1);
+  const [turn] = await db.select({ triggerMessageId: schema.conversationTurns.triggerMessageId }).from(schema.conversationTurns)
+    .where(eq(schema.conversationTurns.id, turnId)).limit(1);
+  assert.ok(turn, `missing Turn for delivery ${deliveryId}`);
+  await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: new Date(), updatedAt: new Date() }).where(and(
+    eq(schema.agentMessageDecisions.messageId, turn.triggerMessageId),
+    eq(schema.agentMessageDecisions.agentId, agentId),
+  ));
+  return acceptAgentDeliveryAck(deliveryId);
+}
 
 async function fixture(label: string) {
   const suffix = `${label}-${randomUUID().slice(0, 8)}`;
@@ -284,7 +299,7 @@ test("agent DM replies complete for humans and agent-to-agent DMs consume the ca
       sendAgentStart: () => true,
       sendAgentDeliver: (_serverId, _target, message) => {
         deliveries++;
-        queueMicrotask(() => acceptAgentDeliveryAck(String(message.deliveryId)));
+        queueMicrotask(() => void commitAndAcceptDelivery(String(message.deliveryId)));
         return true;
       },
       markAgentUnavailable: async () => {},
@@ -375,11 +390,17 @@ test("a reply completed while dispatch waits for ACK remains completed after fin
 
     const dispatch = dispatchConversationTurn(attached.turn.id, deps);
     await started;
+    const eagerActivity = await db.select({ id: schema.agentActivityLog.id }).from(schema.agentActivityLog).where(and(
+      eq(schema.agentActivityLog.serverId, f.server.id),
+      eq(schema.agentActivityLog.agentId, agent.id),
+      eq(schema.agentActivityLog.streamId, `${request.id}:${agent.id}`),
+    ));
+    assert.equal(eagerActivity.length, 0, "dispatch admission must not masquerade as runtime Activity");
     assert.deepEqual(await reserveReplyGrant({ serverId: f.server.id, agentId: agent.id, messageId: request.id, channelId: channel.id }), { ok: true, slot: "primary" });
     const reply = await f.message(channel.id, "agent", agent.id, agent.name, "done");
     await finishReplyPublication({ messageId: request.id, agentId: agent.id, replyMessageId: reply.id });
     assert.equal((await conversationTurnForMessage(request.id))?.responsibilityState, "completed", "completion is visible before the transport ACK arrives");
-    assert.equal(acceptAgentDeliveryAck(deliveryId), true);
+    assert.equal(await commitAndAcceptDelivery(deliveryId), true);
     await dispatch;
     const settled = await conversationTurnForMessage(request.id);
     assert.deepEqual([settled?.state, settled?.responsibilityState], ["dispatched", "completed"]);
@@ -447,7 +468,7 @@ test("multi-recipient dispatch keeps a NACKed explicit grant active and retries 
         ids.push(String(message.deliveryId));
         deliveries.set(agentId, ids);
         if (deliveries.size === 2) bothStarted();
-        if (retrying) queueMicrotask(() => acceptAgentDeliveryAck(String(message.deliveryId)));
+        if (retrying) queueMicrotask(() => void commitAndAcceptDelivery(String(message.deliveryId)));
         return true;
       },
       markAgentUnavailable: async () => {},
@@ -457,8 +478,11 @@ test("multi-recipient dispatch keeps a NACKed explicit grant active and retries 
     const dispatch = dispatchConversationTurn(attached.turn.id, deps);
     await started;
     assert.equal(deliveries.size, 2, "all directed recipients start in parallel within one lease");
-    assert.equal(acceptAgentDeliveryAck(deliveries.get(f.agents[0]!.id)![0]), true);
-    assert.equal(rejectAgentDeliveryAck(deliveries.get(f.agents[1]!.id)![0], undefined, undefined, "runtime rejected"), true);
+    const admittedDeliveryId = deliveries.get(f.agents[0]!.id)?.[0];
+    const rejectedDeliveryId = deliveries.get(f.agents[1]!.id)?.[0];
+    assert.ok(admittedDeliveryId && rejectedDeliveryId);
+    assert.equal(await commitAndAcceptDelivery(admittedDeliveryId), true);
+    assert.equal(rejectAgentDeliveryAck(rejectedDeliveryId, undefined, undefined, "runtime rejected"), true);
     await dispatch;
 
     let settled = await conversationTurnForMessage(request.id);
@@ -512,7 +536,7 @@ test("multi-recipient capability preflight starts nobody until every mentioned a
         if (preflightCalls === agentMembers.length) preflightStarted();
         await gate;
         return agentId === f.agents[1]!.id
-          ? { ok: false, reason: "daemon missing capability: delivery-admission-v1", retryable: false }
+          ? { ok: false, reason: "daemon missing capability: delivery-admission-v2", retryable: false }
           : { ok: true };
       },
       sendAgentStart: () => { starts++; return true; },
@@ -586,7 +610,7 @@ test("twenty directed recipients fan out concurrently inside one fenced attempt"
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("fan-out was serialized behind ACK waits")), 1_000)),
     ]);
     assert.equal(deliveryIds.length, 20, "no recipient waits for a previous recipient ACK");
-    for (const deliveryId of deliveryIds) assert.equal(acceptAgentDeliveryAck(deliveryId), true);
+    for (const deliveryId of deliveryIds) assert.equal(await commitAndAcceptDelivery(deliveryId), true);
     await dispatch;
     const settled = (await conversationTurnForMessage(request.id))!;
     assert.deepEqual([settled.state, settled.responsibilityState, settled.dispatchAttempts], ["dispatched", "delivered", 1]);
@@ -674,6 +698,79 @@ test("unbound capability-paused Turns resume on zero-to-one and two-to-one daemo
     assert.equal(resumedFromTwo?.lease, null);
   } finally {
     for (const socket of sockets) unregisterDaemon(socket);
+    await f.cleanup();
+  }
+});
+
+test("delivery commit is bound to the authenticated current machine and persists before admission response", async () => {
+  const f = await fixture("delivery-commit");
+  const sockets: WebSocket[] = [];
+  const fakeWs = (): WebSocket => ({ readyState: 1, send: () => {}, close: () => {} }) as unknown as WebSocket;
+  let machineIds: string[] = [];
+  try {
+    const machines = await db.insert(schema.machines).values(["owner", "other"].map((name) => ({
+      serverId: f.server.id,
+      userId: f.humans[0]!.id,
+      name: `${name}-${randomUUID().slice(0, 8)}`,
+      apiKeyHash: `hash-${randomUUID()}`,
+      apiKeyPrefix: `prefix-${name}`,
+    }))).returning();
+    machineIds = machines.map((machine) => machine.id);
+    const ownerMachine = machines[0]!;
+    const otherMachine = machines[1]!;
+    const agent = f.agents[0]!;
+    await db.update(schema.agents).set({ machineId: ownerMachine.id }).where(eq(schema.agents.id, agent.id));
+
+    const message = await f.message(f.channels[0]!.id, "user", f.humans[0]!.id, f.humans[0]!.name, "commit me");
+    const attached = await f.attach(message, "direct", new Date());
+    await ensureReplyRecipients({
+      serverId: f.server.id, channelId: message.channelId, messageId: message.id,
+      recipients: [{ agentId: agent.id, attention: "direct" }],
+    });
+    const deliveryId = `${attached.turn.id}:${agent.id}`;
+    const ownerWs = fakeWs();
+    const otherWs = fakeWs();
+    sockets.push(ownerWs, otherWs);
+    registerDaemon(ownerWs, f.server.id);
+    registerDaemon(otherWs, f.server.id);
+    registerMachineConn(ownerMachine.id, ownerWs);
+    registerMachineConn(otherMachine.id, otherWs);
+
+    const wrongMachine = await commitAgentDeliveryAdmission({
+      ws: otherWs, serverId: f.server.id, machineId: otherMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.deepEqual(wrongMachine, { ok: false, error: "delivery machine does not own agent" });
+
+    const committed = await commitAgentDeliveryAdmission({
+      ws: ownerWs, serverId: f.server.id, machineId: ownerMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.equal(committed.ok, true);
+    const [decision] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
+    ));
+    assert.ok(decision?.admittedAt, "commit returns only after durable recipient admission is visible");
+
+    const replacementWs = fakeWs();
+    sockets.push(replacementWs);
+    registerDaemon(replacementWs, f.server.id);
+    registerMachineConn(ownerMachine.id, replacementWs);
+    const stale = await commitAgentDeliveryAdmission({
+      ws: ownerWs, serverId: f.server.id, machineId: ownerMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.deepEqual(stale, { ok: false, error: "stale or unidentified machine connection" });
+
+    if (committed.ok) await releaseAgentDeliveryAdmission(committed.delivery);
+    const [released] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
+    ));
+    assert.equal(released?.admittedAt, null, "a failed in-flight delivery can be retried after release");
+  } finally {
+    for (const socket of sockets) { unregisterMachineConn(socket); unregisterDaemon(socket); }
+    await db.update(schema.agents).set({ machineId: null }).where(eq(schema.agents.serverId, f.server.id));
+    if (machineIds.length) await db.delete(schema.machines).where(inArray(schema.machines.id, machineIds));
     await f.cleanup();
   }
 });

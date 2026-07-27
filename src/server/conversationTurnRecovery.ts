@@ -9,7 +9,7 @@ export function isConversationTurnCapabilityPaused(turn: { state: string; dispat
   return turn.state === "active" && turn.dispatchLeaseUntil?.getTime() === CAPABILITY_PAUSED_UNTIL.getTime();
 }
 
-/** Resume only paused/expired active Turns assigned to agents on the newly capable machine. */
+/** Resume capability-paused or terminal delivery-blocked Turns assigned to the newly capable machine. */
 export async function resumeConversationTurnsForMachine(serverId: string, machineId: string, includeUnbound: boolean, at = new Date()): Promise<number> {
   const rows = await db.select({ id: schema.conversationTurns.id })
     .from(schema.conversationTurns)
@@ -17,26 +17,29 @@ export async function resumeConversationTurnsForMachine(serverId: string, machin
     .innerJoin(schema.agents, eq(schema.agents.id, schema.agentMessageDecisions.agentId))
     .where(and(
       eq(schema.conversationTurns.serverId, serverId),
-      eq(schema.conversationTurns.state, "active"),
-      eq(schema.conversationTurns.dispatchLeaseUntil, CAPABILITY_PAUSED_UNTIL),
+      or(
+        and(eq(schema.conversationTurns.state, "active"), eq(schema.conversationTurns.dispatchLeaseUntil, CAPABILITY_PAUSED_UNTIL)),
+        and(eq(schema.conversationTurns.state, "blocked"), isNull(schema.agentMessageDecisions.deliveryAdmittedAt)),
+      ),
       includeUnbound ? or(eq(schema.agents.machineId, machineId), isNull(schema.agents.machineId)) : eq(schema.agents.machineId, machineId),
       inArray(schema.agentMessageDecisions.grantStatus, ["active", "publishing"]),
     ));
   const ids = [...new Set(rows.map((row) => row.id))];
   if (ids.length) await db.update(schema.conversationTurns).set({
+    state: "active",
+    responsibilityState: "active",
     dispatchAfter: at,
     dispatchLeaseUntil: null,
     updatedAt: at,
   }).where(and(
     inArray(schema.conversationTurns.id, ids),
-    eq(schema.conversationTurns.state, "active"),
-    eq(schema.conversationTurns.dispatchLeaseUntil, CAPABILITY_PAUSED_UNTIL),
+    inArray(schema.conversationTurns.state, ["active", "blocked"]),
   ));
   for (const id of ids) scheduleConversationTurn(id, at);
   return ids.length;
 }
 
-/** Resume capability-paused unbound Turns only when the daemon topology has one safe route. */
+/** Resume capability-paused or delivery-blocked unbound Turns only with one safe route. */
 export async function handleConversationTurnDaemonTopologyChange(serverId: string, at = new Date()): Promise<number> {
   if (conversationTurnDeliveryBlockReason(serverId, null)) return 0;
   const rows = await db.select({ id: schema.conversationTurns.id })
@@ -45,20 +48,23 @@ export async function handleConversationTurnDaemonTopologyChange(serverId: strin
     .innerJoin(schema.agents, eq(schema.agents.id, schema.agentMessageDecisions.agentId))
     .where(and(
       eq(schema.conversationTurns.serverId, serverId),
-      eq(schema.conversationTurns.state, "active"),
-      eq(schema.conversationTurns.dispatchLeaseUntil, CAPABILITY_PAUSED_UNTIL),
+      or(
+        and(eq(schema.conversationTurns.state, "active"), eq(schema.conversationTurns.dispatchLeaseUntil, CAPABILITY_PAUSED_UNTIL)),
+        and(eq(schema.conversationTurns.state, "blocked"), isNull(schema.agentMessageDecisions.deliveryAdmittedAt)),
+      ),
       isNull(schema.agents.machineId),
       inArray(schema.agentMessageDecisions.grantStatus, ["active", "publishing"]),
     ));
   const ids = [...new Set(rows.map((row) => row.id))];
   if (ids.length) await db.update(schema.conversationTurns).set({
+    state: "active",
+    responsibilityState: "active",
     dispatchAfter: at,
     dispatchLeaseUntil: null,
     updatedAt: at,
   }).where(and(
     inArray(schema.conversationTurns.id, ids),
-    eq(schema.conversationTurns.state, "active"),
-    eq(schema.conversationTurns.dispatchLeaseUntil, CAPABILITY_PAUSED_UNTIL),
+    inArray(schema.conversationTurns.state, ["active", "blocked"]),
   ));
   for (const id of ids) scheduleConversationTurn(id, at);
   return ids.length;
