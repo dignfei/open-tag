@@ -7,6 +7,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import {
+  DOCS_SITE_URL,
+  MARKETING_SITE_URL,
+  resolveDocsHref,
+  resolveMarketingHomeHref,
+} from "../web/src/landing/publicNav.ts";
 
 const navContract = fs.readFileSync(new URL("../web/src/landing/publicNav.ts", import.meta.url), "utf8");
 const marketingNav = fs.readFileSync(new URL("../web/src/landing/MarketingNav.tsx", import.meta.url), "utf8");
@@ -19,10 +25,18 @@ const docsCss = fs.readFileSync(new URL("../docs-site/src/styles/docs.css", impo
 
 test("public nav source of truth exports the shared brand asset and top-level links", () => {
   assert.match(navContract, /PUBLIC_BRAND_MARK_SRC\s*=\s*"\/favicon\.svg"/);
+  assert.match(navContract, /DOCS_SITE_URL\s*=\s*"https:\/\/fancyboi999-bot\.github\.io\/open-tag\/"/);
   assert.match(navContract, /GITHUB_URL\s*=\s*"https:\/\/github\.com\/fancyboi999-bot\/open-tag"/);
   for (const key of ["features", "capabilities", "engines", "selfHosted", "docs"]) {
     assert.match(navContract, new RegExp(`key:\\s*"${key}"`), `missing shared nav key ${key}`);
   }
+});
+
+test("public nav resolves hosted docs and self-hosted docs without losing the Pages base path", () => {
+  assert.equal(resolveDocsHref(MARKETING_SITE_URL), DOCS_SITE_URL);
+  assert.equal(resolveDocsHref("http://localhost:7777"), "http://localhost:7777/docs/");
+  assert.equal(resolveMarketingHomeHref(DOCS_SITE_URL), `${MARKETING_SITE_URL}/`);
+  assert.equal(resolveMarketingHomeHref(new URL(DOCS_SITE_URL).origin), `${MARKETING_SITE_URL}/`);
 });
 
 test("landing and features render the shared MarketingNav instead of hand-written nav markup", () => {
@@ -44,7 +58,9 @@ test("docs imports the shared public nav contract and renders the shared public-
   assert.match(docs, /PUBLIC_NAV_LINKS/);
   assert.match(docs, /PUBLIC_BRAND_MARK_SRC/);
   assert.match(docs, /from\s+"..\/..\/..\/web\/src\/landing\/publicNav"/);
-  assert.match(docs, /src=\{PUBLIC_BRAND_MARK_SRC\}/);
+  assert.match(docs, /import\.meta\.env\.BASE_URL\.endsWith\("\/"\)/);
+  assert.match(docs, /PUBLIC_BRAND_MARK_SRC\.replace/);
+  assert.match(docs, /src=\{docsBrandMarkSrc\}/);
   assert.match(docs, /<header class="lp-nav">/);
   assert.match(docs, /<div class="lp-container lp-nav__inner">/);
   assert.match(docs, /class="lp-brand"/);

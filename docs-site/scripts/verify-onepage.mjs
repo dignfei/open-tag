@@ -34,11 +34,11 @@ if (existsSync(join(root, "src/pages/index.astro"))) {
   if (!page.includes("data-lang-toggle")) {
     fail("docs one-page source is missing the language toggle button.");
   }
-  if (!page.includes("data-home-link") || !page.includes("resolveHomeHref")) {
+  if (!page.includes("data-home-link") || !page.includes("resolveMarketingHomeHref")) {
     fail("docs one-page brand link must resolve to the app landing page.");
   }
-  if (!page.includes('src="./favicon.svg"')) {
-    fail("docs one-page brand mark must use the existing SVG logo.");
+  if (!page.includes('import.meta.env.BASE_URL.endsWith("/")') || !page.includes("PUBLIC_BRAND_MARK_SRC.replace") || !page.includes("src={docsBrandMarkSrc}")) {
+    fail("docs one-page brand mark must use the shared, base-aware SVG logo.");
   }
   if (!page.includes("data-i18n-meta")) {
     fail("docs one-page source is missing localized metadata hooks.");

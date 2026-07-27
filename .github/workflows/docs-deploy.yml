@@ -29,6 +29,8 @@ jobs:
 
       - name: Install, build, and upload site
         uses: withastro/action@v6
+        env:
+          ASTRO_BASE: /open-tag
         with:
           path: docs-site
 

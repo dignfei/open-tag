@@ -1,6 +1,6 @@
 export const GITHUB_URL = "https://github.com/fancyboi999-bot/open-tag";
 export const MARKETING_SITE_URL = "https://getopentag.com";
-export const DOCS_SITE_URL = "https://docs.getopentag.com/";
+export const DOCS_SITE_URL = "https://fancyboi999-bot.github.io/open-tag/";
 export const PUBLIC_BRAND_MARK_SRC = "/favicon.svg";
 
 export const MARKETING_ORIGINS = new Set([MARKETING_SITE_URL, "https://www.getopentag.com"]);
@@ -26,7 +26,8 @@ export function resolveDocsHref(origin = MARKETING_SITE_URL): string {
 }
 
 export function resolveMarketingHomeHref(origin = MARKETING_SITE_URL): string {
-  return origin === DOCS_SITE_URL.slice(0, -1) ? `${MARKETING_SITE_URL}/` : `${origin}/`;
+  const normalizedOrigin = new URL(origin).origin;
+  return normalizedOrigin === new URL(DOCS_SITE_URL).origin ? `${MARKETING_SITE_URL}/` : `${normalizedOrigin}/`;
 }
 
 export function resolvePublicNavHref(link: PublicNavLink, origin = MARKETING_SITE_URL, surface: "marketing" | "docs" = "marketing"): string {
