@@ -1,7 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { createLogger } from "../log.js";
-import { startAgentActivityRun } from "./agentActivity.js";
 import { expectAgentDeliveryAck } from "./agentDeliveryAck.js";
 import { isWakeable } from "./agentWakePolicy.js";
 import {
@@ -135,18 +134,6 @@ async function deliverAgentResponsibility<TTarget extends { ok: true }>(
   }
 
   const replyStreamId = `${input.trigger.id}:${input.member.id}`;
-  const runStart = await startAgentActivityRun(input.serverId, input.member.id, input.channelId, replyStreamId);
-  await publish(input.serverId, {
-    type: "agent:reply",
-    agentId: input.member.id,
-    channelId: input.channelId,
-    streamId: replyStreamId,
-    name: input.member.displayName || input.member.name,
-    triggerMessageId: input.trigger.id,
-    conversationTurnId: input.turnId,
-    op: "start",
-    entries: [runStart],
-  });
   const startSent = deps.sendAgentStart(input.serverId, target, input.member.id);
   const deliveryId = input.turnId ? `${input.turnId}:${input.member.id}` : undefined;
   const ack = startSent && deliveryId ? expectAgentDeliveryAck(deliveryId, input.member.id, input.latest.seq) : null;
@@ -173,13 +160,6 @@ async function deliverAgentResponsibility<TTarget extends { ok: true }>(
   }
   if (deliverSent) {
     if (ack) await ack.promise;
-    if (input.turnId) await db.update(schema.agentMessageDecisions).set({
-      deliveryAdmittedAt: new Date(),
-      updatedAt: new Date(),
-    }).where(and(
-      eq(schema.agentMessageDecisions.messageId, input.trigger.id),
-      eq(schema.agentMessageDecisions.agentId, input.member.id),
-    ));
     return "delivered";
   }
   ack?.cancel();

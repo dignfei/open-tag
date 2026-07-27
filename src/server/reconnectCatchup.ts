@@ -138,7 +138,10 @@ export async function catchUpAgentsOnMachine(serverId: string, machineId: string
   let woke = 0;
   for (const a of list) {
     let backlog: Backlog | null = null;
-    try { backlog = await computeBacklog(a.id, a.scopes, !durableDeliveryBlock); }
+    // Running agents receive durable work only through the canonical Turn dispatcher. A legacy
+    // body-free notice here would bypass the v2 commit barrier and duplicate the dispatcher wake.
+    // Dead agents may still need a startup nudge for already-admitted durable backlog.
+    try { backlog = await computeBacklog(a.id, a.scopes, !durableDeliveryBlock && !runningIds.includes(a.id)); }
     catch (e: any) { log.warn("backlog scan failed", { agentId: a.id, detail: String(e?.message ?? e) }); continue; }
     if (!backlog) continue;
     if (!availableRuntimes.has(a.runtime)) {

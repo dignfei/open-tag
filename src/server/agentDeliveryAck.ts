@@ -57,6 +57,10 @@ export function noteAgentDeliveryPending(deliveryId: string | undefined): boolea
   return true;
 }
 
+export function hasPendingAgentDelivery(deliveryId: string | undefined): boolean {
+  return !!deliveryId && pending.has(deliveryId);
+}
+
 function forget(deliveryId: string, entry: PendingAck): void {
   clearTimeout(entry.timer);
   if (pending.get(deliveryId) === entry) pending.delete(deliveryId);

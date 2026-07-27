@@ -12,7 +12,8 @@ import { catchUpAgentsOnMachine } from "./reconnectCatchup.js";
 import { markMachineAgentsOffline } from "./machineLiveness.js";
 import { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog, startAgentActivityRun } from "./agentActivity.js";
 import { finalizeAgentActivityRun } from "./core.js";
-import { acceptAgentDeliveryAck, noteAgentDeliveryPending, rejectAgentDeliveryAck } from "./agentDeliveryAck.js";
+import { acceptAgentDeliveryAck, hasPendingAgentDelivery, noteAgentDeliveryPending, rejectAgentDeliveryAck } from "./agentDeliveryAck.js";
+import { commitAgentDeliveryAdmission, releaseAgentDeliveryAdmission, type CommittedAgentDelivery } from "./agentDeliveryAdmission.js";
 import { createWsFrameGate } from "./wsFrameGate.js";
 import { handleConversationTurnDaemonTopologyChange, resumeConversationTurnsForMachine } from "./conversationTurnRecovery.js";
 
@@ -35,6 +36,7 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
   let serverId: string | null = null;
   let machineId: string | null = null;
   const frames = createWsFrameGate<RawData>();
+  const committedDeliveries = new Map<string, CommittedAgentDelivery>();
   ws.on("message", (data) => frames.dispatch(data));
   if (safeEqual(key, BOOTSTRAP_KEY)) {
     serverId = (await db.select().from(schema.servers).where(eq(schema.servers.slug, "open-tag")))[0]?.id ?? null;
@@ -74,8 +76,35 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
       }
       else if (msg.type === "agent:status" || msg.type === "agent:activity") await onAgentUpdate(serverId!, msg);
       else if (msg.type === "agent:deliver:pending") noteAgentDeliveryPending(typeof msg.deliveryId === "string" ? msg.deliveryId : undefined);
-      else if (msg.type === "agent:deliver:ack") acceptAgentDeliveryAck(typeof msg.deliveryId === "string" ? msg.deliveryId : undefined, msg.agentId, msg.seq);
-      else if (msg.type === "agent:deliver:nack") rejectAgentDeliveryAck(typeof msg.deliveryId === "string" ? msg.deliveryId : undefined, msg.agentId, msg.seq, typeof msg.error === "string" ? msg.error : undefined);
+      else if (msg.type === "agent:deliver:ready") {
+        const deliveryId = typeof msg.deliveryId === "string" ? msg.deliveryId : undefined;
+        if (!hasPendingAgentDelivery(deliveryId)) {
+          ws.send(JSON.stringify({ type: "agent:deliver:rejected", deliveryId, error: "delivery is not pending" }));
+        } else {
+          const result = await commitAgentDeliveryAdmission({ ws, serverId: serverId!, machineId, deliveryId, agentId: msg.agentId, seq: msg.seq });
+          if (result.ok) {
+            committedDeliveries.set(result.delivery.deliveryId, result.delivery);
+            ws.send(JSON.stringify({ type: "agent:deliver:admitted", deliveryId: result.delivery.deliveryId }));
+          } else {
+            ws.send(JSON.stringify({ type: "agent:deliver:rejected", deliveryId, error: result.error }));
+          }
+        }
+      }
+      else if (msg.type === "agent:deliver:ack") {
+        const delivery = typeof msg.deliveryId === "string" ? committedDeliveries.get(msg.deliveryId) : undefined;
+        if (delivery && delivery.agentId === msg.agentId && delivery.seq === msg.seq) {
+          committedDeliveries.delete(delivery.deliveryId);
+          acceptAgentDeliveryAck(delivery.deliveryId, delivery.agentId, delivery.seq);
+        }
+      }
+      else if (msg.type === "agent:deliver:nack") {
+        const delivery = typeof msg.deliveryId === "string" ? committedDeliveries.get(msg.deliveryId) : undefined;
+        if (delivery && delivery.agentId === msg.agentId && delivery.seq === msg.seq) {
+          committedDeliveries.delete(delivery.deliveryId);
+          await releaseAgentDeliveryAdmission(delivery);
+          rejectAgentDeliveryAck(delivery.deliveryId, delivery.agentId, delivery.seq, typeof msg.error === "string" ? msg.error : undefined);
+        }
+      }
       else if (msg.type === "agent:session" && msg.agentId) { await db.update(schema.agents).set({ sessionId: msg.sessionId }).where(eq(schema.agents.id, msg.agentId)); await publish(serverId!, { type: "agent:session", agentId: msg.agentId, sessionId: msg.sessionId }); } // forward to the frontend
       else if (msg.type === "agent:trajectory" && msg.agentId) {
         const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
@@ -106,6 +135,8 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
   });
   ws.on("close", async () => {
     clearInterval(ping);
+    await Promise.all([...committedDeliveries.values()].map(releaseAgentDeliveryAdmission));
+    committedDeliveries.clear();
     const wasCurrent = machineId ? isCurrentMachineConn(machineId, ws) : false;
     unregisterDaemon(ws); unregisterMachineConn(ws);
     if (serverId) await handleConversationTurnDaemonTopologyChange(serverId)

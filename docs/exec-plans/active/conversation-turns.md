@@ -115,3 +115,19 @@ work, does not duplicate execution, and does not create unbounded agent-to-agent
   both decision rows were `published/consumed` with non-null `delivery_admitted_at`. Screenshots are
   retained under `.shots/` (gitignored). The temporary helper was deleted and the seed bot restored
   to inactive after the run.
+- 2026-07-27: consecutive-DM browser reproduction exposed a remaining ordering race: the daemon
+  wrote a queued runtime notice before the server committed recipient admission, so a fast inbox
+  check could finish as Handled with no reply. Capability `delivery-admission-v2` now uses an
+  authenticated `ready -> admitted` commit barrier, strict per-agent FIFO, queue-head-only cold
+  start, and terminal-online advancement. Addressed rows are admission-gated while ambient context
+  remains readable. Focused evidence after remediation: AgentManager/ACK 38/38, Turn integration
+  17/17, and real HTTP+WS Turn API 1/1; final browser evidence is recorded in the PR summary.
+- 2026-07-27: final DM FIFO verification reproduced a second data-plane gap after transport ordering
+  was fixed: freshness hold advanced `lastReadSeq` across an unadmitted second DM, so its later
+  runtime check returned empty. Inbox/freshness now share one admission classifier but keep distinct
+  read semantics: ambient collecting context can hold a stale draft without consuming formal inbox
+  state, while direct queued work remains invisible and cursor-blocking. The final latest-daemon
+  browser tag `admission-fifo-v7-1785122238641` produced INDIGO then SILVER in separate Activity
+  runs; database rows were `published/consumed` with admissions at 03:17:19.676Z and
+  03:17:42.130Z. The queued-state
+  screenshot and final screenshot remain under `.shots/` (gitignored).

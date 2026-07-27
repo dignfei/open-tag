@@ -76,7 +76,7 @@ test("bound durable delivery requires capability and an old daemon receives zero
   registerMachineConn("m-cap-old", oldWs);
 
   const reason = conversationTurnDeliveryBlockReason(sid, "m-cap-old");
-  assert.match(reason ?? "", /delivery-admission-v1/);
+  assert.match(reason ?? "", /delivery-admission-v2/);
   if (!reason) sendToMachine("m-cap-old", { type: "agent:deliver", turnId: "should-not-send" });
   assert.equal(oldWs.sends, 0, "the gate runs before agent:start or agent:deliver");
 
@@ -91,7 +91,7 @@ test("unbound durable delivery requires exactly one capable daemon", () => {
 
   const ws1 = fakeWs();
   registerDaemon(ws1, sid); registerDaemonCapabilities(ws1, []);
-  assert.match(conversationTurnDeliveryBlockReason(sid, null) ?? "", /delivery-admission-v1/);
+  assert.match(conversationTurnDeliveryBlockReason(sid, null) ?? "", /delivery-admission-v2/);
   registerDaemonCapabilities(ws1, [DELIVERY_ADMISSION_CAPABILITY]);
   assert.equal(conversationTurnDeliveryBlockReason(sid, null), null);
 
@@ -107,10 +107,10 @@ test("replaced machine connection cannot retain or erase the current capability 
   registerDaemon(oldWs, sid); registerDaemonCapabilities(oldWs, [DELIVERY_ADMISSION_CAPABILITY]); registerMachineConn("m-cap-replace", oldWs);
   registerDaemon(currentWs, sid); registerDaemonCapabilities(currentWs, []); registerMachineConn("m-cap-replace", currentWs);
   assert.equal(oldWs.closed, true);
-  assert.match(conversationTurnDeliveryBlockReason(sid, "m-cap-replace") ?? "", /delivery-admission-v1/, "replacement uses only the current connection's capabilities");
+  assert.match(conversationTurnDeliveryBlockReason(sid, "m-cap-replace") ?? "", /delivery-admission-v2/, "replacement uses only the current connection's capabilities");
 
   unregisterDaemon(oldWs); unregisterMachineConn(oldWs);
-  assert.match(conversationTurnDeliveryBlockReason(sid, "m-cap-replace") ?? "", /delivery-admission-v1/, "stale close cleanup must not remove the current connection");
+  assert.match(conversationTurnDeliveryBlockReason(sid, "m-cap-replace") ?? "", /delivery-admission-v2/, "stale close cleanup must not remove the current connection");
   registerDaemonCapabilities(currentWs, [DELIVERY_ADMISSION_CAPABILITY]);
   assert.equal(conversationTurnDeliveryBlockReason(sid, "m-cap-replace"), null);
   unregisterDaemon(currentWs); unregisterMachineConn(currentWs);

@@ -37,7 +37,7 @@ async function startServer(): Promise<{ base: string; logs: () => string }> {
     env: {
       ...process.env,
       PORT: String(port),
-      OPEN_TAG_TURN_DEBOUNCE_MS: "300",
+      OPEN_TAG_TURN_DEBOUNCE_MS: "1000",
       OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS: "20",
       OPEN_TAG_REPLY_SETTLE_MS: "0",
     },
@@ -129,13 +129,14 @@ test("real API: sender-scoped turns debounce once without merging different huma
   try {
     const live = await startServer();
     const daemonMessages: any[] = [];
+    const pendingDaemonDeliveries = new Map<string, any>();
     let withholdNextTurnAck = false;
     let withheldDeliveryId: string | null = null;
     daemonSocket = await new Promise<WebSocket>((resolve, reject) => {
       const socket = new WebSocket(`${live.base.replace("http", "ws")}/daemon/connect?key=${encodeURIComponent(machineKey)}`);
       const timer = setTimeout(() => reject(new Error(`daemon ready timeout: ${live.logs()}`)), 3_000);
       socket.on("open", () => socket.send(JSON.stringify({
-        type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"], capabilities: ["delivery-admission-v1"],
+        type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"], capabilities: ["delivery-admission-v2"],
         runningAgents: agents.map((a) => a.id), daemonVersion: "test",
       })));
       socket.on("message", (data) => {
@@ -143,11 +144,17 @@ test("real API: sender-scoped turns debounce once without merging different huma
         daemonMessages.push(message);
         if (message.type === "ready:ack") { clearTimeout(timer); resolve(socket); }
         if (message.type === "agent:deliver" && message.deliveryId) {
+          pendingDaemonDeliveries.set(message.deliveryId, message);
           if (withholdNextTurnAck && !withheldDeliveryId) {
             withheldDeliveryId = message.deliveryId;
             withholdNextTurnAck = false;
-          } else {
-            socket.send(JSON.stringify({ type: "agent:deliver:ack", agentId: message.agentId, seq: message.seq, deliveryId: message.deliveryId }));
+          }
+          socket.send(JSON.stringify({ type: "agent:deliver:ready", agentId: message.agentId, seq: message.seq, deliveryId: message.deliveryId }));
+        }
+        if (message.type === "agent:deliver:admitted" && message.deliveryId) {
+          const delivery = pendingDaemonDeliveries.get(message.deliveryId);
+          if (delivery && message.deliveryId !== withheldDeliveryId) {
+            socket.send(JSON.stringify({ type: "agent:deliver:ack", agentId: delivery.agentId, seq: delivery.seq, deliveryId: delivery.deliveryId }));
           }
         }
         if (message.type === "ping") socket.send(JSON.stringify({ type: "pong" }));
@@ -201,19 +208,120 @@ test("real API: sender-scoped turns debounce once without merging different huma
     assert.equal(new Set(aliceMessages.map((m: any) => m.coordination?.messageId)).size, 1, "both messages expose the same canonical Turn grant");
     assert.ok(aliceMessages.every((m: any) => m.coordination?.attention === "assigned" && m.coordination?.grantStatus === "active"));
 
+    const [queuedChannel] = await db.insert(schema.channels).values({
+      serverId: server!.id, name: `dm:${[humans[0]!.id, owner.id].sort().join(":")}`, type: "dm",
+    }).returning();
+    channelIds.push(queuedChannel!.id);
+    await db.insert(schema.channelMembers).values([
+      { channelId: queuedChannel!.id, memberType: "user", memberId: humans[0]!.id },
+      { channelId: queuedChannel!.id, memberType: "agent", memberId: owner.id },
+    ]);
+    const [priorMessage] = await db.insert(schema.messages).values({
+      seq: 198_000_000, serverId: server!.id, channelId: queuedChannel!.id,
+      senderType: "user", senderId: humans[0]!.id, senderName: humans[0]!.name,
+      content: "first DM turn already admitted to the active runtime",
+    }).returning();
+    const priorTurnId = randomUUID();
+    await db.insert(schema.conversationTurns).values({
+      id: priorTurnId, serverId: server!.id, channelId: queuedChannel!.id,
+      senderType: "user", senderId: humans[0]!.id, anchorMessageId: priorMessage!.id,
+      triggerMessageId: priorMessage!.id, latestMessageId: priorMessage!.id,
+      firstSeq: priorMessage!.seq, lastSeq: priorMessage!.seq, boundaryKind: "direct",
+      state: "dispatched", dispatchAfter: new Date(), dispatchedAt: new Date(), causalRootId: priorTurnId,
+      ownerAgentId: owner.id, responsibilityState: "delivered",
+    });
+    await db.update(schema.messages).set({ conversationTurnId: priorTurnId }).where(eq(schema.messages.id, priorMessage!.id));
+    await db.insert(schema.agentMessageDecisions).values({
+      serverId: server!.id, channelId: queuedChannel!.id, messageId: priorMessage!.id,
+      agentId: owner.id, attention: "dm", decision: "accepted", reasonCode: "dm_auto_authorized",
+      decidedAt: new Date(), grantSlot: "primary", grantStatus: "active", grantedAt: new Date(),
+      deliveryAdmittedAt: new Date(),
+    });
+    const [queuedMessage] = await db.insert(schema.messages).values({
+      seq: 198_000_001, serverId: server!.id, channelId: queuedChannel!.id,
+      senderType: "user", senderId: humans[0]!.id, senderName: humans[0]!.name,
+      content: "second DM turn queued behind the active runtime",
+    }).returning();
+    const queuedTurnId = randomUUID();
+    await db.insert(schema.conversationTurns).values({
+      id: queuedTurnId, serverId: server!.id, channelId: queuedChannel!.id,
+      senderType: "user", senderId: humans[0]!.id, anchorMessageId: queuedMessage!.id,
+      triggerMessageId: queuedMessage!.id, latestMessageId: queuedMessage!.id,
+      firstSeq: queuedMessage!.seq, lastSeq: queuedMessage!.seq, boundaryKind: "direct",
+      state: "active", dispatchAfter: new Date(), dispatchLeaseUntil: new Date(Date.now() + 30_000),
+      causalRootId: queuedTurnId, ownerAgentId: owner.id, responsibilityState: "active",
+    });
+    await db.update(schema.messages).set({ conversationTurnId: queuedTurnId }).where(eq(schema.messages.id, queuedMessage!.id));
+    await db.insert(schema.agentMessageDecisions).values({
+      serverId: server!.id, channelId: queuedChannel!.id, messageId: queuedMessage!.id,
+      agentId: owner.id, attention: "dm", grantSlot: "primary", grantStatus: "active",
+      grantedAt: new Date(),
+    });
+
+    const queuedBeforeAdmission = await api(live.base, "GET", "/agent-api/message/check", agentHeaders[ownerIndex]!);
+    assert.equal(queuedBeforeAdmission.status, 200, JSON.stringify(queuedBeforeAdmission.body));
+    assert.equal(queuedBeforeAdmission.body.messages.some((message: any) => message.id === priorMessage!.id), true, "the already admitted Turn remains visible before the queue gap");
+    assert.equal(queuedBeforeAdmission.body.messages.some((message: any) => message.id === queuedMessage!.id), false, "runtime-queued Turn remains hidden from the active agent turn");
+    assert.deepEqual(queuedBeforeAdmission.body.warnings, [], "a healthy runtime queue is not reported as an authorization failure");
+    const priorReply = await api(live.base, "POST", "/agent-api/message/send", agentHeaders[ownerIndex]!, {
+      target: `dm:@${humans[0]!.name}`,
+      content: "first DM reply must not be held by the queued second Turn",
+      replyTo: priorMessage!.id,
+    });
+    assert.equal(priorReply.status, 200, JSON.stringify(priorReply.body));
+    assert.equal(priorReply.body.held, undefined, "freshness hold must ignore a non-admitted queued Turn");
+    assert.equal(priorReply.body.replyTo, priorMessage!.id);
+    const [queuedCursor] = await db.select({ lastReadSeq: schema.channelMembers.lastReadSeq }).from(schema.channelMembers).where(and(
+      eq(schema.channelMembers.channelId, queuedChannel!.id),
+      eq(schema.channelMembers.memberType, "agent"),
+      eq(schema.channelMembers.memberId, owner.id),
+    ));
+    assert.equal(queuedCursor!.lastReadSeq, priorMessage!.seq, "sending the first reply cannot advance the inbox cursor across a queued Turn");
+    const queuedDecision = await api(live.base, "POST", "/agent-api/message/decide", agentHeaders[ownerIndex]!, {
+      messageId: queuedMessage!.id,
+      decision: "accept",
+    });
+    assert.equal(queuedDecision.status, 409, JSON.stringify(queuedDecision.body));
+    assert.equal(queuedDecision.body.code, "DELIVERY_ADMISSION_REQUIRED");
+    const queuedReply = await api(live.base, "POST", "/agent-api/message/send", agentHeaders[ownerIndex]!, {
+      target: `dm:@${humans[0]!.name}`,
+      content: "must not publish before runtime admission",
+      replyTo: queuedMessage!.id,
+    });
+    assert.equal(queuedReply.status, 409, JSON.stringify(queuedReply.body));
+    assert.equal(queuedReply.body.code, "DELIVERY_ADMISSION_REQUIRED");
+    const queuedThreadReply = await api(live.base, "POST", "/agent-api/thread/reply", agentHeaders[ownerIndex]!, {
+      parent: queuedMessage!.id,
+      content: "must not publish through legacy thread reply before runtime admission",
+      replyTo: queuedMessage!.id,
+    });
+    assert.equal(queuedThreadReply.status, 409, JSON.stringify(queuedThreadReply.body));
+    assert.equal(queuedThreadReply.body.code, "DELIVERY_ADMISSION_REQUIRED");
+
+    await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: new Date() }).where(and(
+      eq(schema.agentMessageDecisions.messageId, queuedMessage!.id),
+      eq(schema.agentMessageDecisions.agentId, owner.id),
+    ));
+    const queuedAfterAdmission = await api(live.base, "GET", "/agent-api/message/check", agentHeaders[ownerIndex]!);
+    assert.equal(queuedAfterAdmission.status, 200, JSON.stringify(queuedAfterAdmission.body));
+    assert.equal(queuedAfterAdmission.body.messages.some((message: any) => message.id === queuedMessage!.id), true, "runtime admission exposes the queued Turn on the next check");
+
     withholdNextTurnAck = true;
     const alice3 = await api(live.base, "POST", "/api/messages", headers[0]!, { channelId: channel!.id, content: "窗口后的新问题" });
     assert.equal(alice3.status, 200);
     await waitFor(async () => {
-      if (!withheldDeliveryId || daemonMessages.filter((message) => message.deliveryId === withheldDeliveryId).length !== 2) return false;
+      if (!withheldDeliveryId || daemonMessages.filter((message) => message.type === "agent:deliver" && message.deliveryId === withheldDeliveryId).length !== 1) return false;
       const [turn] = await db.select({ state: schema.conversationTurns.state }).from(schema.conversationTurns)
         .where(eq(schema.conversationTurns.triggerMessageId, alice3.body.id)).limit(1);
       return turn?.state === "dispatched";
     }, 7_000, () => JSON.stringify({ daemonMessages, logs: live.logs() }));
-    assert.equal(new Set(daemonMessages.filter((message) => message.deliveryId === withheldDeliveryId).map((message) => message.deliveryId)).size, 1, "retry reuses the same deterministic delivery fence");
-    const afterWindowTurns = await db.select().from(schema.conversationTurns).where(eq(schema.conversationTurns.serverId, server!.id));
+    assert.equal(daemonMessages.filter((message) => message.type === "agent:deliver" && message.deliveryId === withheldDeliveryId).length, 1, "a committed delivery is not re-sent when its final ACK is lost");
+    const afterWindowTurns = await db.select().from(schema.conversationTurns).where(and(
+      eq(schema.conversationTurns.serverId, server!.id),
+      eq(schema.conversationTurns.channelId, channel!.id),
+    ));
     assert.equal(afterWindowTurns.length, 3, "same human starts a new turn after the prior window closes");
-    assert.equal(afterWindowTurns.find((turn) => turn.triggerMessageId === alice3.body.id)?.state, "dispatched", "Turn settles only after the retry receives an ACK");
+    assert.equal(afterWindowTurns.find((turn) => turn.triggerMessageId === alice3.body.id)?.state, "dispatched", "the durable admission lets recovery settle after a lost final ACK");
 
     withholdNextTurnAck = true;
     withheldDeliveryId = null;
@@ -223,7 +331,11 @@ test("real API: sender-scoped turns debounce once without merging different huma
     });
     assert.equal(causalSend.status, 200, JSON.stringify(causalSend.body));
     await waitFor(
-      () => !!withheldDeliveryId && daemonMessages.filter((message) => message.deliveryId === withheldDeliveryId).length === 2,
+      async () => {
+        if (!withheldDeliveryId || daemonMessages.filter((message) => message.type === "agent:deliver" && message.deliveryId === withheldDeliveryId).length !== 1) return false;
+        const [turn] = await db.select({ state: schema.conversationTurns.state }).from(schema.conversationTurns).where(eq(schema.conversationTurns.triggerMessageId, causalSend.body.id)).limit(1);
+        return turn?.state === "dispatched";
+      },
       7_000,
       () => JSON.stringify({ daemonMessages, logs: live.logs() }),
     );
@@ -232,7 +344,7 @@ test("real API: sender-scoped turns debounce once without merging different huma
     assert.ok(causalMessage?.turnId, "agent-authored mention must create a causal Turn");
     const causalRows = await db.select({ parentTurnId: schema.causalEdges.parentTurnId, outcome: schema.causalEdges.outcome })
       .from(schema.causalEdges).where(eq(schema.causalEdges.parentTurnId, causalMessage.turnId!));
-    assert.deepEqual(causalRows, [{ parentTurnId: causalMessage.turnId, outcome: "accepted" }], "ACK retry for one causal Turn reuses its accepted edge instead of recording duplicate work");
+    assert.deepEqual(causalRows, [{ parentTurnId: causalMessage.turnId, outcome: "accepted" }], "ACK recovery for one causal Turn does not record duplicate work");
 
     const targetIndex = 1;
     const drained = await api(live.base, "GET", "/agent-api/message/check", agentHeaders[targetIndex]!);
@@ -303,7 +415,12 @@ test("real API: sender-scoped turns debounce once without merging different huma
     ));
     await db.update(schema.conversationTurns).set({ state: "active", responsibilityState: "active" }).where(eq(schema.conversationTurns.id, raceTurnId));
     const afterActivation = await api(live.base, "GET", "/agent-api/message/check", agentHeaders[targetIndex]!);
-    const visibleRace = afterActivation.body.messages.find((message: any) => message.id === raceMessage!.id);
+    assert.equal(afterActivation.body.messages.some((message: any) => message.id === raceMessage!.id), false, "active reply authority remains hidden until runtime admission");
+    await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: new Date() }).where(and(
+      eq(schema.agentMessageDecisions.messageId, raceMessage!.id), eq(schema.agentMessageDecisions.agentId, agents[targetIndex]!.id),
+    ));
+    const afterRaceAdmission = await api(live.base, "GET", "/agent-api/message/check", agentHeaders[targetIndex]!);
+    const visibleRace = afterRaceAdmission.body.messages.find((message: any) => message.id === raceMessage!.id);
     assert.equal(visibleRace?.coordination?.grantStatus, "active", "Turn is visible only after reply authority activates");
 
     const bulkMessages = await db.insert(schema.messages).values(Array.from({ length: 101 }, (_, index) => ({
@@ -320,7 +437,7 @@ test("real API: sender-scoped turns debounce once without merging different huma
     await db.update(schema.messages).set({ conversationTurnId: bulkTurnId }).where(inArray(schema.messages.id, bulkMessages.map((message) => message.id)));
     await db.insert(schema.agentMessageDecisions).values({
       serverId: server!.id, channelId: bulkChannel!.id, messageId: bulkMessages[0]!.id, agentId: agents[targetIndex]!.id,
-      attention: "assigned", grantSlot: "primary", grantStatus: "active", grantedAt: new Date(),
+      attention: "assigned", grantSlot: "primary", grantStatus: "active", grantedAt: new Date(), deliveryAdmittedAt: new Date(),
     });
     const firstBulkPage = await api(live.base, "GET", "/agent-api/message/check", agentHeaders[targetIndex]!);
     assert.equal(firstBulkPage.body.messages.filter((message: any) => message.channelId === bulkChannel!.id).length, 100);
@@ -450,14 +567,19 @@ test("real API: sender-scoped turns debounce once without merging different huma
       const timer = setTimeout(() => reject(new Error(`capable daemon ready timeout: ${live.logs()}`)), 3_000);
       socket.on("open", () => socket.send(JSON.stringify({
         type: "ready", machineId: machine!.id, hostname: machine!.name, os: "test", runtimes: ["codex"],
-        capabilities: ["agent:deliver", "delivery-admission-v1"], runningAgents: [...agents.map((agent) => agent.id), gatedAgent!.id], daemonVersion: "new-test",
+        capabilities: ["agent:deliver", "delivery-admission-v2"], runningAgents: [...agents.map((agent) => agent.id), gatedAgent!.id], daemonVersion: "new-test",
       })));
       socket.on("message", (data) => {
         const message = JSON.parse(String(data));
         capableDaemonMessages.push(message);
         if (message.type === "ready:ack") { clearTimeout(timer); resolve(socket); }
         if (message.type === "agent:deliver" && message.deliveryId) {
-          socket.send(JSON.stringify({ type: "agent:deliver:ack", agentId: message.agentId, seq: message.seq, deliveryId: message.deliveryId }));
+          pendingDaemonDeliveries.set(message.deliveryId, message);
+          socket.send(JSON.stringify({ type: "agent:deliver:ready", agentId: message.agentId, seq: message.seq, deliveryId: message.deliveryId }));
+        }
+        if (message.type === "agent:deliver:admitted" && message.deliveryId) {
+          const delivery = pendingDaemonDeliveries.get(message.deliveryId);
+          if (delivery) socket.send(JSON.stringify({ type: "agent:deliver:ack", agentId: delivery.agentId, seq: delivery.seq, deliveryId: delivery.deliveryId }));
         }
         if (message.type === "ping") socket.send(JSON.stringify({ type: "pong" }));
       });
@@ -521,8 +643,14 @@ test("real API: sender-scoped turns debounce once without merging different huma
     await db.update(schema.conversationTurns).set({
       state: "dispatched", responsibilityState: "delivered", dispatchAfter: new Date(), dispatchLeaseUntil: null,
     }).where(eq(schema.conversationTurns.id, pausedTurnId));
+    const capableBeforeAdmission = await api(live.base, "GET", "/agent-api/message/check", gatedAgentHeaders);
+    assert.equal(capableBeforeAdmission.body.messages.some((message: any) => message.id === pausedMessage!.id), false, "clearing the fleet pause does not bypass recipient runtime admission");
+    await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: new Date() }).where(and(
+      eq(schema.agentMessageDecisions.messageId, pausedMessage!.id),
+      eq(schema.agentMessageDecisions.agentId, gatedAgent!.id),
+    ));
     const capableResumedCheck = await api(live.base, "GET", "/agent-api/message/check", gatedAgentHeaders);
-    assert.equal(capableResumedCheck.body.messages.some((message: any) => message.id === pausedMessage!.id), true, "the Turn becomes visible only after the fleet pause clears");
+    assert.equal(capableResumedCheck.body.messages.some((message: any) => message.id === pausedMessage!.id), true, "the Turn becomes visible only after the fleet pause clears and recipient runtime admits it");
 
     const admittedAgentToken = `sk_agent_admitted_${suffix}`;
     const [admittedAgent] = await db.insert(schema.agents).values({
@@ -569,7 +697,7 @@ test("real API: sender-scoped turns debounce once without merging different huma
       const timer = setTimeout(() => reject(new Error(`secondary daemon ready timeout: ${live.logs()}`)), 3_000);
       socket.on("open", () => socket.send(JSON.stringify({
         type: "ready", machineId: secondaryMachine!.id, hostname: secondaryMachine!.name, os: "test", runtimes: ["codex"],
-        capabilities: ["agent:deliver", "delivery-admission-v1"], runningAgents: [], daemonVersion: "new-test",
+        capabilities: ["agent:deliver", "delivery-admission-v2"], runningAgents: [], daemonVersion: "new-test",
       })));
       socket.on("message", (data) => {
         const message = JSON.parse(String(data));
