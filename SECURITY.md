@@ -9,7 +9,7 @@ pull requests, or discussions.** A public report gives attackers a head start.
 
 Use GitHub's built-in private reporting:
 **Security → Report a vulnerability** on the
-[open-tag repository](https://github.com/fancyboi999/open-tag/security/advisories/new).
+[open-tag repository](https://github.com/fancyboi999-bot/open-tag/security/advisories/new).
 
 This opens a confidential thread between you and the maintainers. GitHub keeps
 it private until a fix is published and a CVE (if warranted) is issued.
@@ -17,7 +17,7 @@ it private until a fix is published and a CVE (if warranted) is issued.
 ### Fallback contact
 
 If you cannot use GitHub's private reporting, contact the maintainer
-[@fancyboi999](https://github.com/fancyboi999) on GitHub.
+[@fancyboi999-bot](https://github.com/fancyboi999-bot) on GitHub.
 
 Include:
 - A description of the vulnerability and its potential impact.

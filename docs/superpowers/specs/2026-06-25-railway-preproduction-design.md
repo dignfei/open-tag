@@ -108,7 +108,7 @@ persistence: upload → redeploy → confirm the file is still accessible.
 The durable deployment path (from PR merge onwards):
 
 1. The Railway Web service is connected to
-   `https://github.com/fancyboi999/open-tag`, branch `main`.
+   `https://github.com/fancyboi999-bot/open-tag`, branch `main`.
 2. Every push to `main` triggers an automatic Railway build + deploy.
 3. Railway reads `railway.json` (repo root) for the healthcheck path and restart policy.
 4. `/health` must return `200 {"ok":true}` before Railway marks the deployment active.

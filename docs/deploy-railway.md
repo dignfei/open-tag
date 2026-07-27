@@ -81,7 +81,7 @@ openssl rand -hex 32   # → ADMIN_SETUP_TOKEN
 ### Add the web service
 
 - Click **New → GitHub Repo**.
-- Select `fancyboi999/open-tag`, branch `main`.
+- Select `fancyboi999-bot/open-tag`, branch `main`.
 - Railway detects the root `Dockerfile` automatically.
 - Railway reads `railway.json` (in the repo root) for the healthcheck path `/health`
   and restart policy; no manual override is needed.

@@ -19,7 +19,7 @@ const docsCss = fs.readFileSync(new URL("../docs-site/src/styles/docs.css", impo
 
 test("public nav source of truth exports the shared brand asset and top-level links", () => {
   assert.match(navContract, /PUBLIC_BRAND_MARK_SRC\s*=\s*"\/favicon\.svg"/);
-  assert.match(navContract, /GITHUB_URL\s*=\s*"https:\/\/github\.com\/fancyboi999\/open-tag"/);
+  assert.match(navContract, /GITHUB_URL\s*=\s*"https:\/\/github\.com\/fancyboi999-bot\/open-tag"/);
   for (const key of ["features", "capabilities", "engines", "selfHosted", "docs"]) {
     assert.match(navContract, new RegExp(`key:\\s*"${key}"`), `missing shared nav key ${key}`);
   }

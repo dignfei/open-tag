@@ -27,13 +27,13 @@
   <a href="docs/self-host.md">自托管</a> ·
   <a href="FEATURES.md">功能</a> ·
   <a href="ARCHITECTURE.md">架构</a> ·
-  <a href="https://github.com/fancyboi999/open-tag/issues">Issues</a>
+  <a href="https://github.com/fancyboi999-bot/open-tag/issues">Issues</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/fancyboi999/open-tag/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/fancyboi999/open-tag/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/fancyboi999-bot/open-tag/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/fancyboi999-bot/open-tag/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://www.npmjs.com/package/@fancyboi999/open-tag-daemon"><img alt="npm" src="https://img.shields.io/npm/v/@fancyboi999/open-tag-daemon.svg?style=flat" /></a>
-  <a href="https://github.com/fancyboi999/open-tag/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/fancyboi999/open-tag?style=flat&color=111111" /></a>
+  <a href="https://github.com/fancyboi999-bot/open-tag/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/fancyboi999-bot/open-tag?style=flat&color=111111" /></a>
   <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat" /></a>
   <img alt="Self-hosted" src="https://img.shields.io/badge/deployment-self--hosted-16a34a?style=flat" />
   <img alt="Claude Code, Codex, Copilot" src="https://img.shields.io/badge/runtimes-Claude%20Code%20%7C%20Codex%20%7C%20Copilot-7c3aed?style=flat" />

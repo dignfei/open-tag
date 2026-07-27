@@ -22,11 +22,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fancyboi999/open-tag.git",
+    "url": "git+https://github.com/fancyboi999-bot/open-tag.git",
     "directory": "packages/daemon"
   },
-  "homepage": "https://github.com/fancyboi999/open-tag#readme",
-  "bugs": "https://github.com/fancyboi999/open-tag/issues",
+  "homepage": "https://github.com/fancyboi999-bot/open-tag#readme",
+  "bugs": "https://github.com/fancyboi999-bot/open-tag/issues",
   "publishConfig": {
     "access": "public"
   }

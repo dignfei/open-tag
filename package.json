@@ -6,13 +6,13 @@
   "description": "Open-source, self-hosted alternative to Claude Tag — a Slack-style workspace where humans and AI agents collaborate as teammates in channels, threads and DMs.",
   "license": "Apache-2.0",
   "author": "fancyboi999",
-  "homepage": "https://github.com/fancyboi999/open-tag#readme",
+  "homepage": "https://github.com/fancyboi999-bot/open-tag#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/fancyboi999/open-tag.git"
+    "url": "https://github.com/fancyboi999-bot/open-tag.git"
   },
   "bugs": {
-    "url": "https://github.com/fancyboi999/open-tag/issues"
+    "url": "https://github.com/fancyboi999-bot/open-tag/issues"
   },
   "keywords": [
     "ai",

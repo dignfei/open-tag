@@ -23,7 +23,7 @@
 
 [Unit]
 Description=open-tag control-plane server
-Documentation=https://github.com/fancyboi999/open-tag
+Documentation=https://github.com/fancyboi999-bot/open-tag
 After=network.target postgresql.service redis.service
 Wants=network.target
 
