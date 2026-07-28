@@ -9,6 +9,15 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-07-28
+
+### Fixed
+
+- **Windows missing-runtime admission**: resolve the real CLI through `cwd`, `PATH`, and
+  `PATHEXT` before handing `.cmd` shims to `cross-spawn`. A missing runtime now emits
+  ENOENT before any process-spawn admission, instead of briefly admitting the fallback
+  `cmd.exe` process and losing the Turn when it exits.
+
 ## [0.13.0] — 2026-07-27
 
 ### Fixed
