@@ -117,6 +117,40 @@ export const channelMembers = pgTable("channel_members", {
   threadDoneAt: timestamp("thread_done_at", { withTimezone: true }), // per-user thread done mark (thread done → removed from inbox). Always null for non-thread channels
 }, (t) => ({ pk: primaryKey({ columns: [t.channelId, t.memberType, t.memberId] }) }));
 
+// A Conversation Turn groups a short burst from one sender in one concrete channel context.
+// Visibility remains message-level; dispatch/ownership is claimed once per durable turn.
+export const conversationTurns = pgTable("conversation_turns", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  serverId: uuid("server_id").notNull().references(() => servers.id, { onDelete: "cascade" }),
+  channelId: uuid("channel_id").notNull().references(() => channels.id, { onDelete: "cascade" }),
+  senderType: text("sender_type").notNull(),      // user | agent
+  senderId: uuid("sender_id").notNull(),
+  anchorMessageId: uuid("anchor_message_id").notNull(),
+  triggerMessageId: uuid("trigger_message_id").notNull(),
+  latestMessageId: uuid("latest_message_id").notNull(),
+  firstSeq: bigint("first_seq", { mode: "number" }).notNull(),
+  lastSeq: bigint("last_seq", { mode: "number" }).notNull(),
+  boundaryKind: text("boundary_kind").default("ambient").notNull(), // ambient | direct | task | action
+  state: text("state").default("collecting").notNull(), // collecting | ready | dispatching | active | dispatched | blocked
+  dispatchAfter: timestamp("dispatch_after", { withTimezone: true }).notNull(),
+  dispatchLeaseUntil: timestamp("dispatch_lease_until", { withTimezone: true }),
+  dispatchAttempts: integer("dispatch_attempts").default(0).notNull(),
+  ownerAgentId: uuid("owner_agent_id").references(() => agents.id, { onDelete: "set null" }),
+  responsibilityState: text("responsibility_state").default("pending").notNull(), // pending | assigned | active | delivered | blocked | completed
+  causalRootId: uuid("causal_root_id").notNull(),
+  causalDepth: integer("causal_depth").default(0).notNull(),
+  agentWakeCount: integer("agent_wake_count").default(0).notNull(),
+  dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  byDispatch: index("conversation_turns_dispatch_idx").on(t.state, t.dispatchAfter),
+  bySenderContext: index("conversation_turns_sender_context_idx").on(t.serverId, t.channelId, t.senderType, t.senderId, t.createdAt),
+  collectingUniq: uniqueIndex("conversation_turns_collecting_uniq")
+    .on(t.serverId, t.channelId, t.senderType, t.senderId)
+    .where(sql`${t.state} = 'collecting'`),
+}));
+
 // ── Message (core; message-as-task) ─────────────────────────────────
 export const messages = pgTable("messages", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -129,6 +163,10 @@ export const messages = pgTable("messages", {
   messageType: text("message_type").default("text").notNull(), // text | action | system
   content: text("content").notNull(),
   actionMetadata: jsonb("action_metadata"),       // system / platform action payload
+  agentActivity: jsonb("agent_activity").$type<{ timestamp: number; kind: string; activity?: string | null; detail?: string | null; text?: string | null; toolName?: string | null; toolInput?: string | null }[]>().default([]).notNull(),
+  agentActivityStreamId: text("agent_activity_stream_id"), // reply stream/run that produced this message or receipt
+  agentActivityState: text("agent_activity_state"), // running | handled | error
+  conversationTurnId: uuid("conversation_turn_id").references(() => conversationTurns.id, { onDelete: "set null" }),
   threadId: uuid("thread_id"),                    // owning thread channel
   // —— Task fields (a message can be promoted to a task) ——
   taskStatus: text("task_status"),                // null | todo | in_progress | in_review | done | closed (claiming is tracked via taskAssigneeId/taskClaimedAt, not status value)
@@ -138,14 +176,40 @@ export const messages = pgTable("messages", {
   taskClaimedAt: timestamp("task_claimed_at", { withTimezone: true }),
   taskCompletedAt: timestamp("task_completed_at", { withTimezone: true }),
   searchText: text("search_text"),                // source text for full-text search (GIN to_tsvector index to be added later)
+  replyToMessageId: uuid("reply_to_message_id"),  // agent reply authorization trigger; null for independent messages
+  replyGrantSlot: text("reply_grant_slot"),       // primary | directed | supplemental; paired with replyToMessageId
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   bySeq: index("messages_server_seq_idx").on(t.serverId, t.seq),     // primary index for incremental sync
   byChannel: index("messages_channel_idx").on(t.channelId, t.seq),
+  byConversationTurn: index("messages_conversation_turn_idx").on(t.conversationTurnId, t.seq),
   // Agents cite 6-8 char short-id prefixes (core.ts resolveIdOrPrefix does `id::text LIKE 'prefix%'`);
   // the uuid pkey btree can't serve a text-cast prefix match, so without this the lookup is a seq scan.
   idTextPrefix: index("messages_id_text_prefix_idx").using("btree", sql`(${t.id}::text) text_pattern_ops`),
+  replySlotUniq: uniqueIndex("messages_reply_slot_budget_uniq").on(t.replyToMessageId, t.replyGrantSlot)
+    .where(sql`${t.replyToMessageId} is not null and ${t.replyGrantSlot} in ('primary', 'supplemental')`),
+  replyAgentUniq: uniqueIndex("messages_reply_agent_grant_uniq").on(t.replyToMessageId, t.senderId)
+    .where(sql`${t.replyToMessageId} is not null and ${t.replyGrantSlot} is not null and ${t.senderId} is not null`),
+}));
+
+// Auditable Agent-to-Agent work edges. Duplicate directed edges within one causal root are
+// recorded but do not wake the same target repeatedly; the root wake budget is enforced atomically.
+export const causalEdges = pgTable("causal_edges", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  serverId: uuid("server_id").notNull().references(() => servers.id, { onDelete: "cascade" }),
+  rootTurnId: uuid("root_turn_id").notNull().references(() => conversationTurns.id, { onDelete: "cascade" }),
+  parentTurnId: uuid("parent_turn_id").notNull().references(() => conversationTurns.id, { onDelete: "cascade" }),
+  sourceAgentId: uuid("source_agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  targetAgentId: uuid("target_agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  depth: integer("depth").notNull(),
+  outcome: text("outcome").notNull(), // accepted | duplicate | blocked_budget | blocked_depth
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  byRoot: index("causal_edges_root_idx").on(t.rootTurnId, t.createdAt),
+  acceptedPairUniq: uniqueIndex("causal_edges_accepted_pair_uniq")
+    .on(t.rootTurnId, t.sourceAgentId, t.targetAgentId)
+    .where(sql`${t.outcome} = 'accepted'`),
 }));
 
 // @mentions: separate table for efficient "messages that mention me = inbox" queries + frontend highlighting
@@ -157,6 +221,54 @@ export const messageMentions = pgTable("message_mentions", {
 }, (t) => ({
   pk: primaryKey({ columns: [t.messageId, t.mentionType, t.mentionId] }),
   byMention: index("mentions_target_idx").on(t.mentionType, t.mentionId),
+}));
+
+// One auditable observe/decide/grant row per agent recipient of an inbound message.
+// Slot uniqueness is the reply budget: one primary and one supplemental at most.
+// Directed grants are independently bounded by the (messageId, agentId) primary key.
+export const agentMessageDecisions = pgTable("agent_message_decisions", {
+  messageId: uuid("message_id").notNull().references(() => messages.id),
+  agentId: uuid("agent_id").notNull().references(() => agents.id),
+  serverId: uuid("server_id").notNull().references(() => servers.id),
+  channelId: uuid("channel_id").notNull().references(() => channels.id),
+  attention: text("attention").default("ambient").notNull(), // direct | dm | assigned | ambient
+  observedAt: timestamp("observed_at", { withTimezone: true }),
+  decision: text("decision").default("pending").notNull(), // pending | requested | accepted | no_action | delegated | abstained | denied | published
+  reasonCode: text("reason_code"),
+  summary: text("summary"),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  grantSlot: text("grant_slot"),                 // primary | directed | supplemental
+  grantStatus: text("grant_status").default("none").notNull(), // none | reserved | active | publishing | released | consumed
+  grantedAt: timestamp("granted_at", { withTimezone: true }),
+  delegatedByAgentId: uuid("delegated_by_agent_id").references(() => agents.id),
+  replyMessageId: uuid("reply_message_id").references(() => messages.id),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  ownerNotifiedAt: timestamp("owner_notified_at", { withTimezone: true }),
+  grantNotifiedAt: timestamp("grant_notified_at", { withTimezone: true }),
+  // Durable transport admission is separate from reply/publication state. A partial fan-out retry
+  // must never send work again to a recipient whose daemon already accepted this Turn.
+  deliveryAdmittedAt: timestamp("delivery_admitted_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.messageId, t.agentId] }),
+  byAgent: index("agent_message_decisions_agent_idx").on(t.agentId, t.createdAt),
+  slotUniq: uniqueIndex("agent_message_decisions_slot_budget_uniq").on(t.messageId, t.grantSlot)
+    .where(sql`${t.grantSlot} in ('primary', 'supplemental') and ${t.grantStatus} in ('reserved', 'active', 'publishing', 'consumed')`),
+  replyUniq: uniqueIndex("agent_message_decisions_reply_uniq").on(t.replyMessageId)
+    .where(sql`${t.replyMessageId} is not null`),
+}));
+
+// Message-grained read receipts are separate from canonical Turn decisions. This lets an agent
+// read a stable Turn across pagination/cursor gaps without either repeating or hiding members.
+export const agentMessageObservations = pgTable("agent_message_observations", {
+  messageId: uuid("message_id").notNull().references(() => messages.id, { onDelete: "cascade" }),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  serverId: uuid("server_id").notNull().references(() => servers.id, { onDelete: "cascade" }),
+  observedAt: timestamp("observed_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.messageId, t.agentId] }),
+  byAgent: index("agent_message_observations_agent_idx").on(t.agentId, t.observedAt),
 }));
 
 export const reactions = pgTable("reactions", {
@@ -224,7 +336,15 @@ export const agentActivityLog = pgTable("agent_activity_log", {
   text: text("text"),                                  // kind=text: model output
   toolName: text("tool_name"),                         // kind=tool_start
   toolInput: text("tool_input"),
-}, (t) => ({ byAgent: index("activity_agent_idx").on(t.agentId, t.ts) }));
+  channelId: uuid("channel_id").references(() => channels.id),
+  streamId: text("stream_id"),
+  runSeq: integer("run_seq"),                         // stable ordering within one reply stream
+  messageId: uuid("message_id").references(() => messages.id), // segment owner after a real message/receipt claims the row
+}, (t) => ({
+  byAgent: index("activity_agent_idx").on(t.agentId, t.ts),
+  byStream: index("activity_stream_idx").on(t.agentId, t.streamId, t.runSeq),
+  byMessage: index("activity_message_idx").on(t.messageId),
+}));
 
 // ── Sidebar preferences (GET/PUT /api/servers/:id/sidebar-order) ──
 // One row per user per server: pinned items, sort order, hidden DMs, etc., stored as jsonb.

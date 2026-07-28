@@ -4,12 +4,20 @@
 // Key to multi-tenant isolation: one machine connecting to multiple servers = multiple keys + multiple daemon processes; the server isolates by serverId so they never cross.
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
+import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY } from "../daemonProtocol.js";
+
+export { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY } from "../daemonProtocol.js";
 
 const daemons = new Map<WebSocket, string>(); // ws → the serverId this connection belongs to (registered by ws.ts after resolving the key)
 const machineConns = new Map<string, WebSocket>(); // machineId → ws, so a request can target ONE specific machine's daemon (not a serverId-wide broadcast)
+const daemonCapabilities = new Map<WebSocket, ReadonlySet<string>>();
 
 export function registerDaemon(ws: WebSocket, serverId: string): void { daemons.set(ws, serverId); }
-export function unregisterDaemon(ws: WebSocket): void { daemons.delete(ws); }
+export function unregisterDaemon(ws: WebSocket): void { daemons.delete(ws); daemonCapabilities.delete(ws); }
+export function registerDaemonCapabilities(ws: WebSocket, capabilities: unknown): void {
+  const values = Array.isArray(capabilities) ? capabilities.filter((value): value is string => typeof value === "string") : [];
+  daemonCapabilities.set(ws, new Set(values));
+}
 export function registerMachineConn(machineId: string, ws: WebSocket): void {
   const prev = machineConns.get(machineId);
   if (prev && prev !== ws) {
@@ -17,6 +25,7 @@ export function registerMachineConn(machineId: string, ws: WebSocket): void {
     // from the broadcast map and close it. Without this, broadcastToDaemons delivers agent:start / agent:deliver
     // to BOTH ws → each daemon spawns its own agent instance → double replies + double token spend.
     daemons.delete(prev);
+    daemonCapabilities.delete(prev);
     try { if (prev.readyState === 1) prev.close(); } catch { /* */ }
   }
   machineConns.set(machineId, ws);
@@ -29,6 +38,47 @@ export function isMachineConnected(machineId: string): boolean {
 }
 export function daemonCount(serverId: string): number {
   let n = 0; for (const sid of daemons.values()) if (sid === serverId) n++; return n;
+}
+
+/**
+ * Durable Turn delivery is safe only when the receiving daemon explicitly advertises that an
+ * ACK means runtime admission. This gate is intentionally separate from lifecycle and legacy
+ * message routing so a mixed-version rollout cannot silently weaken the new delivery contract.
+ */
+export function conversationTurnDeliveryBlockReason(serverId: string, machineId: string | null): string | null {
+  if (machineId) {
+    const ws = machineConns.get(machineId);
+    if (!ws || ws.readyState !== 1 || daemons.get(ws) !== serverId) return "machine offline";
+    if (!daemonCapabilities.get(ws)?.has(DELIVERY_ADMISSION_CAPABILITY)) {
+      return `daemon missing capability: ${DELIVERY_ADMISSION_CAPABILITY}`;
+    }
+    return null;
+  }
+
+  const connected = [...daemons].filter(([ws, sid]) => sid === serverId && ws.readyState === 1).map(([ws]) => ws);
+  if (connected.length !== 1) return `unbound durable delivery requires exactly one daemon (found ${connected.length})`;
+  if (!daemonCapabilities.get(connected[0]!)?.has(DELIVERY_ADMISSION_CAPABILITY)) {
+    return `daemon missing capability: ${DELIVERY_ADMISSION_CAPABILITY}`;
+  }
+  return null;
+}
+
+export function agentControlBlockReason(serverId: string, machineId: string | null): string | null {
+  if (machineId) {
+    const ws = machineConns.get(machineId);
+    if (!ws || ws.readyState !== 1 || daemons.get(ws) !== serverId) return "machine offline";
+    if (!daemonCapabilities.get(ws)?.has(AGENT_CONTROL_ACK_CAPABILITY)) {
+      return `daemon missing capability: ${AGENT_CONTROL_ACK_CAPABILITY}`;
+    }
+    return null;
+  }
+
+  const connected = [...daemons].filter(([ws, sid]) => sid === serverId && ws.readyState === 1).map(([ws]) => ws);
+  if (connected.length !== 1) return `unbound agent control requires exactly one daemon (found ${connected.length})`;
+  if (!daemonCapabilities.get(connected[0]!)?.has(AGENT_CONTROL_ACK_CAPABILITY)) {
+    return `daemon missing capability: ${AGENT_CONTROL_ACK_CAPABILITY}`;
+  }
+  return null;
 }
 
 export function broadcastToDaemons(serverId: string, msg: unknown): void {
@@ -48,12 +98,12 @@ export function sendToMachine(machineId: string, msg: unknown): boolean {
 
 // ── WS-RPC: send a request to this server's daemon and await the response carrying the same requestId (file tree/file content, etc.) ──
 const pending = new Map<string, { resolve: (v: any) => void; timer: ReturnType<typeof setTimeout>; single?: boolean; nack?: { error?: string } }>();
-export function requestDaemon(serverId: string, msg: Record<string, unknown>, timeoutMs = 6000): Promise<any> {
+export function requestDaemon(serverId: string, msg: Record<string, unknown>, timeoutMs = 6000, singleResponse = false): Promise<any> {
   if (daemonCount(serverId) === 0) return Promise.resolve({ error: "no daemon online" });
   const requestId = randomUUID();
   return new Promise((resolve) => {
     const timer = setTimeout(() => { const p = pending.get(requestId); pending.delete(requestId); resolve({ error: p?.nack?.error ?? "daemon timeout" }); }, timeoutMs);
-    pending.set(requestId, { resolve, timer });
+    pending.set(requestId, { resolve, timer, single: singleResponse });
     broadcastToDaemons(serverId, { ...msg, requestId }); // if several machines on the same server receive it, resolveDaemonRequest keeps the first to arrive by requestId
   });
 }

@@ -14,7 +14,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
-import type { Runtime, StartOpts, RuntimeCallbacks, RuntimeSession, TrajectoryEntry } from "./runtime.js";
+import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -83,16 +83,21 @@ function buildArgs(message: string, opts: StartOpts, sessionId: string | null): 
 
 // OpencodeRun owns the serial turn queue for one agent (mirrors codex/copilot's queue/pump), but each
 // turn is a fresh one-shot `opencode run` process resumed by the captured session id.
+interface OpencodeInput { text: string; initial: boolean; admission: ProtocolAdmission }
+
 class OpencodeRun {
-  private queue: string[] = [];
+  private queue: OpencodeInput[] = [];
   private turnBusy = false;
   private stopped = false;
   proc: ChildProcess | null = null;
   private sessionId: string | null;
   private everSucceeded = false;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly admission: ReturnType<typeof initialTurnAdmission>;
+  private currentInput: OpencodeInput | null = null;
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
+    this.admission = initialTurnAdmission(cb);
     this.sessionId = opts.sessionId ?? null; // resume an existing session, or null = let opencode create one
     // Strip NODE_OPTIONS (a proxy flag can make the bundled CLI refuse to start) and pin PWD — opencode
     // uses PWD (not just cwd) to anchor its AGENTS.md / project discovery.
@@ -101,23 +106,35 @@ class OpencodeRun {
     try { writeFileSync(path.join(opts.cwd, "AGENTS.md"), opts.systemPrompt); }
     catch (e) { cb.log.warn("opencode: AGENTS.md write failed", { detail: String(e) }); }
     if (this.sessionId) cb.onSession(this.sessionId);
-    this.enqueue(opts.initialPrompt);
+    void this.enqueue(opts.initialPrompt, true).catch(() => {});
   }
 
-  enqueue(text: string): void { if (this.stopped) return; this.queue.push(text); this.pump(); }
+  enqueue(text: string, initial = false): Promise<void> {
+    const input: OpencodeInput = { text, initial, admission: protocolAdmission() };
+    if (this.stopped) input.admission.reject(new Error("opencode stopped before input admission"));
+    else { this.queue.push(input); this.pump(); }
+    return input.admission.promise;
+  }
 
   private pump(): void {
     if (this.stopped || this.turnBusy || this.queue.length === 0) return;
     this.runTurn(this.queue.shift()!);
   }
 
-  private runTurn(message: string): void {
+  private rejectQueue(error: Error): void {
+    for (const input of this.queue.splice(0)) input.admission.reject(error);
+  }
+
+  private runTurn(input: OpencodeInput): void {
+    this.currentInput = input;
+    const message = input.text;
     this.turnBusy = true;
     this.cb.onActivity("working", "turn");
     const args = buildArgs(message, this.opts, this.sessionId);
     // stdin "ignore" is mandatory: a piped stdin makes `opencode run` block forever (see file header).
     const proc = spawnSafe("opencode", args, { cwd: this.opts.cwd, stdio: ["ignore", "pipe", "pipe"], env: this.env });
     this.proc = proc;
+    proc.once("spawn", () => { input.admission.accept(); if (input.initial) this.admission.accept(); });
     let buf = "";
     const errTail: string[] = [];
     let errLen = 0;
@@ -143,26 +160,33 @@ class OpencodeRun {
       while (errLen > 4096 && errTail.length > 1) errLen -= errTail.shift()!.length;
     });
     proc.on("error", (e) => {
+      input.admission.reject(e);
+      if (input.initial) this.admission.reject(e);
+      if (this.currentInput === input) this.currentInput = null;
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
       this.cb.log.error("opencode spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "opencode not found");
-      if (!this.everSucceeded) this.cb.onExit(1); else this.pump();
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); } else this.pump();
     });
     proc.on("exit", (code) => {
       if (buf.trim()) processLine(buf); buf = "";
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
+      if (this.currentInput === input) this.currentInput = null;
       if (code === 0) { this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return; }
       const tail = errTail.join("").trim();
       const last = tail.split("\n").filter(Boolean).pop() || `opencode exited ${code ?? "signal"}`;
       this.cb.onTrajectory([{ kind: "text", text: "[opencode error] " + clip(tail).slice(0, 500) }]);
       this.cb.onActivity("error", last.slice(0, 200));
-      if (!this.everSucceeded) { this.cb.onExit(code ?? 1); return; } // first-turn hard failure → crashed
+      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.cb.onExit(code ?? 1); return; } // first-turn hard failure → crashed
       this.pump(); // later-turn failure → keep the session alive so the next message can retry
     });
   }
 
   stop(): void {
     this.stopped = true;
+    const error = new Error("opencode stopped before input admission");
+    this.currentInput?.admission.reject(error); this.currentInput = null;
+    this.rejectQueue(error);
     const p = this.proc; this.proc = null;
     if (p) { killTree(p); }
   }

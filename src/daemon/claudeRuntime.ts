@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
-import type { Runtime, StartOpts, RuntimeCallbacks, RuntimeSession, TrajectoryEntry } from "./runtime.js";
+import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -58,6 +58,8 @@ export const claudeRuntime: Runtime = {
     });
 
     const proc = spawnSafe("claude", args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], env: opts.env });
+    const admission = initialTurnAdmission(cb);
+    const pendingWrites = new Set<ProtocolAdmission>();
     let sessionId = opts.sessionId ?? null;
     let finished = false;
     const finish = (code: number | null) => {
@@ -65,11 +67,28 @@ export const claudeRuntime: Runtime = {
       finished = true;
       cb.onExit(code);
     };
-    const writeUser = (text: string) => {
+    const writeUser = (text: string): Promise<void> => {
+      const input = protocolAdmission();
+      pendingWrites.add(input);
       const m = { type: "user", message: { role: "user", content: [{ type: "text", text }] }, ...(sessionId ? { session_id: sessionId } : {}) };
-      try { proc.stdin?.write(JSON.stringify(m) + "\n"); } catch { /* */ }
+      try {
+        if (!proc.stdin) throw new Error("claude stdin unavailable");
+        proc.stdin.write(JSON.stringify(m) + "\n", (error) => {
+          pendingWrites.delete(input);
+          if (error) input.reject(error);
+          else input.accept();
+        });
+      } catch (error) {
+        pendingWrites.delete(input);
+        input.reject(error);
+      }
+      return input.promise;
     };
-    writeUser(opts.initialPrompt);
+    void writeUser(opts.initialPrompt).then(() => admission.accept(), (error) => admission.reject(error));
+    const rejectPendingWrites = (error: Error) => {
+      for (const input of pendingWrites) input.reject(error);
+      pendingWrites.clear();
+    };
 
     let buf = "";
     proc.stdout?.on("data", (c: Buffer) => {
@@ -78,11 +97,18 @@ export const claudeRuntime: Runtime = {
     });
     proc.stderr?.on("data", (c: Buffer) => { const t = c.toString().trim(); if (t) cb.log.debug("claude stderr", { t: t.slice(0, 300) }); });
     proc.on("error", (e) => {
+      admission.reject(e);
+      rejectPendingWrites(e);
       cb.log.error("claude spawn failed", { detail: String((e as any)?.message ?? e) });
       cb.onActivity("offline", "claude not found");
       finish(1);
     });
-    proc.on("exit", (code) => finish(code));
+    proc.on("exit", (code) => {
+      const error = new Error(`claude exited before input admission (${code ?? "signal"})`);
+      admission.reject(error);
+      rejectPendingWrites(error);
+      finish(code);
+    });
 
     function parseLine(line: string) {
       let e: any; try { e = JSON.parse(line); } catch { return; }

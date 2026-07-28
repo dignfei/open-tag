@@ -69,14 +69,15 @@ function ShowcaseMsg({ line, task, attachment, replyCount, onOpenThread }: {
 }) {
   const { t } = useTranslation();
   const isYou = line.agent === null;
-  const senderName = isYou ? "you" : line.agent!;
+  const senderName = isYou ? "you" : line.agent!; // stays "you" as the avatar seed — the seed must not change with the locale
+  const displayName = isYou ? t("showcase.you") : line.agent!;
   const { role, title } = isYou ? { role: "", title: "" } : roleOf(senderName);
   return (
     <div className="msg">
       <Avatar seed={senderName} size={36} />
       <div className="msg-col">
         <div className="msg-head">
-          <span className="who" title={title || undefined}>{senderName}</span>
+          <span className="who" title={title || undefined}>{displayName}</span>
           {role ? <span className="msg-role" title={title}>{role}</span> : <span className="member-badge">{t("chat.memberKind")}</span>}
         </div>
         {!!line.content && <div className="mbody"><MessageContent content={line.content} mentions={[]} channels={[]} nav={noNav} /></div>}
@@ -131,7 +132,7 @@ export function Showcase() {
     <>
       <ChatSidebar />
       {/* Flex row: the channel column + (when a pill is clicked) the thread panel. The showcase route is not
-          a /channel path, so the app shell never gets has-traj's 4th grid column — this wrapper IS the single
+          a /channel path, so the app shell never opens a contextual 4th grid column — this wrapper IS the single
           grid cell and lays its own "main + thread" columns out, so a closed thread leaves no empty strip. */}
       <div className="showcase-shell">
         <main className="content-col">

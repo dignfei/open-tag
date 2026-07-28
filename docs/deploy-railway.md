@@ -45,7 +45,7 @@ The server reads `PORT` from the environment (line 18 in `src/server/index.ts`:
 no Dockerfile change is needed.
 
 Container startup sequence (from `scripts/docker-entrypoint.sh`):
-1. `npx drizzle-kit push` — applies additive schema migrations (fails loud if destructive changes would occur — container refuses to start rather than silently destroying data).
+1. `npm run db:push` — applies the idempotent reply-index predicate migration, then additive schema changes with Drizzle Kit (fails loud if destructive changes would occur).
 2. `npx tsx src/db/seed.ts` — seeds the default workspace (idempotent; skips if present).
 3. `exec npx tsx src/server/index.ts` — starts the server.
 

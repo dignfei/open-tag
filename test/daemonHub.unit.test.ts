@@ -5,7 +5,7 @@
 // Run: npx tsx --test test/daemonHub.unit.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registerDaemon, unregisterDaemon, registerMachineConn, unregisterMachineConn, broadcastToDaemons, isMachineConnected, sendToMachine, requestDaemon, requestDaemonByMachine, resolveDaemonRequest } from "../src/server/daemonHub.js";
+import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, agentControlBlockReason, conversationTurnDeliveryBlockReason, registerDaemon, registerDaemonCapabilities, unregisterDaemon, registerMachineConn, unregisterMachineConn, broadcastToDaemons, isMachineConnected, sendToMachine, requestDaemon, requestDaemonByMachine, resolveDaemonRequest } from "../src/server/daemonHub.js";
 
 // Minimal fake ws: readyState=OPEN(1), counts sends + close.
 function fakeWs(): any {
@@ -66,6 +66,89 @@ test("machine-targeted send only reaches the selected connected machine", () => 
 
   unregisterDaemon(wsA);
   unregisterDaemon(wsB); unregisterMachineConn(wsB);
+});
+
+test("bound durable delivery requires capability and an old daemon receives zero Turn frames", () => {
+  const sid = "s-cap-bound-" + Math.random().toString(36).slice(2);
+  const oldWs = fakeWs();
+  registerDaemon(oldWs, sid);
+  registerDaemonCapabilities(oldWs, ["agent:deliver"]);
+  registerMachineConn("m-cap-old", oldWs);
+
+  const reason = conversationTurnDeliveryBlockReason(sid, "m-cap-old");
+  assert.match(reason ?? "", /delivery-admission-v2/);
+  if (!reason) sendToMachine("m-cap-old", { type: "agent:deliver", turnId: "should-not-send" });
+  assert.equal(oldWs.sends, 0, "the gate runs before agent:start or agent:deliver");
+
+  registerDaemonCapabilities(oldWs, ["agent:deliver", DELIVERY_ADMISSION_CAPABILITY]);
+  assert.equal(conversationTurnDeliveryBlockReason(sid, "m-cap-old"), null);
+  unregisterDaemon(oldWs); unregisterMachineConn(oldWs);
+});
+
+test("unbound durable delivery requires exactly one capable daemon", () => {
+  const sid = "s-cap-unbound-" + Math.random().toString(36).slice(2);
+  assert.match(conversationTurnDeliveryBlockReason(sid, null) ?? "", /exactly one daemon \(found 0\)/);
+
+  const ws1 = fakeWs();
+  registerDaemon(ws1, sid); registerDaemonCapabilities(ws1, []);
+  assert.match(conversationTurnDeliveryBlockReason(sid, null) ?? "", /delivery-admission-v2/);
+  registerDaemonCapabilities(ws1, [DELIVERY_ADMISSION_CAPABILITY]);
+  assert.equal(conversationTurnDeliveryBlockReason(sid, null), null);
+
+  const ws2 = fakeWs();
+  registerDaemon(ws2, sid); registerDaemonCapabilities(ws2, [DELIVERY_ADMISSION_CAPABILITY]);
+  assert.match(conversationTurnDeliveryBlockReason(sid, null) ?? "", /exactly one daemon \(found 2\)/);
+  unregisterDaemon(ws1); unregisterDaemon(ws2);
+});
+
+test("replaced machine connection cannot retain or erase the current capability state", () => {
+  const sid = "s-cap-replace-" + Math.random().toString(36).slice(2);
+  const oldWs = fakeWs(), currentWs = fakeWs();
+  registerDaemon(oldWs, sid); registerDaemonCapabilities(oldWs, [DELIVERY_ADMISSION_CAPABILITY]); registerMachineConn("m-cap-replace", oldWs);
+  registerDaemon(currentWs, sid); registerDaemonCapabilities(currentWs, []); registerMachineConn("m-cap-replace", currentWs);
+  assert.equal(oldWs.closed, true);
+  assert.match(conversationTurnDeliveryBlockReason(sid, "m-cap-replace") ?? "", /delivery-admission-v2/, "replacement uses only the current connection's capabilities");
+
+  unregisterDaemon(oldWs); unregisterMachineConn(oldWs);
+  assert.match(conversationTurnDeliveryBlockReason(sid, "m-cap-replace") ?? "", /delivery-admission-v2/, "stale close cleanup must not remove the current connection");
+  registerDaemonCapabilities(currentWs, [DELIVERY_ADMISSION_CAPABILITY]);
+  assert.equal(conversationTurnDeliveryBlockReason(sid, "m-cap-replace"), null);
+  unregisterDaemon(currentWs); unregisterMachineConn(currentWs);
+  assert.equal(isMachineConnected("m-cap-replace"), false);
+});
+
+test("agent control requires completion ACK capability before sending lifecycle RPCs", () => {
+  const sid = "s-control-cap-" + Math.random().toString(36).slice(2);
+  const ws = fakeWs();
+  registerDaemon(ws, sid);
+  registerMachineConn("m-control-cap", ws);
+  registerDaemonCapabilities(ws, ["agent:reset"]);
+  assert.match(agentControlBlockReason(sid, "m-control-cap") ?? "", /agent-control-ack-v1/);
+
+  registerDaemonCapabilities(ws, ["agent:reset", AGENT_CONTROL_ACK_CAPABILITY]);
+  assert.equal(agentControlBlockReason(sid, "m-control-cap"), null);
+  unregisterDaemon(ws); unregisterMachineConn(ws);
+});
+
+test("single-daemon lifecycle RPC remains pending until completion ACK and fails immediately on NACK", async () => {
+  const sid = "s-control-rpc-" + Math.random().toString(36).slice(2);
+  const ws = fakeWs();
+  registerDaemon(ws, sid); registerMachineConn("m-control-rpc", ws);
+
+  let settled = false;
+  const reset = requestDaemon(sid, { type: "agent:reset", agentId: "a-control" }, 5_000, true).then((value) => { settled = true; return value; });
+  const resetRequestId = sentRequestId(ws);
+  await Promise.resolve();
+  assert.equal(settled, false, "websocket send alone must not count as reset completion");
+  resolveDaemonRequest(resetRequestId, { type: "rpc:ack", requestId: resetRequestId });
+  assert.equal((await reset).type, "rpc:ack");
+
+  ws.sent.length = 0;
+  const failed = requestDaemon(sid, { type: "agent:reset", agentId: "a-control" }, 5_000, true);
+  const failedRequestId = sentRequestId(ws);
+  resolveDaemonRequest(failedRequestId, { type: "rpc:nack", requestId: failedRequestId, error: "workspace wipe failed" });
+  assert.match((await failed).error, /workspace wipe failed/);
+  unregisterDaemon(ws); unregisterMachineConn(ws);
 });
 
 // ── rpc:nack semantics (tech-debt I88): a NACK from an outdated daemon must not win a broadcast race

@@ -6,7 +6,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { buildClaudeArgs } from "./claudeRuntime.js";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { buildClaudeArgs, claudeRuntime } from "./claudeRuntime.js";
+
+const PATH_KEY = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 
 const BASE = (promptFlag: string[] = ["--append-system-prompt", "SP"]) =>
   buildClaudeArgs({ promptFileFlag: promptFlag });
@@ -64,4 +68,31 @@ test("spawn errors are handled so a missing claude CLI does not crash the daemon
   assert.match(src, /cb\.log\.error\("claude spawn failed"/, "spawn failures should be logged for operators");
   assert.match(src, /cb\.onActivity\("offline", "claude not found"\)/, "missing claude CLI should surface as offline activity");
   assert.match(src, /finish\(1\)/, "spawn failure should terminate only this runtime session");
+});
+
+test("stdin runtime rejects initial admission exactly once when Claude cannot spawn", async () => {
+  const root = fs.mkdtempSync(path.join(tmpdir(), "open-tag-claude-missing-"));
+  const admissions: Array<Error | undefined> = [];
+  let session: ReturnType<typeof claudeRuntime.start> | undefined;
+  try {
+    session = claudeRuntime.start({ cwd: root, env: { [PATH_KEY]: root }, systemPrompt: "system", initialPrompt: "start" }, {
+      onSession: () => {},
+      onInitialTurnAdmission: (error) => admissions.push(error),
+      onActivity: () => {},
+      onTrajectory: () => {},
+      onExit: () => {},
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+    });
+    const runningDelivery = assert.rejects(session.deliver("queued after initial input"));
+    const deadline = Date.now() + 1_000;
+    while (admissions.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(admissions.length, 1);
+    assert.ok(admissions[0] instanceof Error);
+    await runningDelivery;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(admissions.length, 1);
+  } finally {
+    session?.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -1,8 +1,10 @@
 // Date/time formatting helpers (no React deps, so they're unit-testable in isolation).
+import i18n from "./i18n";
+
 export const fmtDateTime = (iso?: string): string => {
   try {
     return iso
-      ? new Date(iso).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+      ? new Date(iso).toLocaleString(i18n.language === "zh" ? "zh-CN" : "en-US", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
       : "";
   } catch { return ""; }
 };

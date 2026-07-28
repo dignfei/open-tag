@@ -5,6 +5,7 @@ import fs from "node:fs";
 const wsSrc = fs.readFileSync(new URL("../src/server/ws.ts", import.meta.url), "utf8");
 const socketSrc = fs.readFileSync(new URL("../src/server/socketio.ts", import.meta.url), "utf8");
 const coreSrc = fs.readFileSync(new URL("../src/server/core.ts", import.meta.url), "utf8");
+const turnDispatchSrc = fs.readFileSync(new URL("../src/server/conversationTurnDispatch.ts", import.meta.url), "utf8");
 
 test("agent activity detail is forwarded to the UI activity signal", () => {
   assert.match(
@@ -21,23 +22,23 @@ test("agent activity detail is forwarded to the UI activity signal", () => {
 
 test("agent wake delivery handles machine send failure after preview start", () => {
   assert.match(
-    coreSrc,
-    /const startSent = sendAgentStart\(opts\.serverId, target, mem\.id\);/,
+    turnDispatchSrc,
+    /const startSent = deps\.sendAgentStart\(input\.serverId, target, input\.member\.id\);/,
     "message wake should check whether agent:start was actually sent",
   );
   assert.match(
-    coreSrc,
-    /const deliverSent = startSent && sendAgentDeliver\(opts\.serverId, target, \{ agentId: mem\.id,/,
+    turnDispatchSrc,
+    /deliverSent = startSent && deps\.sendAgentDeliver\(input\.serverId, target, \{/,
     "message wake should only deliver after a successful start send",
   );
   assert.match(
-    coreSrc,
-    /if \(!deliverSent\) \{[\s\S]*?op: "error", text: "machine offline"[\s\S]*?await markAgentUnavailable\(opts\.serverId, mem\.id, "machine offline"\);[\s\S]*?continue;/,
+    turnDispatchSrc,
+    /if \(deliverSent\) \{[\s\S]*?return "delivered";[\s\S]*?op: "error",[\s\S]*?text: "machine offline",[\s\S]*?await deps\.markAgentUnavailable\(input\.serverId, input\.member\.id, "machine offline"\);[\s\S]*?return "retryable_failure";/,
     "send failure should mark the agent unavailable and close the preview instead of leaving a stuck thinking card",
   );
 });
 
-test("agent lifecycle control targets bound machines and preserves unbound broadcast fallback", () => {
+test("agent lifecycle control awaits bound-machine ACK and preserves unbound fallback", () => {
   assert.match(
     coreSrc,
     /async function agentControlTarget\(serverId: string, agentId: string\)/,
@@ -45,8 +46,8 @@ test("agent lifecycle control targets bound machines and preserves unbound broad
   );
   assert.match(
     coreSrc,
-    /function sendAgentControl\(serverId: string, target: AgentControlTarget, msg: Record<string, unknown>\): boolean \{[\s\S]*?if \(target\.machineId\) return sendToMachine\(target\.machineId, msg\);[\s\S]*?broadcastToDaemons\(serverId, msg\);[\s\S]*?return true;/,
-    "lifecycle controls should use one helper that targets bound agents and broadcasts legacy unbound agents",
+    /async function requestAgentControl\(serverId: string, target: AgentControlTarget, msg: Record<string, unknown>\): Promise<AgentControlResult> \{[\s\S]*?requestDaemonByMachine\(target\.machineId, msg, 30_000\)[\s\S]*?requestDaemon\(serverId, msg, 30_000, true\)[\s\S]*?response\?\.type !== "rpc:ack"/,
+    "settled lifecycle controls should await one bound machine or the legacy unbound broadcast RPC",
   );
   assert.match(
     coreSrc,
@@ -55,13 +56,13 @@ test("agent lifecycle control targets bound machines and preserves unbound broad
   );
   assert.match(
     coreSrc,
-    /sendAgentControl\(serverId, target, \{ type: "agent:stop", agentId \}\)/,
-    "stop should target the bound machine daemon",
+    /await requestAgentControl\(serverId, target, \{ type: "agent:stop", agentId \}\)/,
+    "stop should await the bound machine daemon",
   );
   assert.match(
     coreSrc,
-    /sendAgentControl\(serverId, target, \{ type: "agent:reset", agentId, wipeWorkspace, clearMemory \}\)/,
-    "reset should target the bound machine daemon",
+    /await requestAgentControl\(serverId, target, \{ type: "agent:reset", agentId, wipeWorkspace, clearMemory \}\)/,
+    "reset should await the bound machine daemon",
   );
   assert.match(
     coreSrc,

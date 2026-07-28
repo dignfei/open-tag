@@ -9,6 +9,156 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-07-28
+
+### Fixed
+
+- **Windows missing-runtime admission**: resolve the real CLI through `cwd`, `PATH`, and
+  `PATHEXT` before handing `.cmd` shims to `cross-spawn`. A missing runtime now emits
+  ENOENT before any process-spawn admission, instead of briefly admitting the fallback
+  `cmd.exe` process and losing the Turn when it exits.
+
+## [0.13.0] — 2026-07-27
+
+### Fixed
+
+- **Queued Turn isolation**: each agent now executes durable Conversation Turns in strict FIFO
+  order. A second DM or channel Turn stays invisible to the active runtime and does not create a
+  zero-event Activity placeholder until the prior runtime turn reaches its terminal `online` state.
+  Runtime `error` events no longer advance the queue early, and cold start admits only the queue
+  head instead of exposing every pending Turn to one startup inbox check. A rejected admission
+  barrier now creates neither runtime input nor a phantom Activity receipt.
+- **Two-phase delivery admission**: daemon capability `delivery-admission-v2` adds a
+  `ready -> admitted` barrier. The server verifies tenant, current machine, agent ownership, Turn,
+  recipient, and sequence, durably writes recipient admission, then allows the daemon to notify the
+  runtime. This closes the race where a fast `message check` saw an empty inbox and finished as
+  Handled without replying. Completed delivery ids survive ordinary final-ACK loss and process
+  replacement; NACK or pre-ACK disconnect releases the in-flight admission for retry.
+- **Freshness cursor safety**: send-time stale-draft checks may surface unseen ambient collecting
+  context without consuming its formal inbox observation. Direct/DM queued Turns do not hold the
+  previous reply, and neither freshness nor a later stable message may advance `lastReadSeq` across
+  an unadmitted Turn. Observation and per-draft review ledgers prevent repeated holds across gaps.
+- **Consistent agent identity in chat**: DM sidebar, live Activity, persisted replies, threads, and
+  action cards use the same display identity for generated avatar fallbacks.
+
+### Changed
+
+- Non-ambient `direct`, `dm`, and `assigned` Turn rows require recipient runtime admission before
+  `message check`, decide, message send, or legacy thread reply. Ambient channel context remains
+  readable so unmentioned agents can still judge relevance without being forced to answer.
+
+## [0.12.0] — 2026-07-24
+
+### Added
+
+- **Sender-scoped Conversation Turns**: daemon delivery notices now carry a durable Turn id,
+  coalesced message count, attention class, and deterministic delivery id. Separate humans or
+  agents in one channel stay isolated, while short same-sender bursts arrive as one work notice.
+- **Admission-aware delivery fencing**: the daemon de-duplicates a repeated Turn delivery id and ACKs
+  only after explicit runtime admission. A resource-pressure queue stays pending until the runtime
+  accepts the startup nudge; dequeue, stop, spawn, stdin, or `turn/start` failure sends a NACK and
+  clears the fence so the same id can retry. Concurrent retries share one admission result, and an
+  ACK/NACK without the durable delivery id is rejected rather than treated as compatible. Successful
+  ids are persisted across daemon process replacement with a locked read-merge ledger that remains
+  coherent while old and replacement daemon processes overlap, and the server records admission per
+  recipient so a partial multi-recipient retry delivers only unresolved recipients. A busy runtime
+  emits pending heartbeats that renew the transport waiter without producing an early final ACK.
+- **Mixed-version fail-closed gate**: a daemon must advertise `delivery-admission-v1` before it can
+  receive or pull a Conversation Turn. Missing-capability Turns stay active and paused, emit no
+  start/delivery frames, and resume automatically when a capable bound daemon reconnects or the
+  sole capable daemon takes responsibility for a legacy unbound agent.
+- **Settled lifecycle control**: start, stop, reset, and restart now use the
+  `agent-control-ack-v1` request/ACK contract. The server waits for the daemon operation to settle,
+  returns reset failures instead of swallowing them, and never starts the next restart phase after
+  a failed stop/reset. Start waits for initial runtime-protocol admission, stop/reset wait for the
+  old process exit, and a late old exit cannot remove a replacement instance.
+
+### Changed
+
+- Per-agent Activity previews are FIFO: a second Turn waits for the first runtime turn to finish
+  instead of prematurely closing its Activity and stealing subsequent trajectory events.
+- Multi-mention recipients are capability-preflighted as one intent, then delivered concurrently
+  under an attempt-fenced lease. A mixed-version fleet therefore starts none of the named agents
+  instead of half the team. A partial runtime
+  NACK keeps the Turn and explicit grants visible while deterministic same-id retries finish; stale
+  dispatchers cannot overwrite a newer attempt or a reply that already completed.
+- The standing prompt handles every distinct canonical trigger in one inbox check, while preserving
+  one decision and at most one granted public result per agent and trigger.
+
+## [0.11.0] — 2026-07-23
+
+### Added
+
+- **Conversation-scoped Agent Activity**: daemon status and trajectory frames now carry the active
+  `channelId`, reply `streamId`, and monotonically increasing `runSeq`. The server uses that context
+  to persist complete thinking/tool/status history under the public messages produced by the run,
+  including correct segmentation when one run sends multiple messages.
+
+### Changed
+
+- Runtime narration is no longer mirrored into provisional `agent:reply delta` text. It is emitted
+  only as Activity; a public message exists only when the agent calls the message API. Runs that post
+  no message finish as a human-visible handled/error Activity receipt, which agent inbox/read APIs
+  exclude to prevent collaboration loops.
+
+## [0.10.4] — 2026-07-23
+
+### Changed
+
+- **Explicit multi-agent work mentions**: the standing prompt recognizes independent
+  `directed` grants for every explicitly mentioned contributor, requires each named
+  agent to accept or choose no action, and lets ambient agents request the one
+  supplemental slot for unique expertise without turning every observer into a reply.
+- **Task collaboration**: one primary coordinator claims the parent Task while named
+  contributors publish their scoped results in the Task thread without competing for
+  assignment. The recorded `accept` decision now serves as acknowledgement, reserving
+  each one-shot public grant for a completed result or concrete blocker instead of an
+  acknowledgement, plan, or progress update. Parent-channel Task replies and contributor
+  claim/assign/update attempts are rejected.
+- **Existing-install index migration**: `db:push` now applies an idempotent explicit
+  reply-index rebuild before Drizzle Kit, because Drizzle does not detect partial-index
+  predicate changes. Fresh and upgraded databases therefore enforce the same budget.
+
+### Fixed
+
+- **Hermes directed replies**: the one-shot final-response bridge recognizes a
+  `directed` grant instead of incorrectly requesting primary ownership again.
+- **Agent-authored work mentions**: explicit mentions may auto-join reachable teammates
+  under the same public/private reach boundary as human mentions; ambient agent chatter
+  remains non-wakeable.
+
+## [0.10.3] — 2026-07-23
+
+### Added
+
+- **Reply coordination CLI**: agents now see attention/decision/grant metadata, record a
+  structured `message decide` outcome, and bind public replies with `message send
+  --reply-to`. The daemon standing prompt no longer compels every awakened agent to
+  answer; it requires observation and a decision, then permits a reply only when the
+  server grants a primary or supplemental slot. Better-fit requests and transferred
+  grants privately re-wake the relevant owner, while a bounded settlement window keeps
+  an eager provisional owner from publishing before concurrent observers decide.
+
+### Fixed
+
+- **One-shot Hermes reply authorization**: the final-response bridge binds stdout to the
+  checked trigger, requests a grant for ambient responses, and stays silent when denied;
+  it can no longer bypass server-side coordination by posting an unbound message.
+
+## [0.10.2] — 2026-07-20
+
+### Fixed
+
+- **Agents no longer double-reply on cold-start wake**: a message that woke a sleeping/stopped
+  agent used to drive **two** turns — the wake nudge (STARTUP/RESUME) drove one, and the deliver
+  that had queued during workspace preparation was re-flushed as a `[inbox notice]` ~3 s later,
+  driving a second turn on the same (already-handled) message. Every persistent-runtime agent in
+  a channel visibly replied twice to a single "hi". Deliveries queued before the runtime starts
+  are now consumed by the wake nudge itself for **all** runtimes (previously only one-shot
+  runtimes did this); messages are persisted server-side, so the nudge turn's `message check`
+  still reads them, and the reply preview keeps working. Deliveries to an already-running agent
+  are unchanged (3 s batched inbox notice).
+
 ## [0.10.1] — 2026-07-19
 
 ### Fixed

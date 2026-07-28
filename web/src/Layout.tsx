@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent as RMouseEvent } from "react";
+import { useEffect, useState, type Dispatch, type MouseEvent as RMouseEvent, type SetStateAction } from "react";
 import { Outlet, useLocation, useParams, useNavigate } from "react-router-dom";
 import { IconSearch, IconChat, IconTasks, IconUsers, IconMonitor, IconSettings, IconInbox } from "./icons.tsx";
 import { useStore } from "./store.tsx";
@@ -17,6 +17,8 @@ const SECTIONS = [
   { key: "computer", Icon: IconMonitor, labelKey: "nav.computers" },
 ];
 
+export interface LayoutOutletContext { setChatPanelOpen: Dispatch<SetStateAction<boolean>> }
+
 export function Layout() {
   const loc = useLocation();
   const { server } = useParams();
@@ -24,6 +26,7 @@ export function Layout() {
   const { unread } = useStore();
   const { t } = useTranslation();
   const [showQS, setShowQS] = useState(false);
+  const [chatPanelOpen, setChatPanelOpen] = useState(false);
   const allAlerts = useSystemAlerts();
   const [dismissed, setDismissed] = useState<Set<string>>(new Set()); // session-dismissed alert ids (cleared on reload — alerts re-derive from live state)
   const [alertAnchor, setAlertAnchor] = useState<{ left: number; bottom: number } | null>(null); // notification popover anchor (fixed pos); null = closed
@@ -48,28 +51,28 @@ export function Layout() {
     window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
   };
   return (
-    <div className={"app" + (isChat ? " has-traj" : "")}>
+    <div className={"app" + (isChat ? " is-chat" : "") + (isChat && chatPanelOpen ? " has-panel" : "")}>
       <button className="mobile-burger" aria-label={t("common.menuToggle")} onClick={() => document.body.classList.toggle("sb-open")}><Menu size={18} /></button>
       <div className="mobile-scrim" onClick={() => document.body.classList.remove("sb-open")} />
       {showQS && <QuickSwitcher onClose={() => setShowQS(false)} />}
       <div className="rail">
         <ServerSwitcher />
         {SECTIONS.map((s) => (
-          <a key={s.key} className={"t" + (active(s.key) ? " active" : "")} aria-label={t(s.labelKey)} onClick={() => go(s.key)}>
-            <s.Icon size={19} />
+          <a key={s.key} className={"t im" + (active(s.key) ? " active" : "")} aria-label={t(s.labelKey)} onClick={() => go(s.key)}>
+            <s.Icon size={19} className="im-pop" />
             <span className="t-label" aria-hidden="true">{t(s.labelKey)}</span>
             {s.key === "inbox" && totalUnread > 0 && <span className="rail-badge" aria-hidden="true">{totalUnread > 99 ? "99+" : totalUnread}</span>}
           </a>
         ))}
         <div className="spacer" />
         {alerts.length > 0 && (
-          <a className={"t alert-tab" + (alertAnchor ? " active" : "")} aria-label={t("nav.alerts")} onClick={(e) => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setAlertAnchor(alertAnchor ? null : { left: r.right + 8, bottom: window.innerHeight - r.bottom }); }}>
-            <AlertTriangle size={19} />
+          <a className={"t im alert-tab" + (alertAnchor ? " active" : "")} aria-label={t("nav.alerts")} onClick={(e) => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setAlertAnchor(alertAnchor ? null : { left: r.right + 8, bottom: window.innerHeight - r.bottom }); }}>
+            <AlertTriangle size={19} className="im-shake" />
             <span className="t-label" aria-hidden="true">{t("nav.alerts")}</span>
             <span className="rail-badge" aria-hidden="true">{alerts.length > 99 ? "99+" : alerts.length}</span>
           </a>
         )}
-        <a className={"t" + (active("settings") ? " active" : "")} aria-label={t("nav.settings")} onClick={() => go("settings")}><IconSettings size={19} /><span className="t-label" aria-hidden="true">{t("nav.settings")}</span></a>
+        <a className={"t im" + (active("settings") ? " active" : "")} aria-label={t("nav.settings")} onClick={() => go("settings")}><IconSettings size={19} className="im-rotate" /><span className="t-label" aria-hidden="true">{t("nav.settings")}</span></a>
       </div>
       {alertAnchor && alerts.length > 0 && (
         <NotificationCenter alerts={alerts} anchor={alertAnchor}
@@ -77,9 +80,9 @@ export function Layout() {
           onView={(a) => { setAlertAnchor(null); if (a.machineId) nav(`/s/${slug}/computer/${a.machineId}`); }}
           onDismiss={(a) => setDismissed((s) => { const n = new Set(s); n.add(a.id); return n; })} />
       )}
-      <Outlet />
+      <Outlet context={{ setChatPanelOpen } satisfies LayoutOutletContext} />
       <div className="resizer resizer-sb" onMouseDown={startResize("sb")} title={t("common.resizeSidebar")} />
-      {isChat && <div className="resizer resizer-traj" onMouseDown={startResize("traj")} title={t("common.resizeTraj")} />}
+      {isChat && chatPanelOpen && <div className="resizer resizer-traj" onMouseDown={startResize("traj")} title={t("common.resizeTraj")} />}
     </div>
   );
 }

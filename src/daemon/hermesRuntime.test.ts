@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildHermesArgs, buildHermesPrompt, hermesBridgeDecision, hermesProfile, hermesProfileHome, hermesRuntimeEnv, parseHermesSessionId, parseHermesTurnEvents, postHermesBridgeMessage } from "./hermesRuntime.js";
+import { buildHermesArgs, buildHermesPrompt, hermesBridgeDecision, hermesProfile, hermesProfileHome, hermesRuntime, hermesRuntimeEnv, parseHermesSessionId, parseHermesTurnEvents, postHermesBridgeMessage } from "./hermesRuntime.js";
 import { discoverHermesProfilesFromRoots } from "./listModels.js";
+
+const PATH_KEY = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 
 test("Hermes profile comes from runtimeConfig first, then model, then default", () => {
   assert.equal(hermesProfile("codex", { profile: "alpha-helper" }), "alpha-helper");
@@ -96,19 +98,28 @@ test("Hermes runtime resolves profiles from HERMES_PROFILE_DIR as well as ~/.her
   }
 });
 
-test("Hermes final response bridge requires check/read evidence and filters unsafe stdout", () => {
-  const checked = parseHermesTurnEvents(JSON.stringify({ type: "check", target: "dm:@User", count: 1 }));
-  assert.deepEqual(checked, { sent: false, held: false, engaged: true, target: "dm:@User" });
+test("Hermes final response bridge requires a checked reply trigger and filters unsafe stdout", () => {
+  const checked = parseHermesTurnEvents(JSON.stringify({ type: "check", target: "dm:@User", count: 1, messageId: "1234abcd", grant: "primary" }));
+  assert.deepEqual(checked, { sent: false, held: false, engaged: true, target: "dm:@User", messageId: "1234abcd", grant: "primary" });
   assert.deepEqual(hermesBridgeDecision("⚠ scanner warning\n\nI handled that.", checked), {
     ok: true,
     target: "dm:@User",
     content: "I handled that.",
+    replyTo: "1234abcd",
+    hasGrant: true,
   });
 
   assert.deepEqual(hermesBridgeDecision("I handled that.", parseHermesTurnEvents("")), {
     ok: false,
     reason: "no-open-tag-read",
   });
+  assert.deepEqual(hermesBridgeDecision("I handled that.", parseHermesTurnEvents(JSON.stringify({ type: "check", target: "dm:@User", count: 1 }))), {
+    ok: false,
+    reason: "no-reply-trigger",
+  });
+  assert.equal(hermesBridgeDecision("My assigned slice.", parseHermesTurnEvents(JSON.stringify({
+    type: "check", target: "#all", count: 1, messageId: "5678abcd", grant: "directed",
+  }))).ok, true);
   assert.equal(hermesBridgeDecision("Error: provider rejected the request", checked).ok, false);
   assert.equal(hermesBridgeDecision("┊ review diff\na/MEMORY.md → b/MEMORY.md\n@@ -1 +1", checked).ok, false);
 });
@@ -142,4 +153,31 @@ test("Hermes bridge does not auto-submit a freshness-held draft", async () => {
   assert.deepEqual(calls, [
     { target: "dm:@User", content: "Final answer" },
   ]);
+});
+
+test("Hermes rejects initial admission exactly once when its argv process cannot spawn", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-hermes-missing-"));
+  const admissions: Array<Error | undefined> = [];
+  let session: ReturnType<typeof hermesRuntime.start> | undefined;
+  try {
+    session = hermesRuntime.start({ cwd: root, env: { [PATH_KEY]: root }, systemPrompt: "system", initialPrompt: "start" }, {
+      onSession: () => {},
+      onInitialTurnAdmission: (error) => admissions.push(error),
+      onActivity: () => {},
+      onTrajectory: () => {},
+      onExit: () => {},
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+    });
+    const runningDelivery = assert.rejects(session.deliver("queued after initial input"));
+    const deadline = Date.now() + 1_000;
+    while (admissions.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(admissions.length, 1);
+    assert.ok(admissions[0] instanceof Error);
+    await runningDelivery;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(admissions.length, 1);
+  } finally {
+    session?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -93,6 +93,7 @@ const LANDING_COPY = {
       lead: "Every agent talks one protocol through a bundled CLI, so you can mix engines per teammate — and watch the model traffic when it matters.",
       more: "More runtimes, landing one at a time",
       soon: "soon",
+      plannedAria: "Planned runtimes",
       desc: {
         claude: "Anthropic's CLI, driven over streaming JSON for live thinking and tool calls.",
         codex: "OpenAI's app-server, driven over JSON-RPC turns.",
@@ -175,6 +176,7 @@ const LANDING_COPY = {
       lead: "每个 agent 都通过同一个协议和 bundled CLI 工作，所以你可以混用不同引擎，并在需要时看到模型活动。",
       more: "更多 runtime 会逐个落地",
       soon: "即将支持",
+      plannedAria: "计划支持的 runtime",
       desc: {
         claude: "Anthropic CLI，通过 streaming JSON 驱动实时思考和工具调用。",
         codex: "OpenAI app-server，通过 JSON-RPC turn 驱动。",
@@ -428,7 +430,7 @@ export function Landing() {
           {PLANNED_RUNTIMES.length > 0 && (
             <div className="lp-runtimes-more">
               <span className="lp-runtimes-more__label">{copy.engines.more}</span>
-              <ul className="lp-chips" aria-label="Planned runtimes">
+              <ul className="lp-chips" aria-label={copy.engines.plannedAria}>
                 {PLANNED_RUNTIMES.map((r) => (
                   <li className="lp-chip" key={r.name}>
                     <img className="lp-chip__icon" src={`/agent-icons/${r.icon}.svg`} alt="" aria-hidden="true" width={18} height={18} loading="lazy" />

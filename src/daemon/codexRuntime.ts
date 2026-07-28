@@ -4,7 +4,7 @@
 import { type ChildProcess } from "node:child_process";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
-import type { Runtime, StartOpts, RuntimeCallbacks, RuntimeSession } from "./runtime.js";
+import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession } from "./runtime.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -135,10 +135,12 @@ export const codexRuntime: Runtime = {
     // Per-agent CODEX_HOME isolation + auth/MCP injection is a future improvement.
     const proc = spawnSafe("codex", ["app-server", "--listen", "stdio://"], { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], env: opts.env });
     const client = new CodexClient(proc, cb);
+    const admission = initialTurnAdmission(cb);
     let ready = false;
     let spawnFailed = false;
     let reportedExit = false;
-    const queue: string[] = [];
+    const queue: Array<{ text: string; initial: boolean; admission: ProtocolAdmission }> = [];
+    let activeInput: { text: string; initial: boolean; admission: ProtocolAdmission } | null = null;
     let turnBusy = false;
 
     function reportExit(code: number | null): void {
@@ -147,15 +149,37 @@ export const codexRuntime: Runtime = {
       cb.onExit(code);
     }
 
-    client.onTurnDone = () => { turnBusy = false; pump(); };
+    client.onTurnDone = () => { activeInput = null; turnBusy = false; pump(); };
+    function enqueue(text: string, initial = false): Promise<void> {
+      const input = { text, initial, admission: protocolAdmission() };
+      queue.push(input);
+      pump();
+      return input.admission.promise;
+    }
+    function rejectQueued(error: Error): void {
+      activeInput?.admission.reject(error);
+      activeInput = null;
+      for (const item of queue.splice(0)) item.admission.reject(error);
+    }
     function pump(): void {
       if (!ready || turnBusy || queue.length === 0) return;
-      const text = queue.shift()!;
+      const item = queue.shift()!;
+      activeInput = item;
       turnBusy = true;
       cb.onActivity("working", "turn");
-      client.request("turn/start", turnParams(opts, client.threadId, text))
-        .catch((e) => { if (spawnFailed) return; cb.log.warn("codex turn/start failed", { detail: String(e?.message ?? e) }); turnBusy = false; pump(); });
+      client.request("turn/start", turnParams(opts, client.threadId, item.text))
+        .then(() => { item.admission.accept(); if (item.initial) admission.accept(); })
+        .catch((e) => {
+          item.admission.reject(e);
+          if (item.initial) admission.reject(e);
+          if (spawnFailed) return;
+          cb.log.warn("codex turn/start failed", { detail: String(e?.message ?? e) });
+          if (activeInput === item) activeInput = null;
+          turnBusy = false;
+          pump();
+        });
     }
+    void enqueue(opts.initialPrompt, true).catch(() => {});
 
     (async () => {
       try {
@@ -173,11 +197,20 @@ export const codexRuntime: Runtime = {
           const r = await client.request("thread/start", { model: opts.model || null, cwd: opts.cwd, developerInstructions: opts.systemPrompt || null, persistExtendedHistory: true, experimentalRawEvents: false, ...(cfg ? { config: cfg } : {}) });
           threadId = extractThreadId(r);
         }
-        if (!threadId) { cb.log.error("codex thread/start returned no threadId"); cb.onActivity("offline", "codex no thread"); return; }
+        if (!threadId) {
+          const error = new Error("codex thread/start returned no threadId");
+          admission.reject(error);
+          rejectQueued(error);
+          cb.log.error(error.message);
+          cb.onActivity("offline", "codex no thread");
+          return;
+        }
         client.threadId = threadId; cb.onSession(threadId); cb.log.info("codex thread ready", { threadId });
         ready = true;
-        queue.push(opts.initialPrompt); pump();
+        pump();
       } catch (e) {
+        admission.reject(e);
+        rejectQueued(e instanceof Error ? e : new Error(String(e)));
         if (spawnFailed) return;
         cb.log.error("codex init failed", { detail: String((e as any)?.message ?? e) });
         cb.onActivity("offline", "codex init failed");
@@ -186,15 +219,23 @@ export const codexRuntime: Runtime = {
 
     proc.stderr?.on("data", (c: Buffer) => { const t = c.toString().trim(); if (t) cb.log.debug("codex stderr", { t: t.slice(0, 300) }); });
     proc.on("error", (e: NodeJS.ErrnoException) => {
+      admission.reject(e);
       spawnFailed = true;
       const detail = e.code === "ENOENT" ? "codex not found" : "codex spawn failed";
+      rejectQueued(new Error(detail));
       client.closeAllPending(new Error(detail));
       cb.log.error("codex spawn failed", { detail: String(e?.message ?? e), code: e.code ?? "" });
       cb.onActivity("offline", detail);
       reportExit(1);
     });
-    proc.on("exit", (code) => { client.closeAllPending(new Error("codex exited")); reportExit(code); });
+    proc.on("exit", (code) => {
+      const error = new Error("codex exited");
+      admission.reject(error);
+      rejectQueued(error);
+      client.closeAllPending(error);
+      reportExit(code);
+    });
 
-    return { pid: proc.pid, deliver: (text) => { queue.push(text); pump(); }, stop: () => { killTree(proc); } };
+    return { pid: proc.pid, deliver: (text) => enqueue(text), stop: () => { rejectQueued(new Error("codex stopped before input admission")); killTree(proc); } };
   },
 };

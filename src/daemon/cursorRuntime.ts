@@ -13,7 +13,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
-import type { Runtime, StartOpts, RuntimeCallbacks, RuntimeSession, TrajectoryEntry } from "./runtime.js";
+import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -67,38 +67,55 @@ function buildArgs(prompt: string, model: string | undefined, sessionId: string 
 
 // CursorRun owns the serial turn queue for one agent (mirrors the other one-shot runtimes): each turn
 // is a fresh `cursor-agent -p` process resumed by the captured session id.
+interface CursorInput { text: string; initial: boolean; admission: ProtocolAdmission }
+
 class CursorRun {
-  private queue: string[] = [];
+  private queue: CursorInput[] = [];
   private turnBusy = false;
   private stopped = false;
   proc: ChildProcess | null = null;
   private sessionId: string | null;
   private everSucceeded = false;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly admission: ReturnType<typeof initialTurnAdmission>;
+  private currentInput: CursorInput | null = null;
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
+    this.admission = initialTurnAdmission(cb);
     this.sessionId = opts.sessionId ?? null;
     this.env = { ...opts.env };
     delete this.env.NODE_OPTIONS; // cursor-agent's bundled node rejects proxy flags in NODE_OPTIONS
     try { writeFileSync(path.join(opts.cwd, "AGENTS.md"), opts.systemPrompt); }
     catch (e) { cb.log.warn("cursor: AGENTS.md write failed", { detail: String(e) }); }
     if (this.sessionId) cb.onSession(this.sessionId);
-    this.enqueue(opts.initialPrompt);
+    void this.enqueue(opts.initialPrompt, true).catch(() => {});
   }
 
-  enqueue(text: string): void { if (this.stopped) return; this.queue.push(text); this.pump(); }
+  enqueue(text: string, initial = false): Promise<void> {
+    const input: CursorInput = { text, initial, admission: protocolAdmission() };
+    if (this.stopped) input.admission.reject(new Error("cursor stopped before input admission"));
+    else { this.queue.push(input); this.pump(); }
+    return input.admission.promise;
+  }
 
   private pump(): void {
     if (this.stopped || this.turnBusy || this.queue.length === 0) return;
     this.runTurn(this.queue.shift()!);
   }
 
-  private runTurn(prompt: string): void {
+  private rejectQueue(error: Error): void {
+    for (const input of this.queue.splice(0)) input.admission.reject(error);
+  }
+
+  private runTurn(input: CursorInput): void {
+    this.currentInput = input;
+    const prompt = input.text;
     this.turnBusy = true;
     this.cb.onActivity("working", "turn");
     const args = buildArgs(prompt, this.opts.model, this.sessionId);
     const proc = spawnSafe("cursor-agent", args, { cwd: this.opts.cwd, stdio: ["ignore", "pipe", "pipe"], env: this.env });
     this.proc = proc;
+    proc.once("spawn", () => { input.admission.accept(); if (input.initial) this.admission.accept(); });
     let buf = "";
     let resultSeen = false;
     let resultError = false; // any in-JSON error (result.is_error or system:error) — prevents double-report on exit
@@ -123,19 +140,23 @@ class CursorRun {
       while (errLen > 4096 && errTail.length > 1) errLen -= errTail.shift()!.length;
     });
     proc.on("error", (e) => {
+      input.admission.reject(e);
+      if (input.initial) this.admission.reject(e);
+      if (this.currentInput === input) this.currentInput = null;
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
       this.cb.log.error("cursor spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "cursor-agent not found");
-      if (!this.everSucceeded) this.cb.onExit(1); else this.pump();
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); } else this.pump();
     });
     proc.on("exit", (code) => {
       if (buf.trim()) processLine(buf); buf = "";
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
+      if (this.currentInput === input) this.currentInput = null;
       if (code === 0) {
         // cursor-agent exits 0 even on model errors (result.is_error / system:error already surfaced).
         // Only mark online + pump on genuine success; on error, respect the error status already set.
         if (!resultError) { this.everSucceeded = true; this.cb.onActivity("online", ""); }
-        else if (!this.everSucceeded) { this.cb.onExit(1); return; }
+        else if (!this.everSucceeded) { this.rejectQueue(new Error("cursor initial turn failed")); this.cb.onExit(1); return; }
         this.pump(); return;
       }
       // Non-zero exit: hard failure. Don't double-report if in-JSON error was already surfaced.
@@ -145,13 +166,16 @@ class CursorRun {
         this.cb.onTrajectory([{ kind: "text", text: "[cursor error] " + clip(tail).slice(0, 500) }]);
         this.cb.onActivity("error", last.slice(0, 200));
       }
-      if (!this.everSucceeded) { this.cb.onExit(code ?? 1); return; }
+      if (!this.everSucceeded) { this.rejectQueue(new Error(`cursor-agent exited ${code ?? "signal"}`)); this.cb.onExit(code ?? 1); return; }
       this.pump();
     });
   }
 
   stop(): void {
     this.stopped = true;
+    const error = new Error("cursor stopped before input admission");
+    this.currentInput?.admission.reject(error); this.currentInput = null;
+    this.rejectQueue(error);
     const p = this.proc; this.proc = null;
     if (p) { killTree(p); }
   }

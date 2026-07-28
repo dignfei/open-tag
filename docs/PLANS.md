@@ -23,17 +23,29 @@
   independent evaluator loop, scheduled doc-gardening. Done: `ARCHITECTURE.md` codemap, `docs/` skeleton,
   `CLAUDE.md` slimmed to an `AGENTS.md` import, git, `/doc-sync` skill (`.agents/skills/doc-sync/`).
 
-*(`docs/exec-plans/active/` is currently empty; completed plans live in `docs/exec-plans/completed/`.)*
+*(Completed plans live in `docs/exec-plans/completed/`.)*
 
 ## Completed slice history (index only)
 
 The early capability slices shipped and their working notes were not retained as plan files;
 their verified end state is recorded in `FEATURES.md`:
 
+- **Reply coordination** — observation remains broad while trigger-bound primary/supplemental
+  grants constrain publication; mistaken mentions transfer through audited intent and private
+  coordination. Contract: [`docs/reply-coordination.md`](./reply-coordination.md); evidence:
+  [`docs/exec-plans/completed/reply-coordination.md`](./exec-plans/completed/reply-coordination.md).
+- **Directed reply coordination** — explicit mentions get independent one-shot grants,
+  Tasks retain one coordinator while named contributors publish in-thread, and active
+  agent-authored mentions remain work edges. Evidence:
+  [`docs/exec-plans/completed/directed-reply-coordination.md`](./exec-plans/completed/directed-reply-coordination.md).
+- **Conversation Turns** — sender/channel-scoped burst admission, durable responsibility,
+  stable-check visibility, idempotent daemon delivery, and bounded agent causality. Evidence:
+  [`docs/exec-plans/active/conversation-turns.md`](./exec-plans/active/conversation-turns.md).
 - **01 Agent communication loop + agent ↔ agent collaboration** ✅ (FEATURES P5)
 - **02 Saved Messages** ✅ (FEATURES P3)
 - **03 / 03b Tasks end-to-end + interaction rework** ✅ (FEATURES P4 — board move UX, layout toggle, DM tasks, handoff)
 - **04 Message rendering** ✅ (markdown + structured-mention links + no-raw-HTML invariant, `web/src/messageRender.tsx`; ARCHITECTURE §III)
+- **Inline Agent Activity** ✅ — channel/DM/thread runs now keep their status, thinking, and tool calls in durable per-message disclosures; no-message runs leave a quiet handled/error receipt; the permanent Live Trace column is gone. [Execution plan](./exec-plans/completed/inline-agent-activity.md).
 - Early fixed bugs: double message delivery (StrictMode double-socket) / Chinese IME Enter mis-send → tech-debt I9/I10
 
 ## Roadmap (index only — ground truth is the code + `FEATURES.md`)

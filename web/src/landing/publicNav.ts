@@ -26,7 +26,8 @@ export function resolveDocsHref(origin = MARKETING_SITE_URL): string {
 }
 
 export function resolveMarketingHomeHref(origin = MARKETING_SITE_URL): string {
-  return origin === DOCS_SITE_URL.slice(0, -1) ? `${MARKETING_SITE_URL}/` : `${origin}/`;
+  const normalizedOrigin = new URL(origin).origin;
+  return normalizedOrigin === new URL(DOCS_SITE_URL).origin ? `${MARKETING_SITE_URL}/` : `${normalizedOrigin}/`;
 }
 
 export function resolvePublicNavHref(link: PublicNavLink, origin = MARKETING_SITE_URL, surface: "marketing" | "docs" = "marketing"): string {

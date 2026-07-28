@@ -1,0 +1,83 @@
+/* ============================================================================
+   Icon motion — Amicro-style micro-interactions, pure CSS.
+
+   Principle + full teardown: docs/icon-motion.md. Distilled from the MIT
+   AnimatedButton.tsx of github.com/Subhan-code/Amicro--Micro-transitions-:
+   one shared spring on a fixed-size stage, semantic per-icon variants.
+   The framer-motion spring(stiffness 600, damping 25) used across Amicro is
+   approximated by a single-overshoot cubic-bezier — no JS, no dependency.
+
+   API (two classes, nothing else):
+   - `im` on the interactive element (button/a) — the hover trigger.
+   - one effect class on the icon itself (lucide + icons.tsx accept className):
+       im-pop         generic scale pop            (Amicro morph/matrix hover)
+       im-rotate      180° gear/refresh spin       (Amicro `rotate`, L239)
+       im-shake       destructive warning wobble   (Amicro `shake`, L252-255)
+       im-pulse       heartbeat scale               (Amicro `pulse`, L225)
+       im-tilt        playful tilt (paperclip)      (spring language extension)
+       im-nudge-up    up-right send/launch nudge    (Amicro slide-arrow spirit)
+       im-bounce-down download gravity bounce       (Amicro slide-arrow spirit)
+       im-fill        fill-preview on hover         (Amicro `color-morph`, L61-62)
+
+   Hover + keyboard-focus only, by design: gated behind (hover:hover) so touch
+   devices never get sticky states (Amicro gates the same way via matchMedia,
+   L41), behind prefers-reduced-motion, and :focus-visible mirrors hover for
+   keyboard users (Amicro's onFocus, L397). State-driven swaps (copy→check)
+   belong in app state, not here — recipe in docs/icon-motion.md §5.
+
+   Tokens ride the motion-charter system (styles.css :root): `--im-spring` is a
+   scoped charter exception (icon hover/focus feedback ONLY — see
+   docs/motion-charter.md §1); durations use the charter scale
+   (--dur-slow / --dur-signature / --dur-fast).
+   ============================================================================ */
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .im .im-pop,
+  .im .im-rotate,
+  .im .im-tilt,
+  .im .im-nudge-up,
+  .im .im-fill {
+    transition: transform var(--dur-slow) var(--im-spring), fill 0.25s ease;
+  }
+
+  /* keyboard focus mirrors hover, like Amicro's onFocus/onBlur (L397-398) */
+  .im:hover:not(:disabled) .im-pop, .im:focus-visible .im-pop { transform: scale(1.15); }
+  .im:hover:not(:disabled) .im-rotate, .im:focus-visible .im-rotate { transform: rotate(180deg); transition-duration: var(--dur-signature); }
+  .im:hover:not(:disabled) .im-tilt, .im:focus-visible .im-tilt { transform: rotate(-12deg) scale(1.08); }
+  .im:hover:not(:disabled) .im-nudge-up, .im:focus-visible .im-nudge-up { transform: translate(1.5px, -1.5px) scale(1.06); }
+  .im:hover:not(:disabled) .im-fill, .im:focus-visible .im-fill { fill: currentColor; }
+
+  /* keyframed effects use plain easing like Amicro's own shake/pulse (L226/L256) — the
+     bounce shape lives in the keyframes; stacking the spring curve per segment over-shoots */
+  .im:hover:not(:disabled) .im-shake, .im:focus-visible .im-shake { animation: im-shake 0.4s ease-in-out; }
+  .im:hover:not(:disabled) .im-pulse, .im:focus-visible .im-pulse { animation: im-pulse 0.4s ease-in-out; }
+  .im:hover:not(:disabled) .im-bounce-down, .im:focus-visible .im-bounce-down { animation: im-bounce-down 0.5s ease-in-out; }
+
+  /* Amicro whileTap scale .96 (L411), applied at the icon so button layout is untouched */
+  .im:active:not(:disabled) .im-pop,
+  .im:active:not(:disabled) .im-nudge-up { transform: scale(0.9); transition-duration: var(--dur-fast); }
+}
+
+/* keyframe ports — value-for-value from AnimatedButton.tsx */
+
+/* shake: y [0,-2,0,-2,0] + rotate [0,-10,10,-10,0] over .4s (L252-256) */
+@keyframes im-shake {
+  0%   { transform: translateY(0) rotate(0); }
+  25%  { transform: translateY(-2px) rotate(-10deg); }
+  50%  { transform: translateY(0) rotate(10deg); }
+  75%  { transform: translateY(-2px) rotate(-10deg); }
+  100% { transform: translateY(0) rotate(0); }
+}
+
+/* pulse: scale [1, 1.25, 1] over .4s (L225-226) */
+@keyframes im-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.25); }
+}
+
+/* gravity bounce: down, tiny rebound, settle */
+@keyframes im-bounce-down {
+  0%, 100% { transform: translateY(0); }
+  40%      { transform: translateY(3px); }
+  70%      { transform: translateY(-1px); }
+}

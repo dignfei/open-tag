@@ -16,7 +16,8 @@ RUN npm --prefix web ci
 COPY docs-site/package.json docs-site/package-lock.json ./docs-site/
 RUN npm --prefix docs-site ci
 COPY . .
-RUN npm run site:build
+# Keep dev dependencies installed above, but select production exports for browser bundles.
+RUN NODE_ENV=production npm run site:build
 
 # ---- runtime stage: source + root node_modules + built client/docs, run with tsx ----
 FROM node:22-slim AS runtime
@@ -34,6 +35,7 @@ COPY --from=build /app/packages/daemon/package.json ./packages/daemon/package.js
 COPY --from=build /app/drizzle.config.ts ./drizzle.config.ts
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/scripts/migrate-reply-coordination-directed.mjs ./scripts/migrate-reply-coordination-directed.mjs
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && chown -R node:node /app
 USER node

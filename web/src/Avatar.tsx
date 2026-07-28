@@ -3,6 +3,7 @@
 // (also accepts the legacy `pixel:random:<seed>` alias) — the latter renders a notionists avatar from <seed>,
 // which is how the "avatar set" picker persists a chosen generated face without uploading a file.
 import { useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { createAvatar } from "@dicebear/core";
 import { notionists } from "@dicebear/collection";
 import { Camera, X, Shuffle, Upload } from "lucide-react";
@@ -51,13 +52,14 @@ export function AvatarPicker({ name, size = 48, url, editable, busy, onPickSeed,
   name: string; size?: number; url?: string | null; editable?: boolean; busy?: boolean;
   onPickSeed?: (seed: string) => void; onPickFile?: (f: File) => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [batch, setBatch] = useState<string[]>(() => seedBatch(name));
   const fileRef = useRef<HTMLInputElement>(null);
   if (!editable) return <Avatar seed={name} size={size} url={url} />;
   return (
     <>
-      <button type="button" className="av-editable" style={{ width: size, height: size }} title="Change avatar"
+      <button type="button" className="av-editable" style={{ width: size, height: size }} title={t("avatar.change")}
         disabled={busy} onClick={() => { setBatch(seedBatch(name)); setOpen(true); }}>
         <Avatar seed={name} size={size} url={url} />
         <span className="av-editable-ovl">{busy ? "…" : <Camera size={Math.round(size * 0.32)} />}</span>
@@ -66,20 +68,20 @@ export function AvatarPicker({ name, size = 48, url, editable, busy, onPickSeed,
         <div className="modal-bg" onClick={() => setOpen(false)}>
           <div className="modal av-picker" onClick={(e) => e.stopPropagation()}>
             <div className="av-picker-head">
-              <h3>Choose avatar</h3>
-              <button className="joinbtn" title="Close" onClick={() => setOpen(false)}><X size={14} /></button>
+              <h3>{t("avatar.choose")}</h3>
+              <button className="joinbtn" title={t("avatar.close")} onClick={() => setOpen(false)}><X size={14} /></button>
             </div>
             <div className="av-picker-grid">
               {batch.map((s) => (
-                <button key={s} type="button" className="av-picker-opt" title="Use this avatar"
+                <button key={s} type="button" className="av-picker-opt" title={t("avatar.useThis")}
                   onClick={() => { onPickSeed?.("dicebear:" + s); setOpen(false); }}>
                   <Avatar seed={s} size={56} />
                 </button>
               ))}
             </div>
             <div className="av-picker-acts">
-              <button className="joinbtn" onClick={() => setBatch(seedBatch(name))}><Shuffle size={13} style={{ verticalAlign: "-2px" }} /> Shuffle</button>
-              <button className="joinbtn" onClick={() => fileRef.current?.click()}><Upload size={13} style={{ verticalAlign: "-2px" }} /> Upload image</button>
+              <button className="joinbtn" onClick={() => setBatch(seedBatch(name))}><Shuffle size={13} style={{ verticalAlign: "-2px" }} /> {t("avatar.shuffle")}</button>
+              <button className="joinbtn" onClick={() => fileRef.current?.click()}><Upload size={13} style={{ verticalAlign: "-2px" }} /> {t("avatar.upload")}</button>
               <input type="file" ref={fileRef} accept="image/*" style={{ display: "none" }}
                 onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) { onPickFile?.(f); setOpen(false); } }} />
             </div>

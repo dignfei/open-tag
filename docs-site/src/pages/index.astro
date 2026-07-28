@@ -1,11 +1,15 @@
 ---
 import "../styles/docs.css";
 import {
+  DOCS_SITE_URL,
   GITHUB_URL,
   PUBLIC_BRAND_MARK_SRC,
   PUBLIC_NAV_LINKS,
   resolvePublicNavHref,
 } from "../../../web/src/landing/publicNav";
+
+const docsBaseUrl = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
+const docsBrandMarkSrc = `${docsBaseUrl}${PUBLIC_BRAND_MARK_SRC.replace(/^\/+/, "")}`;
 
 const quickSteps = [
   {
@@ -268,17 +272,17 @@ const localizedHead = {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@300;400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   </head>
-  <body>
+  <body data-docs-origin={new URL(DOCS_SITE_URL).origin}>
     <div class="shell">
       <header class="lp-nav">
         <div class="lp-container lp-nav__inner">
           <a class="lp-brand" href="https://getopentag.com/" aria-label="open-tag home" data-home-link>
-            <img class="lp-brand-mark" src={PUBLIC_BRAND_MARK_SRC} alt="" width="34" height="34" />
+            <img class="lp-brand-mark" src={docsBrandMarkSrc} alt="" width="34" height="34" />
             <span class="lp-brand-word">open<b>-tag</b></span>
           </a>
           <nav class="lp-nav__links" aria-label="Main navigation">
             {docsNavLinks.map((link) => (
-              <a href={resolvePublicNavHref(link, "https://docs.getopentag.com", "docs")} data-public-nav-key={link.key} data-i18n={link.labelKey}>{link.label}</a>
+              <a href={resolvePublicNavHref(link, DOCS_SITE_URL, "docs")} data-public-nav-key={link.key} data-i18n={link.labelKey}>{link.label}</a>
             ))}
           </nav>
           <div class="lp-nav__cta">
@@ -534,7 +538,8 @@ npm run daemon</code></pre>
 
       const openedLegacyChineseHash = clearLegacyChineseHash();
 
-      const resolveMarketingHomeHref = (origin) => origin === "https://docs.getopentag.com" ? "https://getopentag.com/" : `${origin}/`;
+      const deployedDocsOrigin = document.body.dataset.docsOrigin;
+      const resolveMarketingHomeHref = (origin) => origin === deployedDocsOrigin ? "https://getopentag.com/" : `${origin}/`;
       const resolvePublicNavHref = (link, origin) => {
         if (link.key === "docs") return "#top";
         return new URL(link.marketingHref, resolveMarketingHomeHref(origin)).toString();

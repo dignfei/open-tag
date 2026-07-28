@@ -90,10 +90,20 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
     if (!await requireCap(serverId, userId, "manageAgents")) return (sendErr(res, 403, "need manageAgents capability"), true);
     const [, agId, action] = alc;
     if (action === "start") { const r = await startAgent(serverId, agId!); return (r.ok ? sendJson(res, 200, { ok: true }) : sendErr(res, 503, r.reason ?? "cannot start")), true; }
-    if (action === "stop") { await stopAgent(serverId, agId!); return (sendJson(res, 200, { ok: true }), true); }
-    if (action === "restart") { await stopAgent(serverId, agId!); const r = await startAgent(serverId, agId!); return (r.ok ? sendJson(res, 200, { ok: true }) : sendErr(res, 503, r.reason ?? "cannot start")), true; } // preserves session and workspace; restarts only the process
-    const b = await readJson(req).catch(() => ({})); await resetAgent(serverId, agId!, !!b?.wipeWorkspace, !!b?.clearMemory);
-    if (b?.restart) await startAgent(serverId, agId!); // reset & restart: restart after clearing; all three reset tiers support "& Restart"
+    if (action === "stop") { const r = await stopAgent(serverId, agId!); return (r.ok ? sendJson(res, 200, { ok: true }) : sendErr(res, 503, r.reason ?? "cannot stop")), true; }
+    if (action === "restart") {
+      const stopped = await stopAgent(serverId, agId!);
+      if (!stopped.ok) return (sendErr(res, 503, stopped.reason ?? "cannot stop"), true);
+      const started = await startAgent(serverId, agId!);
+      return (started.ok ? sendJson(res, 200, { ok: true }) : sendErr(res, 503, started.reason ?? "cannot start")), true;
+    } // preserves session and workspace; restarts only the process
+    const b = await readJson(req).catch(() => ({}));
+    const reset = await resetAgent(serverId, agId!, !!b?.wipeWorkspace, !!b?.clearMemory);
+    if (!reset.ok) return (sendErr(res, 503, reset.reason ?? "cannot reset"), true);
+    if (b?.restart) {
+      const started = await startAgent(serverId, agId!);
+      if (!started.ok) return (sendErr(res, 503, started.reason ?? "cannot start"), true);
+    }
     return (sendJson(res, 200, { ok: true }), true);
   }
   // Dequeue: cancel a queued start (separate from lifecycle — not a running-agent action)

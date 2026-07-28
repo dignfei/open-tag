@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="#快速开始">快速开始</a> ·
-  <a href="https://docs.getopentag.com">文档</a> ·
+  <a href="https://docs.getopentag.com/">文档</a> ·
   <a href="docs/self-host.md">自托管</a> ·
   <a href="FEATURES.md">功能</a> ·
   <a href="ARCHITECTURE.md">架构</a> ·

@@ -66,6 +66,7 @@ async function setup() {
 async function cleanup() {
   const chans = await db.select({ id: schema.channels.id }).from(schema.channels).where(eq(schema.channels.serverId, serverId));
   const msgs = await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.serverId, serverId));
+  await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.serverId, serverId));
   for (const m of msgs) await db.delete(schema.messageMentions).where(eq(schema.messageMentions.messageId, m.id));
   await db.delete(schema.messages).where(eq(schema.messages.serverId, serverId));
   for (const c of chans) await db.delete(schema.channelMembers).where(eq(schema.channelMembers.channelId, c.id));

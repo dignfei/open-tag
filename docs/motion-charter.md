@@ -20,6 +20,14 @@
 --dur-signature: 440ms;  /* 招牌进场(agent 上线 / 消息进场) */
 ```
 
+### 1.1 例外:图标 hover 微交互(icon motion)
+
+`web/src/iconMotion.css`(规范:[`docs/icon-motion.md`](./icon-motion.md))复刻 Amicro 的 spring 手感,获**限定豁免**:
+
+- `--im-spring: cubic-bezier(0.34, 1.56, 0.64, 1)`(≈ spring(600,25) 的单次轻过冲,已随其他 token 落在 `styles.css :root`)**只用于图标 hover/focus 反馈**;进场/切换/循环动效仍禁 bounce/elastic(红线 #2 主体不变)。
+- transition 时长走 token(`--dur-slow` 常规 / `--dur-signature` 齿轮旋转 / `--dur-fast` 按压);keyframe 动效(shake/pulse/bounce)的 0.4/0.5s 为 Amicro 原值直搬,随豁免一并接受。
+- 门槛只多不少:`(hover:hover)` + `prefers-reduced-motion` + `:focus-visible` 镜像 + `:not(:disabled)`。
+
 ## 2. 动效清单(分级)
 
 ### 招牌(过「你」这关,允许表现力)
@@ -43,7 +51,7 @@
 ## 4. 客观红线(所有动效通用,子 agent 机械自判,全绿才算过)
 
 1. **只动** `transform` / `opacity` / `filter`(grep 实现,**零** `width`/`height`/`top`/`left`/`margin` 动画)
-2. 时长走 token,落在该档区间;**无** bounce / elastic 曲线
+2. 时长走 token,落在该档区间;**无** bounce / elastic 曲线(唯一例外:§1.1 图标 hover 微交互的 `--im-spring`)
 3. 用规范 easing token(应用主体 `--ease-*`,落地页 `--lp-ease`)
 4. **reduced-motion 降级**:`@media (prefers-reduced-motion:reduce)` 下进场动效直显、循环动效静止
 5. 布局不崩:动效前后静态帧对比无位移/截断

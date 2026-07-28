@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageCircle, X, Wrench, ChevronRight, Check, Copy, Eye, EyeOff } from "lucide-react";
+import { MessageCircle, X, ChevronRight, Check, Copy, Eye, EyeOff } from "lucide-react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,6 +10,7 @@ import { useStore } from "../store.tsx";
 import { fmtDateTime } from "../format";
 import { IconMonitor } from "../icons.tsx";
 import { Avatar, AvatarPicker, resolveAvatar } from "../Avatar.tsx";
+import { ActivityEventRow } from "../AgentActivity.tsx";
 import { Select } from "../Select.tsx";
 import { useConfirm, useEscClose } from "../ConfirmModal.tsx";
 import { useToast } from "../toast.tsx";
@@ -166,8 +167,8 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
   useEffect(() => { if (tab === "profile") fetchPersonality(); }, [id, tab]);
   // api() resolves error responses as {error} instead of throwing (store.tsx), so success/failure must be
   // branched on the body — the catch only sees network-level failures.
-  const uploadPersonality = async (f: File) => { setPerBusy(true); try { const text = await f.text(); const r = await api("PUT", `/api/agents/${id}/personality`, { content: text }); if (r?.error) { toast.error(`Personality save failed: ${r.error}`); return; } toast.info("Personality saved"); await fetchPersonality(); } catch (e: any) { toast.error(String(e?.message || e)); } finally { setPerBusy(false); } };
-  const deletePersonality = async () => { if (!(await confirm({ title: "Delete personality", message: "Remove the personality.md file and restore the agent's default description?", confirmLabel: "Delete", danger: true }))) return; setPerBusy(true); try { const r = await api("DELETE", `/api/agents/${id}/personality`); if (r?.error) { toast.error(`Personality delete failed: ${r.error}`); return; } toast.info("Personality deleted"); setPerContent(null); } catch (e: any) { toast.error(String(e?.message || e)); } finally { setPerBusy(false); } };
+  const uploadPersonality = async (f: File) => { setPerBusy(true); try { const text = await f.text(); const r = await api("PUT", `/api/agents/${id}/personality`, { content: text }); if (r?.error) { toast.error(t("members.personalitySaveFailed", { error: r.error })); return; } toast.info(t("members.personalitySaved")); await fetchPersonality(); } catch (e: any) { toast.error(String(e?.message || e)); } finally { setPerBusy(false); } };
+  const deletePersonality = async () => { if (!(await confirm({ title: t("members.personalityDeleteTitle"), message: t("members.personalityDeleteMessage"), confirmLabel: t("members.delete"), danger: true }))) return; setPerBusy(true); try { const r = await api("DELETE", `/api/agents/${id}/personality`); if (r?.error) { toast.error(t("members.personalityDeleteFailed", { error: r.error })); return; } toast.info(t("members.personalityDeleted")); setPerContent(null); } catch (e: any) { toast.error(String(e?.message || e)); } finally { setPerBusy(false); } };
   if (!a) return <div className="scroll"><div className="empty">{t("members.loading")}</div></div>;
   // Surface the server's concrete 503 reason ("no daemon online" / "runtime X unavailable on selected machine" …);
   // the generic machine-may-be-offline guess alone made users blind-retry (live 2026-07-05: 3× restart → 503).
@@ -185,7 +186,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
     if (mode === "restart") r = await api("POST", `/api/agents/${id}/restart`);
     else if (mode === "reset") r = await api("POST", `/api/agents/${id}/reset`, { restart: true });
     else r = await api("POST", `/api/agents/${id}/reset`, { wipeWorkspace: true, restart: true });
-    if (r?.error) startFail(r); // pure restart returns 503 when daemon offline; reset/full return ok (restart leg stays best-effort)
+    if (r?.error) startFail(r); // lifecycle RPCs settle before return; a failed reset/stop returns 503 and aborts the restart phase
     setTimeout(refetch, 500);
   };
   const del = async () => { if (!(await confirm({ title: t("members.deleteAgentTitle", { name: a.name }), message: t("members.deleteAgentMessage"), confirmLabel: t("members.delete"), danger: true }))) return; await api("DELETE", "/api/agents/" + id); await reload(); onDeleted(); };
@@ -260,11 +261,11 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
               </>)}
             </div>
             <div className="card">
-              <h3>Personality <small className="meta">{perContent ? "(personality.md)" : ""}</small></h3>
-              {perContent ? <div className="meta" style={{ whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto", marginBottom: 8 }}>{perContent}</div> : <div className="meta" style={{ opacity: .6 }}>No personality file — agent uses the description field.</div>}
+              <h3>{t("members.personalityTitle")} <small className="meta">{perContent ? "(personality.md)" : ""}</small></h3>
+              {perContent ? <div className="meta" style={{ whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto", marginBottom: 8 }}>{perContent}</div> : <div className="meta" style={{ opacity: .6 }}>{t("members.personalityEmpty")}</div>}
               {capabilities.manageAgents && <div className="task-acts">
-                <label className="joinbtn" style={{ cursor: perBusy ? "not-allowed" : "pointer", display: "inline-block" }}>{perBusy ? "Uploading…" : "Upload .md"}<input type="file" accept=".md,text/markdown,text/plain" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadPersonality(f); e.target.value = ""; }} /></label>
-                {perContent && <button className="joinbtn" style={{ color: "var(--error)" }} disabled={perBusy} onClick={deletePersonality}>Delete</button>}
+                <label className="joinbtn" style={{ cursor: perBusy ? "not-allowed" : "pointer", display: "inline-block" }}>{perBusy ? t("members.uploading") : t("members.personalityUpload")}<input type="file" accept=".md,text/markdown,text/plain" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadPersonality(f); e.target.value = ""; }} /></label>
+                {perContent && <button className="joinbtn" style={{ color: "var(--error)" }} disabled={perBusy} onClick={deletePersonality}>{t("members.delete")}</button>}
               </div>}
             </div>
             <SkillsSection id={id} />
@@ -293,19 +294,19 @@ function SkillsSection({ id }: { id: string }) {
       let content = raw;
       if (!/^---\s*\n/.test(raw)) content = `---\nname: ${name}\nuserInvocable: true\n---\n\n${raw}`;
       const r = await api("PUT", `/api/agents/${id}/skills/${encodeURIComponent(name)}`, { content });
-      if (r?.error) { toast.error(`Skill upload failed: ${r.error}`); return; }
-      toast.info(`Skill "${name}" uploaded`);
+      if (r?.error) { toast.error(t("members.skillUploadFailed", { error: r.error })); return; }
+      toast.info(t("members.skillUploaded", { name }));
       await refetch();
     } catch (e: any) { toast.error(String(e?.message ?? e)); }
     finally { setBusy(false); }
   };
   const deleteSkill = async (dirName: string) => {
-    if (!(await confirm({ title: `Delete skill "${dirName}"`, message: "Remove this skill from the agent's workspace?", confirmLabel: "Delete", danger: true }))) return;
+    if (!(await confirm({ title: t("members.skillDeleteTitle", { name: dirName }), message: t("members.skillDeleteMessage"), confirmLabel: t("members.delete"), danger: true }))) return;
     setBusy(true);
     try {
       const r = await api("DELETE", `/api/agents/${id}/skills/${encodeURIComponent(dirName)}`);
-      if (r?.error) { toast.error(`Skill delete failed: ${r.error}`); return; }
-      toast.info(`Skill "${dirName}" deleted`);
+      if (r?.error) { toast.error(t("members.skillDeleteFailed", { error: r.error })); return; }
+      toast.info(t("members.skillDeleted", { name: dirName }));
       await refetch();
     } catch (e: any) { toast.error(String(e?.message ?? e)); }
     finally { setBusy(false); }
@@ -318,7 +319,7 @@ function SkillsSection({ id }: { id: string }) {
         {t("common.skills")} <span className="cnt">{all.length}</span>
         {capabilities.manageAgents && <span style={{ marginLeft: 8 }}>
           <label className="joinbtn" style={{ cursor: busy ? "not-allowed" : "pointer", display: "inline-block", fontSize: "inherit", lineHeight: "inherit", padding: "2px 8px" }}>
-            {busy ? "Uploading…" : "+ Skill"}
+            {busy ? t("members.uploading") : t("members.skillAdd")}
             <input type="file" accept=".md,text/markdown" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadSkill(f); e.target.value = ""; }} />
           </label>
         </span>}
@@ -334,7 +335,7 @@ function SkillsSection({ id }: { id: string }) {
                   color: "var(--error)", float: "right", fontSize: "inherit", lineHeight: "inherit",
                   padding: "0 4px", background: "none", border: "none", cursor: busy ? "not-allowed" : "pointer",
                   opacity: busy ? .5 : 1,
-                }} disabled={busy} onClick={() => deleteSkill(s.dirName)} title="Delete from workspace">✕</button>
+                }} disabled={busy} onClick={() => deleteSkill(s.dirName)} title={t("members.skillDeleteFromWorkspace")}>✕</button>
               )}
             </div>
             {s.description ? <div className="meta skill-desc">{s.description}</div> : <div className="meta" style={{ opacity: .6 }}>{t("members.noDescription")}</div>}
@@ -365,13 +366,16 @@ function PermissionsTab({ id }: { id: string }) {
         <button className="ok" style={{ marginLeft: "auto" }} onClick={() => save([...granted])}>{t("members.save")}</button>
         {saved && <span className="saved">{t("members.savedConfirm")}</span>}
       </div>
+      {/* Scope group/label/description come from the server catalog (src/server/scopes.ts, English). Translate
+          client-side keyed by the stable scope key — ":" is i18next's ns separator, so swap it for "_"; a scope
+          the locale files don't know yet falls back to the server-sent English instead of a bare key. */}
       {Object.entries(groups).map(([g, list]) => (
         <div key={g} className="perm-group">
-          <div className="sec sec-sub">{g}</div>
+          <div className="sec sec-sub">{t(`members.scopeGroup.${g}`, { defaultValue: g })}</div>
           {list.map((s: any) => (
             <label key={s.key} className="perm-row">
               <input type="checkbox" checked={granted.has(s.key)} onChange={() => toggle(s.key)} />
-              <span className="grow"><span className="who">{s.label}</span> <code className="perm-key">{s.key}</code><div className="meta">{s.description}</div></span>
+              <span className="grow"><span className="who">{t(`members.scopeLabel.${s.key.replace(/:/g, "_")}`, { defaultValue: s.label })}</span> <code className="perm-key">{s.key}</code><div className="meta">{t(`members.scopeDesc.${s.key.replace(/:/g, "_")}`, { defaultValue: s.description })}</div></span>
             </label>
           ))}
         </div>
@@ -433,18 +437,14 @@ function ActivityTab({ id, name }: { id: string; name: string }) {
     else if (e.type === "trajectory" && e.agentId === id) setItems((x) => [...x, ...(e.entries || []).map((en: any) => ({ timestamp: Date.now(), entry: { kind: en.kind === "tool" ? "tool_start" : (en.kind || (en.toolName ? "tool_start" : "text")), text: en.text, toolName: en.toolName, toolInput: en.toolInput, activity: en.activity, detail: en.detail } }))]);
   }), [id]);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [items]);
-  const time = (ts: number) => { try { return new Date(ts).toLocaleTimeString(undefined, { hour12: false }); } catch { return ""; } };
   const entryOf = (e: any) => ({ ...e, kind: e.kind === "tool" ? "tool_start" : e.kind });
   const visible = (e: any) => !(e.kind === "status" && !e.activity && !e.detail) && !(e.kind === "tool_start" && e.toolName === "agentMessage" && !e.text);
   return (
     <div className="scroll" ref={scrollRef}>
       {items.length === 0 ? <div className="empty">{t("members.activityEmpty", { name })}</div>
-        : <div className="actlog">{items.filter((it) => visible(entryOf(it.entry))).map((it, i) => {
-          const e = entryOf(it.entry); const t2 = time(it.timestamp);
-          if (e.kind === "tool_start") return <div className="act" key={i}><span className="act-t">{t2}</span><span className="act-tool"><Wrench size={11} /> {e.toolName}</span><span className="act-x mono">{e.toolInput}</span></div>;
-          if (e.kind === "text") return <div className="act" key={i}><span className="act-t">{t2}</span><span className="act-x">{e.text}</span></div>;
-          return <div className="act" key={i}><span className="act-t">{t2}</span><span className={"dot " + (e.activity || "")} /><span className="act-x muted">{e.activity}{e.detail ? " · " + e.detail : ""}</span></div>;
-        })}</div>}
+        : <div className="actlog">{items.filter((it) => visible(entryOf(it.entry))).map((it, i) => (
+          <ActivityEventRow key={i} item={{ ...entryOf(it.entry), timestamp: it.timestamp }} />
+        ))}</div>}
     </div>
   );
 }
@@ -491,8 +491,8 @@ function WorkspaceTab({ id }: { id: string }) {
             : <>
                 <div className="ws-path">{sel.path}
                   {isMd && <span className="ws-toggle">
-                    <button className={mode === "preview" ? "on" : ""} onClick={() => setMode("preview")}>Preview</button>
-                    <button className={mode === "raw" ? "on" : ""} onClick={() => setMode("raw")}>Raw</button>
+                    <button className={mode === "preview" ? "on" : ""} onClick={() => setMode("preview")}>{t("members.filePreview")}</button>
+                    <button className={mode === "raw" ? "on" : ""} onClick={() => setMode("raw")}>{t("members.fileRaw")}</button>
                   </span>}
                 </div>
                 {isMd && mode === "preview"
@@ -563,9 +563,9 @@ export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () 
     ...(supportsLocalDefault ? [{ value: LOCAL_DEFAULT, label: t("members.useLocalDefault") }] : []),
     ...(models.length
       ? models.map((m) => ({ value: m.id, label: m.label || m.id }))
-      : supportsLocalDefault ? [] : [{ value: "default", label: "Default" }]),
+      : supportsLocalDefault ? [] : [{ value: "default", label: t("members.modelDefault") }]),
   ];
-  const modelLoadingOpts = [{ value: "", label: "Detecting models…" }];
+  const modelLoadingOpts = [{ value: "", label: t("members.modelDetecting") }];
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -575,17 +575,17 @@ export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () 
         {machineOpts.length === 0 && <div className="hint">{t("members.noMachineHint")}</div>}
         <label>{t("members.nameLabel")}</label><input value={name} maxLength={64} onChange={(e) => setName(e.target.value)} placeholder={t("members.namePlaceholder")} />
         <label>{t("members.descriptionLabel")}</label><textarea value={desc} maxLength={3000} onChange={(e) => setDesc(e.target.value)} placeholder={t("members.descriptionPlaceholder")} />
-        <label>Runtime</label>
-        <Select ariaLabel="Runtime" value={runtime} options={RUNTIMES} onChange={setRuntime} />
+        <label>{t("common.runtime")}</label>
+        <Select ariaLabel={t("common.runtime")} value={runtime} options={RUNTIMES} onChange={setRuntime} />
         <label>{t("common.model")}</label>
         {/* During probe flight: disable interaction + show "Detecting models…" placeholder.
             fieldset[disabled] disables all descendant buttons without modifying Select.tsx. */}
         <fieldset disabled={modelsLoading} style={{ border: 0, padding: 0, margin: 0, opacity: modelsLoading ? 0.6 : 1 }}>
-          <Select ariaLabel="Model" value={modelsLoading ? "" : model} options={modelsLoading ? modelLoadingOpts : modelOpts} onChange={(v) => { setModel(v); const m = models.find((m) => m.id === v); setReasoning(m?.thinking?.default ?? ""); }} />
+          <Select ariaLabel={t("common.model")} value={modelsLoading ? "" : model} options={modelsLoading ? modelLoadingOpts : modelOpts} onChange={(v) => { setModel(v); const m = models.find((m) => m.id === v); setReasoning(m?.thinking?.default ?? ""); }} />
         </fieldset>
         {thinkingLevels.length > 0 && <>
           <label>{t("members.reasoningLabel")}</label>
-          <Select ariaLabel="Reasoning" value={reasoning} onChange={setReasoning}
+          <Select ariaLabel={t("common.reasoning")} value={reasoning} onChange={setReasoning}
             options={[{ value: "", label: t("members.reasoningDefault") }, ...thinkingLevels.map((l) => ({ value: l.value, label: l.label }))]} />
         </>}
         <label className="ck-row"><input type="checkbox" checked={fast} onChange={(e) => setFast(e.target.checked)} /><span>{t("members.fastMode")}</span></label>
@@ -612,6 +612,7 @@ export function HumanProfile({ uid, onClose, onMessage }: { uid: string; onClose
   const onPickSeed = async (scheme: string) => { setAvBusy(true); setAvErr(""); try { await api("PATCH", "/api/auth/me", { avatarUrl: scheme }); await refetch(); await reload(); } catch (err: any) { setAvErr(String(err?.message || err)); } finally { setAvBusy(false); } };
   if (!p) return <div className="scroll"><div className="empty">{t("members.loading")}</div></div>;
   const isMe = me?.id === uid;
+  const roleLabel = (r: string) => t(`members.roles.${r}`, { defaultValue: r }); // unknown role → raw value
   const save = async () => { await api("PATCH", "/api/auth/me", { description: ds.trim() }); setEdit(false); await refetch(); await reload(); };
   const dmHuman = async () => { const cid = await openDM("user", uid); if (cid) nav(`/s/${slug}/channel/${cid}`); };
   const dmBtn = !isMe ? <button className="joinbtn" onClick={onMessage ?? dmHuman}><MessageCircle size={13} style={{ verticalAlign: "-2px" }} /> {t("members.dm")}</button> : null;
@@ -620,23 +621,23 @@ export function HumanProfile({ uid, onClose, onMessage }: { uid: string; onClose
       {onClose ? ( // panel mode (embedded in chat right column: click avatar / name / @mention → profile overlay), mirrors AgentProfile
         <div className="profile-panel-head">
           <Avatar seed={p.name} url={signedAvatar} size={28} />
-          <div className="pph-id"><span className="pph-name">{p.displayName || p.name}</span><span className="pph-handle">@{p.name} · {p.role}</span></div>
+          <div className="pph-id"><span className="pph-name">{p.displayName || p.name}</span><span className="pph-handle">@{p.name} · {roleLabel(p.role)}</span></div>
           <button className="joinbtn pph-close" title={t("members.close")} onClick={onClose}><X size={14} /></button>
           {dmBtn && <div className="agent-acts">{dmBtn}</div>}
         </div>
-      ) : <div className="head head-agent"><AvatarPicker name={p.name} url={signedAvatar} size={48} editable={isMe} busy={avBusy} onPickSeed={onPickSeed} onPickFile={onPickAvatar} /><div className="head-id"><h1>{p.displayName || p.name}</h1><small>@{p.name} · {p.role}{avErr ? <span className="form-err" style={{ marginLeft: 8 }}>{avErr}</span> : null}</small></div><div className="agent-acts">{dmBtn}</div></div>}
+      ) : <div className="head head-agent"><AvatarPicker name={p.name} url={signedAvatar} size={48} editable={isMe} busy={avBusy} onPickSeed={onPickSeed} onPickFile={onPickAvatar} /><div className="head-id"><h1>{p.displayName || p.name}</h1><small>@{p.name} · {roleLabel(p.role)}{avErr ? <span className="form-err" style={{ marginLeft: 8 }}>{avErr}</span> : null}</small></div><div className="agent-acts">{dmBtn}</div></div>}
       <div className="scroll">
         <div className="card">
           {edit ? (
             <div className="setform">
               <label>{t("members.humanDescriptionLabel")}</label>
-              <textarea value={ds} maxLength={3000} onChange={(e) => setDs(e.target.value)} placeholder="Describe yourself for other humans and agents in this server" />
+              <textarea value={ds} maxLength={3000} onChange={(e) => setDs(e.target.value)} placeholder={t("common.describeSelfPlaceholder")} />
               <div className="ta-count">{ds.trim().length}/3000</div>
               <div className="setrow"><button className="ok" onClick={save}>{t("members.save")}</button><button className="cancel" onClick={() => setEdit(false)}>{t("members.cancel")}</button></div>
             </div>
           ) : (<>
-            <div className="meta">{p.description || "No description"}</div>
-            <div className="kv"><b>{t("members.role")}</b> {p.role}</div>
+            <div className="meta">{p.description || t("members.noDescription")}</div>
+            <div className="kv"><b>{t("members.role")}</b> {roleLabel(p.role)}</div>
             {p.joinedAt && <div className="kv"><b>{t("members.joined")}</b> {fmtDateTime(p.joinedAt)}</div>}
             {p.email && <div className="kv"><b>{t("members.email")}</b> {p.email}</div>}
             {isMe && <div className="task-acts" style={{ marginTop: 14 }}><button className="joinbtn" onClick={() => { setDs(p.description || ""); setEdit(true); }}>{t("members.editProfile")}</button></div>}
@@ -646,14 +647,14 @@ export function HumanProfile({ uid, onClose, onMessage }: { uid: string; onClose
           <div className="card">
             <h3>{t("members.memberManagement")}</h3>
             {capabilities.changeMemberRoles && (
-              <div className="kv"><b>{t("members.role")}</b> <Select ariaLabel={t("members.role")} value={p.role} options={[{ value: "owner", label: "owner" }, { value: "admin", label: "admin" }, { value: "member", label: "member" }]} onChange={async (role) => { const r = await api("PATCH", `/api/servers/${serverId}/members/${uid}`, { role }); if (r?.error) { alert(r.error); return; } await refetch(); await reload(); }} /></div>
+              <div className="kv"><b>{t("members.role")}</b> <Select ariaLabel={t("members.role")} value={p.role} options={["owner", "admin", "member"].map((r) => ({ value: r, label: roleLabel(r) }))} onChange={async (role) => { const r = await api("PATCH", `/api/servers/${serverId}/members/${uid}`, { role }); if (r?.error) { alert(r.error); return; } await refetch(); await reload(); }} /></div>
             )}
             {capabilities.manageMembers && <button className="joinbtn" style={{ color: "var(--error)", marginTop: 12 }} onClick={async () => { if (!(await confirm({ title: t("members.removeMemberTitle", { name: p.name }), message: t("members.removeMemberMessage"), confirmLabel: t("members.remove"), danger: true }))) return; const r = await api("DELETE", `/api/servers/${serverId}/members/${uid}`); if (r?.error) { alert(r.error); return; } await reload(); if (onClose) onClose(); else nav(`/s/${slug}/agent`); }}>{t("members.removeMember")}</button>}
           </div>
         )}
         {p.createdAgents?.length > 0 && (
           <div className="card">
-            <h3>Created Agents <small className="meta">· {p.createdAgents.length}</small></h3>
+            <h3>{t("members.createdAgents")} <small className="meta">· {p.createdAgents.length}</small></h3>
             {p.createdAgents.map((a: any) => (
               <button key={a.id} className="item" onClick={() => nav(`/s/${slug}/agent/${a.id}`)}>
                 <Avatar seed={a.name} url={resolveAvatar(a.avatarUrl, attachmentUrl)} size={20} /><span className="grow">{a.displayName || a.name}</span><span className={"dot " + a.status} role="img" aria-label={t("members.statusLabel", { status: a.status })} title={a.status} />
@@ -672,9 +673,9 @@ function RestartModal({ name, onClose, onPick }: { name: string; onClose: () => 
   useEscClose(onClose);
   const [mode, setMode] = useState<"restart" | "reset" | "full">("restart");
   const opts: { k: "restart" | "reset" | "full"; title: string; desc: string }[] = [
-    { k: "restart", title: "Restart", desc: t("members.restartDesc") },
-    { k: "reset", title: "Reset Session & Restart", desc: t("members.resetDesc") },
-    { k: "full", title: "Full Reset & Restart", desc: t("members.fullResetDesc") },
+    { k: "restart", title: t("members.restart"), desc: t("members.restartDesc") },
+    { k: "reset", title: t("members.restartOptReset"), desc: t("members.resetDesc") },
+    { k: "full", title: t("members.restartOptFull"), desc: t("members.fullResetDesc") },
   ];
   return (
     <div className="modal-bg" onClick={onClose}>

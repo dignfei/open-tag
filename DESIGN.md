@@ -133,6 +133,48 @@ typography:
     fontWeight: 500
     lineHeight: 1.4
     letterSpacing: 0
+  display-xs:
+    fontFamily: "'EB Garamond', 'Cormorant Garamond', serif"
+    fontSize: 22px
+    fontWeight: 300
+    lineHeight: 1.25
+    letterSpacing: -0.3px
+    usage: "Compact serif heading inside the app shell: sidebar view title, auth brand mark. The smallest display step — below this, switch to Inter."
+  ui-md:
+    fontFamily: "'Inter', sans-serif"
+    fontSize: 13px
+    fontWeight: 400
+    lineHeight: 1.45
+    letterSpacing: 0
+    usage: "App-shell default UI text: menus, tabs, buttons, message toolbar, form controls. The workhorse size of the dense operational UI (the marketing ramp's body sizes are too large here)."
+  ui-sm:
+    fontFamily: "'Inter', sans-serif"
+    fontSize: 11px
+    fontWeight: 400
+    lineHeight: 1.4
+    letterSpacing: 0
+    usage: "Dense metadata: timestamps, counters, secondary labels inside compact rows."
+  ui-xs:
+    fontFamily: "'Inter', sans-serif"
+    fontSize: 10px
+    fontWeight: 600
+    lineHeight: 1.3
+    letterSpacing: 0.2px
+    usage: "Smallest legible labels: rail nav labels, tiny badges. Never for sentences."
+  mono-code:
+    fontFamily: "ui-monospace, monospace"
+    fontSize: 12.5px
+    fontWeight: 400
+    lineHeight: 1.5
+    letterSpacing: 0
+    usage: "Inline code boxes. Mono reads optically larger than Inter at equal px, so mono steps sit on half-pixels by design."
+  mono-micro:
+    fontFamily: "ui-monospace, monospace"
+    fontSize: 10.5px
+    fontWeight: 400
+    lineHeight: 1.4
+    letterSpacing: 0
+    usage: "Tabular-numeric micro timestamps in activity/event rows (pairs with `font-variant-numeric: tabular-nums`)."
 
 rounded:
   none: 0px
@@ -352,6 +394,16 @@ These appear ONLY as soft radial-gradient atmospheric orbs inside `{component.gr
 | `{typography.caption-uppercase}` | 12px | 600 | 1.4 | 0.96px | Section labels, badges |
 | `{typography.button}` | 15px | 500 | 1.0 | 0 | CTA pill |
 | `{typography.nav-link}` | 15px | 500 | 1.4 | 0 | Top-nav menu |
+| `{typography.display-xs}` | 22px | 300 | 1.25 | -0.3px | Compact serif heading (sidebar title, auth brand) |
+| `{typography.ui-md}` | 13px | 400 | 1.45 | 0 | App-shell default UI text (menus, tabs, buttons, toolbars) |
+| `{typography.ui-sm}` | 11px | 400 | 1.4 | 0 | Dense metadata (timestamps, counters) |
+| `{typography.ui-xs}` | 10px | 600 | 1.3 | 0.2px | Smallest labels (rail labels, tiny badges) |
+| `{typography.mono-code}` | 12.5px | 400 | 1.5 | 0 | Inline code boxes (mono optical half-step) |
+| `{typography.mono-micro}` | 10.5px | 400 | 1.4 | 0 | Tabular micro timestamps in activity rows |
+
+The `ui-*` / `mono-*` steps are the **app-shell ramp** — the dense operational UI documented from the
+shipped implementation (the marketing-born body sizes above are too large for compact rows). Marketing
+surfaces must not use them below `caption`.
 
 ### Principles
 - **Display weight stays at 300.** EB Garamond Light is the editorial signature. Never bold display copy.
@@ -529,6 +581,6 @@ The system uses **hairline + restrained drop shadow**. Flat surfaces float above
 
 ## Known Gaps
 
-- Animation timings (orb drift, hero entrance) out of scope.
+- Animation timings (orb drift, hero entrance) out of scope — the standing motion spec is [`docs/motion-charter.md`](./docs/motion-charter.md). **Icon micro-interactions** are specified in [`docs/icon-motion.md`](./docs/icon-motion.md) and implemented by `web/src/iconMotion.css` (`--im-spring`, a scoped charter exception; two-class `im` / `im-*` API).
 - In-product application surfaces only partially specified here; extend tokens as needed.
 - Form validation states beyond focus not fully specified.

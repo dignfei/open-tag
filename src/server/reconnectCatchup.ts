@@ -11,11 +11,11 @@
 // The wake criterion is the conservative mirror of createMessage's wake branch (core.ts, "Agent-side wake"):
 // DM/@ wake unconditionally; ambient (non-@) wakes only with the inbox:receive scope. The two stay in sync
 // through agentWakePolicy — see docs/superpowers/specs/2026-06-25-agent-reachability-design.md §5.4.
-import { and, eq, gt, ne, or, isNull, desc } from "drizzle-orm";
+import { and, eq, gt, inArray, ne, or, isNull, desc } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { agentHasScope } from "./scopes.js";
-import { sendToMachine } from "./daemonHub.js";
-import { agentConfig } from "./core.js";
+import { conversationTurnDeliveryBlockReason, sendToMachine } from "./daemonHub.js";
+import { agentConfig } from "./agentConfig.js";
 import { createLogger } from "../log.js";
 import { isWakeable } from "./agentWakePolicy.js";
 
@@ -32,7 +32,7 @@ interface Backlog { count: number; from: string; targetName: string; }
 
 /** Does this agent have a wakeable backlog (unread messages that would have woken it)? Returns a small
  *  summary used to build the soft-offline inbox notice, or null when there is nothing wakeable. */
-async function computeBacklog(agentId: string, scopes: Parameters<typeof agentHasScope>[0]): Promise<Backlog | null> {
+async function computeBacklog(agentId: string, scopes: Parameters<typeof agentHasScope>[0], includeDurableTurns: boolean): Promise<Backlog | null> {
   const hasInbox = agentHasScope(scopes, "inbox:receive");
   const memberships = await db.select({
     channelId: schema.channelMembers.channelId,
@@ -50,22 +50,54 @@ async function computeBacklog(agentId: string, scopes: Parameters<typeof agentHa
 
   for (const m of memberships) {
     const unread = and(eq(schema.messages.channelId, m.channelId), gt(schema.messages.seq, m.lastReadSeq), notSelf);
+    const turnGrantEligible = includeDurableTurns
+      ? or(
+        isNull(schema.messages.conversationTurnId),
+        and(
+          inArray(schema.conversationTurns.state, ["dispatched", "blocked"]),
+          inArray(schema.agentMessageDecisions.grantStatus, ["active", "publishing"]),
+        ),
+      )
+      : isNull(schema.messages.conversationTurnId);
     const rowsBySeq = new Map<number, { seq: number; from: string }>();
     if (m.type === "dm") {
       const rows = await db.select({ seq: schema.messages.seq, from: schema.messages.senderName })
-        .from(schema.messages).where(unread).orderBy(desc(schema.messages.seq));
+        .from(schema.messages)
+        .leftJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
+        .leftJoin(schema.agentMessageDecisions, and(
+          eq(schema.agentMessageDecisions.messageId, schema.conversationTurns.triggerMessageId),
+          eq(schema.agentMessageDecisions.agentId, agentId),
+        ))
+        .where(and(unread, turnGrantEligible)).orderBy(desc(schema.messages.seq));
       for (const row of rows) rowsBySeq.set(row.seq, row);
     } else {
       const mentionedRows = await db.select({ seq: schema.messages.seq, from: schema.messages.senderName })
         .from(schema.messages)
         .innerJoin(schema.messageMentions, eq(schema.messageMentions.messageId, schema.messages.id))
-        .where(and(unread, eq(schema.messageMentions.mentionType, "agent"), eq(schema.messageMentions.mentionId, agentId)))
+        .leftJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
+        .leftJoin(schema.agentMessageDecisions, and(
+          eq(schema.agentMessageDecisions.messageId, schema.conversationTurns.triggerMessageId),
+          eq(schema.agentMessageDecisions.agentId, agentId),
+        ))
+        .where(and(unread, eq(schema.messageMentions.mentionType, "agent"), eq(schema.messageMentions.mentionId, agentId), turnGrantEligible))
         .orderBy(desc(schema.messages.seq));
       for (const row of mentionedRows) rowsBySeq.set(row.seq, row);
       if (isWakeable({ channelType: m.type, mentioned: false, hasInboxScope: hasInbox, senderType: "user" })) {
         const ambientRows = await db.select({ seq: schema.messages.seq, from: schema.messages.senderName })
           .from(schema.messages)
-          .where(and(unread, ne(schema.messages.senderType, "agent")))
+          .leftJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
+          .leftJoin(schema.agentMessageDecisions, and(
+            eq(schema.agentMessageDecisions.messageId, schema.conversationTurns.triggerMessageId),
+            eq(schema.agentMessageDecisions.agentId, agentId),
+          ))
+          .where(and(
+            unread,
+            ne(schema.messages.senderType, "agent"),
+            or(
+              isNull(schema.messages.conversationTurnId),
+              and(eq(schema.conversationTurns.ownerAgentId, agentId), turnGrantEligible),
+            ),
+          ))
           .orderBy(desc(schema.messages.seq));
         for (const row of ambientRows) rowsBySeq.set(row.seq, row);
       }
@@ -87,14 +119,17 @@ async function computeBacklog(agentId: string, scopes: Parameters<typeof agentHa
  *  Best-effort: any failure is logged and never propagates — onReady's health takes priority. */
 export async function catchUpAgentsOnMachine(serverId: string, machineId: string, runningIds: string[]): Promise<void> {
   const now = Date.now();
-  if (now - (lastRun.get(machineId) ?? 0) < COOLDOWN_MS) { log.debug("catch-up skipped (cooldown)", { machineId }); return; }
-  lastRun.set(machineId, now);
+  const durableDeliveryBlock = conversationTurnDeliveryBlockReason(serverId, machineId);
+  const cooldownKey = `${machineId}:${durableDeliveryBlock ? "legacy" : "durable"}`;
+  if (now - (lastRun.get(cooldownKey) ?? 0) < COOLDOWN_MS) { log.debug("catch-up skipped (cooldown)", { machineId }); return; }
+  lastRun.set(cooldownKey, now);
 
   const machine = (await db.select({ runtimes: schema.machines.runtimes }).from(schema.machines).where(and(
     eq(schema.machines.id, machineId),
     eq(schema.machines.serverId, serverId),
   )))[0];
   const availableRuntimes = new Set(machine?.runtimes ?? []);
+  if (durableDeliveryBlock) log.warn("durable Turn catch-up disabled", { machineId, reason: durableDeliveryBlock });
 
   const list = await db.select({ id: schema.agents.id, runtime: schema.agents.runtime, scopes: schema.agents.scopes })
     .from(schema.agents)
@@ -103,7 +138,10 @@ export async function catchUpAgentsOnMachine(serverId: string, machineId: string
   let woke = 0;
   for (const a of list) {
     let backlog: Backlog | null = null;
-    try { backlog = await computeBacklog(a.id, a.scopes); }
+    // Running agents receive durable work only through the canonical Turn dispatcher. A legacy
+    // body-free notice here would bypass the v2 commit barrier and duplicate the dispatcher wake.
+    // Dead agents may still need a startup nudge for already-admitted durable backlog.
+    try { backlog = await computeBacklog(a.id, a.scopes, !durableDeliveryBlock && !runningIds.includes(a.id)); }
     catch (e: any) { log.warn("backlog scan failed", { agentId: a.id, detail: String(e?.message ?? e) }); continue; }
     if (!backlog) continue;
     if (!availableRuntimes.has(a.runtime)) {

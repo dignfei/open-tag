@@ -9,6 +9,7 @@ const fail = (message) => {
 const packageJson = JSON.parse(read("package.json"));
 const server = read("src/server/index.ts");
 const landing = read("web/src/views/Landing.tsx");
+const publicNav = read("web/src/landing/publicNav.ts");
 const docsPage = read("docs-site/src/pages/index.astro");
 const docsVerify = read("docs-site/scripts/verify-onepage.mjs");
 const dockerfile = read("Dockerfile");
@@ -25,8 +26,12 @@ for (const required of ["DOCSDIST", "serveDocs", "serveDocsAsset", 'method === "
   if (!server.includes(required)) fail(`server must mount docs-site/dist at /docs: missing ${required}`);
 }
 
-for (const required of ["docsUrl(", "MARKETING_ORIGINS", "https://docs.getopentag.com/", "window.location.origin", "/docs/"]) {
-  if (!landing.includes(required)) fail(`landing Docs link must derive from the current app base URL: missing ${required}`);
+for (const required of ["resolveDocsHref(origin)", "window.location.origin"]) {
+  if (!landing.includes(required)) fail(`landing Docs link must use the shared public-nav resolver: missing ${required}`);
+}
+
+for (const required of ["DOCS_SITE_URL", "MARKETING_ORIGINS", "https://docs.getopentag.com/", "resolveDocsHref", "/docs/"]) {
+  if (!publicNav.includes(required)) fail(`public nav must resolve hosted and self-hosted Docs links: missing ${required}`);
 }
 
 if (landing.includes('<a href={GITHUB_URL} target="_blank" rel="noreferrer">Docs</a>')) {
@@ -41,11 +46,11 @@ for (const forbidden of ['href="/', 'src="/favicon.svg"', 'src="/workspace.png"'
   if (docsPage.includes(forbidden)) fail(`docs page must be mountable under /docs, but contains ${forbidden}`);
 }
 
-for (const required of ["data-home-link", "resolveHomeHref", "window.location.origin"]) {
+for (const required of ["data-home-link", "resolveMarketingHomeHref", "window.location.origin", 'import.meta.env.BASE_URL.endsWith("/")', "docsBrandMarkSrc"]) {
   if (!docsPage.includes(required)) fail(`docs page brand link must resolve to the app landing URL: missing ${required}`);
 }
 
-if (!docsVerify.includes("data-home-link") || !docsVerify.includes('src="./favicon.svg"')) {
+if (!docsVerify.includes("data-home-link") || !docsVerify.includes("src={docsBrandMarkSrc}")) {
   fail("docs one-page guard must enforce mount-safe assets and brand home link.");
 }
 

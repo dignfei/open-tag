@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { canAutoJoinMentionedMembers, isWakeable } from "./agentWakePolicy.js";
 
-test("only human-authored mentions auto-join non-members", () => {
+test("human and agent work mentions auto-join reachable non-members", () => {
   assert.equal(canAutoJoinMentionedMembers("user"), true);
-  assert.equal(canAutoJoinMentionedMembers("agent"), false);
+  assert.equal(canAutoJoinMentionedMembers("agent"), true);
   assert.equal(canAutoJoinMentionedMembers("system"), false);
 });
 

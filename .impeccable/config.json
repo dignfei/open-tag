@@ -4,6 +4,28 @@
     "ignoreFiles": [
       "/Users/nowcoder/Desktop/auto-code-work/open-tag-showcase/src/server/showcaseSeed.ts"
     ],
-    "ignoreValues": []
+    "ignoreValues": [
+      {
+        "rule": "bounce-easing",
+        "value": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+        "createdAt": "2026-07-23T09:28:13.146Z",
+        "reason": "User confirmed: Amicro spring(600,25) replica — the signature overshoot is the point of the icon-motion system (docs/icon-motion.md)"
+      },
+      {
+        "rule": "bounce-easing",
+        "value": "im-bounce-down",
+        "createdAt": "2026-07-23T09:30:14.971Z",
+        "reason": "User confirmed: literal gravity bounce on the download icon (docs/icon-motion.md §3); easing is already plain ease-in-out"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "web/src/styles.css"
+        ],
+        "createdAt": "2026-07-23T10:02:06.967Z",
+        "reason": "User-approved audit 2026-07-23: both side-tab hits are markdown blockquote / GitHub-alert left borders (.md/.ws-md blockquote) — the standard md affordance, not a card accent"
+      }
+    ]
   }
 }

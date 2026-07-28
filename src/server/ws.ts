@@ -1,15 +1,23 @@
 // daemon control plane: WS /daemon/connect?key= (ServerToMachine / MachineToServer)
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import type { Server } from "node:http";
-import { and, desc, eq, notInArray, or } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { BOOTSTRAP_KEY, hashToken, safeEqual } from "./auth.js";
-import { registerDaemon, unregisterDaemon, resolveDaemonRequest, registerMachineConn, unregisterMachineConn, isCurrentMachineConn } from "./daemonHub.js";
+import { conversationTurnDeliveryBlockReason, registerDaemon, registerDaemonCapabilities, unregisterDaemon, resolveDaemonRequest, registerMachineConn, unregisterMachineConn, isCurrentMachineConn } from "./daemonHub.js";
 import { publish } from "./realtime.js";
 import { createLogger } from "../log.js";
 import { MACHINE_REJECTED_CODE } from "../daemonProtocol.js";
 import { catchUpAgentsOnMachine } from "./reconnectCatchup.js";
 import { markMachineAgentsOffline } from "./machineLiveness.js";
+import { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog, startAgentActivityRun } from "./agentActivity.js";
+import { finalizeAgentActivityRun } from "./core.js";
+import { acceptAgentDeliveryAck, hasPendingAgentDelivery, noteAgentDeliveryPending, rejectAgentDeliveryAck } from "./agentDeliveryAck.js";
+import { commitAgentDeliveryAdmission, releaseAgentDeliveryAdmission, type CommittedAgentDelivery } from "./agentDeliveryAdmission.js";
+import { createWsFrameGate } from "./wsFrameGate.js";
+import { handleConversationTurnDaemonTopologyChange, resumeConversationTurnsForMachine } from "./conversationTurnRecovery.js";
+
+export { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog } from "./agentActivity.js";
 
 const log = createLogger("server:ws");
 
@@ -27,6 +35,9 @@ export function attachWs(server: Server): void {
 async function onDaemon(ws: WebSocket, key: string): Promise<void> {
   let serverId: string | null = null;
   let machineId: string | null = null;
+  const frames = createWsFrameGate<RawData>();
+  const committedDeliveries = new Map<string, CommittedAgentDelivery>();
+  ws.on("message", (data) => frames.dispatch(data));
   if (safeEqual(key, BOOTSTRAP_KEY)) {
     serverId = (await db.select().from(schema.servers).where(eq(schema.servers.slug, "open-tag")))[0]?.id ?? null;
   } else {
@@ -44,19 +55,71 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
   log.info("daemon connected", { serverId });
   const ping = setInterval(() => { try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* */ } }, 30000);
 
-  ws.on("message", async (data) => {
+  frames.open(async (data) => {
     let msg: any; try { msg = JSON.parse(data.toString()); } catch { return; }
     try {
-      if (msg.type === "ready") { machineId = await onReady(serverId!, key, msg); registerMachineConn(machineId, ws); try { ws.send(JSON.stringify({ type: "ready:ack", machineId })); } catch { /* */ } }
+      if (msg.type === "ready") {
+        const runningIds: string[] = Array.isArray(msg.runningAgents) ? msg.runningAgents : [];
+        machineId = await onReady(serverId!, key, msg);
+        registerDaemonCapabilities(ws, msg.capabilities);
+        const alreadyCurrent = isCurrentMachineConn(machineId, ws);
+        registerMachineConn(machineId, ws);
+        try { ws.send(JSON.stringify({ type: "ready:ack", machineId })); } catch { /* */ }
+        // The machine connection must be indexed before catch-up sends agent:start/deliver to it.
+        void (async () => {
+          if (!alreadyCurrent && !conversationTurnDeliveryBlockReason(serverId!, machineId)) {
+            await resumeConversationTurnsForMachine(serverId!, machineId, false);
+          }
+          await handleConversationTurnDaemonTopologyChange(serverId!);
+          await catchUpAgentsOnMachine(serverId!, machineId, runningIds);
+        })().catch((e: any) => log.error("catch-up failed", { machineId, detail: String(e?.message ?? e) }));
+      }
       else if (msg.type === "agent:status" || msg.type === "agent:activity") await onAgentUpdate(serverId!, msg);
+      else if (msg.type === "agent:deliver:pending") noteAgentDeliveryPending(typeof msg.deliveryId === "string" ? msg.deliveryId : undefined);
+      else if (msg.type === "agent:deliver:ready") {
+        const deliveryId = typeof msg.deliveryId === "string" ? msg.deliveryId : undefined;
+        if (!hasPendingAgentDelivery(deliveryId)) {
+          ws.send(JSON.stringify({ type: "agent:deliver:rejected", deliveryId, error: "delivery is not pending" }));
+        } else {
+          const result = await commitAgentDeliveryAdmission({ ws, serverId: serverId!, machineId, deliveryId, agentId: msg.agentId, seq: msg.seq });
+          if (result.ok) {
+            committedDeliveries.set(result.delivery.deliveryId, result.delivery);
+            ws.send(JSON.stringify({ type: "agent:deliver:admitted", deliveryId: result.delivery.deliveryId }));
+          } else {
+            ws.send(JSON.stringify({ type: "agent:deliver:rejected", deliveryId, error: result.error }));
+          }
+        }
+      }
+      else if (msg.type === "agent:deliver:ack") {
+        const delivery = typeof msg.deliveryId === "string" ? committedDeliveries.get(msg.deliveryId) : undefined;
+        if (delivery && delivery.agentId === msg.agentId && delivery.seq === msg.seq) {
+          committedDeliveries.delete(delivery.deliveryId);
+          acceptAgentDeliveryAck(delivery.deliveryId, delivery.agentId, delivery.seq);
+        }
+      }
+      else if (msg.type === "agent:deliver:nack") {
+        const delivery = typeof msg.deliveryId === "string" ? committedDeliveries.get(msg.deliveryId) : undefined;
+        if (delivery && delivery.agentId === msg.agentId && delivery.seq === msg.seq) {
+          committedDeliveries.delete(delivery.deliveryId);
+          await releaseAgentDeliveryAdmission(delivery);
+          rejectAgentDeliveryAck(delivery.deliveryId, delivery.agentId, delivery.seq, typeof msg.error === "string" ? msg.error : undefined);
+        }
+      }
       else if (msg.type === "agent:session" && msg.agentId) { await db.update(schema.agents).set({ sessionId: msg.sessionId }).where(eq(schema.agents.id, msg.agentId)); await publish(serverId!, { type: "agent:session", agentId: msg.agentId, sessionId: msg.sessionId }); } // forward to the frontend
       else if (msg.type === "agent:trajectory" && msg.agentId) {
         const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
         await publish(serverId!, { type: "trajectory", agentId: msg.agentId, name: a?.name, entries: msg.entries ?? [] });
-        for (const e of msg.entries ?? []) await logActivity(serverId!, msg.agentId, e); // persist to the activity log
+        const entries = [];
+        for (const e of msg.entries ?? []) {
+          const item = await logActivity(serverId!, msg.agentId, e, { channelId: msg.channelId, streamId: msg.streamId, runSeq: e.runSeq });
+          if (item) entries.push(item);
+        }
+        if (msg.channelId && msg.streamId && entries.length) await publish(serverId!, { type: "agent:reply", agentId: msg.agentId, channelId: msg.channelId, streamId: msg.streamId, name: a?.displayName ?? a?.name, op: "activity", entries });
       }
       else if (msg.type === "agent:reply" && msg.agentId && msg.channelId && msg.streamId) {
         const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
+        if (msg.op === "start") await startAgentActivityRun(serverId!, msg.agentId, msg.channelId, msg.streamId);
+        if (msg.op === "done" || msg.op === "error") await finalizeAgentActivityRun(serverId!, msg.agentId, msg.channelId, msg.streamId, msg.name ?? a?.displayName ?? a?.name ?? "Agent", msg.op === "error" ? "error" : "handled");
         await publish(serverId!, { type: "agent:reply", agentId: msg.agentId, channelId: msg.channelId, streamId: msg.streamId, name: msg.name ?? a?.displayName ?? a?.name, op: msg.op, text: msg.text ?? "" });
       }
       else if (msg.type === "pong" && machineId) {
@@ -67,13 +130,17 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
         await db.update(schema.machines).set({ lastHeartbeat: new Date(), status: "online" }).where(eq(schema.machines.id, machineId));
         if (prev && prev.status !== "online") await publish(serverId!, { type: "machine", online: true, machineId });
       }
-      else if ((msg.type === "workspace:file_tree" || msg.type === "workspace:file_content" || msg.type === "workspace:file_write" || msg.type === "workspace:file_delete" || msg.type === "skills:list" || msg.type === "models" || msg.type === "agent:resource-budget" || msg.type === "rpc:nack") && msg.requestId) resolveDaemonRequest(msg.requestId, msg);
+      else if ((msg.type === "workspace:file_tree" || msg.type === "workspace:file_content" || msg.type === "workspace:file_write" || msg.type === "workspace:file_delete" || msg.type === "skills:list" || msg.type === "models" || msg.type === "agent:resource-budget" || msg.type === "rpc:ack" || msg.type === "rpc:nack") && msg.requestId) resolveDaemonRequest(msg.requestId, msg);
     } catch (e: any) { log.error("ws handler error", { type: msg?.type, detail: String(e?.message ?? e) }); }
   });
   ws.on("close", async () => {
     clearInterval(ping);
+    await Promise.all([...committedDeliveries.values()].map(releaseAgentDeliveryAdmission));
+    committedDeliveries.clear();
     const wasCurrent = machineId ? isCurrentMachineConn(machineId, ws) : false;
     unregisterDaemon(ws); unregisterMachineConn(ws);
+    if (serverId) await handleConversationTurnDaemonTopologyChange(serverId)
+      .catch((e: any) => log.error("unbound Turn topology recovery failed", { serverId, detail: String(e?.message ?? e) }));
     // daemon disconnected → mark this machine offline (otherwise the list keeps showing it online)
     if (machineId && wasCurrent) {
       await db.update(schema.machines).set({ status: "offline" }).where(eq(schema.machines.id, machineId)).catch(() => {});
@@ -114,22 +181,26 @@ async function onReady(serverId: string, key: string, msg: any): Promise<string>
   }
   log.info("machine ready", { hostname, os: msg.os, runtimes: msg.runtimes ?? [], daemonVersion: msg.daemonVersion });
   await publish(serverId, { type: "machine", online: true, machineId, hostname, runtimes: msg.runtimes ?? [] }); // machineId in the machine:status payload
-  // Stale-agent reconciliation: on (re)connect the daemon reports the agents it is actually running (ready.runningAgents). An agent marked active in the DB but absent from that list = process is dead
-  // (the case where both server and daemon restarted) → set inactive, so the next spawn lets agentConfig re-mint the token normally (otherwise a stale active leaves agentToken undefined → agent 401).
-  // When only the server restarts and the daemon stays alive → runningAgents includes the live agent → no false reset (keeps zero-desync).
+  // Reconcile both directions against the authenticated machine's process inventory. A live process may have
+  // been marked inactive while its machine was disconnected; restoring active without touching its token keeps
+  // the already-running process authenticated. Conversely, active/queued rows absent from the inventory are stale.
   const runningIds: string[] = Array.isArray(msg.runningAgents) ? msg.runningAgents : [];
-  const onMachine = await db.select().from(schema.agents).where(and(eq(schema.agents.machineId, machineId), or(eq(schema.agents.status, "active"), eq(schema.agents.status, "queued"))));
+  const onMachine = await db.select().from(schema.agents).where(and(eq(schema.agents.machineId, machineId), isNull(schema.agents.deletedAt)));
   for (const a of onMachine) {
-    if (runningIds.includes(a.id)) continue;
-    await db.update(schema.agents).set({ status: "inactive", activity: "offline" }).where(eq(schema.agents.id, a.id));
-    await publish(serverId, { type: "agent", id: a.id, name: a.name, status: "inactive", activity: "offline" });
-    log.info("reconciled stale-active/queued agent → inactive", { agentId: a.id, machineId });
+    if (runningIds.includes(a.id)) {
+      if (a.status !== "active") {
+        await db.update(schema.agents).set({ status: "active" }).where(eq(schema.agents.id, a.id));
+        await publish(serverId, { type: "agent", id: a.id, name: a.name, status: "active", activity: a.activity });
+        log.info("reconciled reported running agent → active", { agentId: a.id, machineId });
+      }
+      continue;
+    }
+    if (a.status === "active" || a.status === "queued") {
+      await db.update(schema.agents).set({ status: "inactive", activity: "offline" }).where(eq(schema.agents.id, a.id));
+      await publish(serverId, { type: "agent", id: a.id, name: a.name, status: "inactive", activity: "offline" });
+      log.info("reconciled stale-active/queued agent → inactive", { agentId: a.id, machineId });
+    }
   }
-  // Reconnect catch-up: wake agents on this machine that accumulated a wakeable backlog while it was offline,
-  // so missed @/DM messages get processed instead of sitting unread forever (the symmetric counterpart to the
-  // human side's reconnect message-sync). Fire-and-forget — it must not delay the ready:ack the caller sends
-  // right after, and any failure must never break the connection.
-  void catchUpAgentsOnMachine(serverId, machineId, runningIds).catch((e: any) => log.error("catch-up failed", { machineId, detail: String(e?.message ?? e) }));
   return machineId;
 }
 
@@ -141,31 +212,8 @@ async function onAgentUpdate(serverId: string, msg: any): Promise<void> {
   await db.update(schema.agents).set(patch).where(eq(schema.agents.id, msg.agentId));
   const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
   if (a) await publish(serverId, { type: "agent", id: a.id, name: a.name, status: a.status, activity: a.activity, detail: msg.detail ?? "" });
-  if (msg.type === "agent:activity") await logActivity(serverId, msg.agentId, { kind: "status", activity: msg.activity, detail: msg.detail }); // status goes into the activity log
-}
-
-// Per-agent retention cap for the activity log. Agents stream trajectory entries continuously, so this
-// table would otherwise grow unbounded; we keep only the newest ACTIVITY_LOG_CAP rows per agent (pruned on
-// insert). The read endpoint (GET /api/agents/:id/activity-log) already caps at 200, so 500 leaves headroom.
-// Trade-off (high-frequency inserts → a prune per insert) tracked in docs/tech-debt-tracker.md.
-export const ACTIVITY_LOG_CAP = 500;
-
-// Delete all but the newest ACTIVITY_LOG_CAP rows (by ts) for one agent. Uses the (agentId, ts) index.
-export async function pruneAgentActivityLog(agentId: string): Promise<void> {
-  const keep = db.select({ id: schema.agentActivityLog.id }).from(schema.agentActivityLog)
-    .where(eq(schema.agentActivityLog.agentId, agentId)).orderBy(desc(schema.agentActivityLog.ts)).limit(ACTIVITY_LOG_CAP);
-  await db.delete(schema.agentActivityLog).where(and(eq(schema.agentActivityLog.agentId, agentId), notInArray(schema.agentActivityLog.id, keep)));
-}
-
-// Persist activity to the DB (daemon-pushed status/trajectory entries → agent_activity_log, feeds the activity facet history + timeline)
-export async function logActivity(serverId: string, agentId: string, e: any): Promise<void> {
-  const kind = e.kind === "tool" ? "tool_start" : (e.kind || (e.toolName ? "tool_start" : "text"));
-  try {
-    await db.insert(schema.agentActivityLog).values({
-      serverId, agentId, ts: Date.now(), kind,
-      activity: e.activity ?? null, detail: e.detail ?? null, text: e.text ?? null,
-      toolName: e.toolName ?? null, toolInput: e.toolInput ?? null,
-    });
-    await pruneAgentActivityLog(agentId); // keep the table bounded per agent (newest ACTIVITY_LOG_CAP)
-  } catch { /* logging failure must not block */ }
+  if (msg.type === "agent:activity") {
+    const item = await logActivity(serverId, msg.agentId, { kind: "status", activity: msg.activity, detail: msg.detail, runSeq: msg.runSeq }, { channelId: msg.channelId, streamId: msg.streamId, runSeq: msg.runSeq });
+    if (item && msg.channelId && msg.streamId) await publish(serverId, { type: "agent:reply", agentId: msg.agentId, channelId: msg.channelId, streamId: msg.streamId, name: a?.displayName ?? a?.name, op: "activity", entries: [item] });
+  }
 }

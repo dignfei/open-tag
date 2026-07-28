@@ -11,10 +11,10 @@
 - `npm run verify:onepage` (`scripts/verify-onepage.mjs`) enforces this — run it after changes.
 - Rationale + content-editing guidance: `docs-site/README.md`.
 
-Deploys to **https://docs.getopentag.com** via GitHub Pages
-(`.github/workflows/docs-deploy.yml`, path-filtered to `docs-site/**`); the same build is
-served by self-hosted servers at `/docs/` (see `ARCHITECTURE.md` §II). `public/CNAME`
-carries the custom domain — don't remove it.
+Deploys to **https://docs.getopentag.com/** via GitHub Pages
+(`.github/workflows/docs-deploy.yml`, path-filtered to `docs-site/**`) at the custom-domain
+root, while the same source builds without an explicit base for self-hosted servers at
+`/docs/` (see `ARCHITECTURE.md` §II).
 
 ## Development
 

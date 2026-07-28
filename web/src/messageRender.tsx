@@ -4,6 +4,7 @@
 // Raw HTML in a body is shown as LITERAL TEXT (remarkHtmlAsText), never rendered and never dropped —
 // react-markdown's default would silently swallow it, turning an all-HTML message into an empty bubble.
 import { useMemo, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, Copy, Info, Lightbulb, MessageSquareWarning, OctagonAlert, TriangleAlert, type LucideIcon } from "lucide-react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -27,12 +28,12 @@ export const markdownSchema = {
   },
 };
 
-const alertConfig: Record<string, { label: string; Icon: LucideIcon }> = {
-  note: { label: "Note", Icon: Info },
-  tip: { label: "Tip", Icon: Lightbulb },
-  important: { label: "Important", Icon: MessageSquareWarning },
-  warning: { label: "Warning", Icon: TriangleAlert },
-  caution: { label: "Caution", Icon: OctagonAlert },
+const alertConfig: Record<string, { labelKey: string; Icon: LucideIcon }> = {
+  note: { labelKey: "md.alertNote", Icon: Info },
+  tip: { labelKey: "md.alertTip", Icon: Lightbulb },
+  important: { labelKey: "md.alertImportant", Icon: MessageSquareWarning },
+  warning: { labelKey: "md.alertWarning", Icon: TriangleAlert },
+  caution: { labelKey: "md.alertCaution", Icon: OctagonAlert },
 };
 
 type NameItem = { name?: string; id?: string };
@@ -88,6 +89,7 @@ function formatLanguage(lang: string | null): string {
 }
 
 export function CodeBlock({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const text = textFromReact(children).replace(/\n$/, "");
   const lang = formatLanguage(languageFromReact(children));
@@ -103,7 +105,7 @@ export function CodeBlock({ children }: { children: ReactNode }) {
     <div className="md-codeblock">
       <div className="md-codebar">
         <span className="md-code-lang">{lang}</span>
-        <button type="button" className="md-code-copy" aria-label={copied ? "Copied code" : "Copy code"} title={copied ? "Copied" : "Copy code"} onClick={onCopy}>
+        <button type="button" className="md-code-copy" aria-label={copied ? t("md.copiedCode") : t("md.copyCode")} title={copied ? t("md.copied") : t("md.copyCode")} onClick={onCopy}>
           {copied ? <Check size={13} /> : <Copy size={13} />}
         </button>
       </div>
@@ -113,6 +115,7 @@ export function CodeBlock({ children }: { children: ReactNode }) {
 }
 
 export function GithubAlertBlockquote({ children, node: _node, ...props }: { children: ReactNode; node?: unknown; [key: string]: unknown }) {
+  const { t } = useTranslation();
   const type = String(props["data-alert"] ?? "").toLowerCase();
   const config = alertConfig[type];
   if (!config) return <blockquote {...props}>{children}</blockquote>;
@@ -121,7 +124,7 @@ export function GithubAlertBlockquote({ children, node: _node, ...props }: { chi
     <blockquote {...props}>
       <div className="github-alert-title">
         <Icon size={16} strokeWidth={2.1} aria-hidden="true" />
-        <span>{config.label}</span>
+        <span>{t(config.labelKey)}</span>
       </div>
       {children}
     </blockquote>
