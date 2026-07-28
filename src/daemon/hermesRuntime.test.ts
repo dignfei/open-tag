@@ -6,6 +6,8 @@ import path from "node:path";
 import { buildHermesArgs, buildHermesPrompt, hermesBridgeDecision, hermesProfile, hermesProfileHome, hermesRuntime, hermesRuntimeEnv, parseHermesSessionId, parseHermesTurnEvents, postHermesBridgeMessage } from "./hermesRuntime.js";
 import { discoverHermesProfilesFromRoots } from "./listModels.js";
 
+const PATH_KEY = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+
 test("Hermes profile comes from runtimeConfig first, then model, then default", () => {
   assert.equal(hermesProfile("codex", { profile: "alpha-helper" }), "alpha-helper");
   assert.equal(hermesProfile("gemini", {}), "gemini");
@@ -158,7 +160,7 @@ test("Hermes rejects initial admission exactly once when its argv process cannot
   const admissions: Array<Error | undefined> = [];
   let session: ReturnType<typeof hermesRuntime.start> | undefined;
   try {
-    session = hermesRuntime.start({ cwd: root, env: { PATH: root }, systemPrompt: "system", initialPrompt: "start" }, {
+    session = hermesRuntime.start({ cwd: root, env: { [PATH_KEY]: root }, systemPrompt: "system", initialPrompt: "start" }, {
       onSession: () => {},
       onInitialTurnAdmission: (error) => admissions.push(error),
       onActivity: () => {},
