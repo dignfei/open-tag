@@ -1,6 +1,6 @@
-export const GITHUB_URL = "https://github.com/fancyboi999-bot/open-tag";
+export const GITHUB_URL = "https://github.com/fancyboi999/open-tag";
 export const MARKETING_SITE_URL = "https://getopentag.com";
-export const DOCS_SITE_URL = "https://fancyboi999-bot.github.io/open-tag/";
+export const DOCS_SITE_URL = "https://docs.getopentag.com/";
 export const PUBLIC_BRAND_MARK_SRC = "/favicon.svg";
 
 export const MARKETING_ORIGINS = new Set([MARKETING_SITE_URL, "https://www.getopentag.com"]);

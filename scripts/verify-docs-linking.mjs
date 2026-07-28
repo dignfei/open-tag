@@ -30,7 +30,7 @@ for (const required of ["resolveDocsHref(origin)", "window.location.origin"]) {
   if (!landing.includes(required)) fail(`landing Docs link must use the shared public-nav resolver: missing ${required}`);
 }
 
-for (const required of ["DOCS_SITE_URL", "MARKETING_ORIGINS", "https://fancyboi999-bot.github.io/open-tag/", "resolveDocsHref", "/docs/"]) {
+for (const required of ["DOCS_SITE_URL", "MARKETING_ORIGINS", "https://docs.getopentag.com/", "resolveDocsHref", "/docs/"]) {
   if (!publicNav.includes(required)) fail(`public nav must resolve hosted and self-hosted Docs links: missing ${required}`);
 }
 

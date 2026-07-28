@@ -62,8 +62,8 @@ Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at:
 
 the project maintainers via a
-[private GitHub security advisory](https://github.com/fancyboi999-bot/open-tag/security/advisories/new),
-or by contacting [@fancyboi999-bot](https://github.com/fancyboi999-bot).
+[private GitHub security advisory](https://github.com/fancyboi999/open-tag/security/advisories/new),
+or by contacting [@fancyboi999](https://github.com/fancyboi999).
 
 All complaints will be reviewed and investigated promptly and fairly.
 

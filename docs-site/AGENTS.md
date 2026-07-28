@@ -11,10 +11,10 @@
 - `npm run verify:onepage` (`scripts/verify-onepage.mjs`) enforces this — run it after changes.
 - Rationale + content-editing guidance: `docs-site/README.md`.
 
-Deploys to **https://fancyboi999-bot.github.io/open-tag/** via GitHub Pages
-(`.github/workflows/docs-deploy.yml`, path-filtered to `docs-site/**`); the workflow injects
-the `/open-tag` base path, while the same source builds without that base for self-hosted
-servers at `/docs/` (see `ARCHITECTURE.md` §II).
+Deploys to **https://docs.getopentag.com/** via GitHub Pages
+(`.github/workflows/docs-deploy.yml`, path-filtered to `docs-site/**`) at the custom-domain
+root, while the same source builds without an explicit base for self-hosted servers at
+`/docs/` (see `ARCHITECTURE.md` §II).
 
 ## Development
 

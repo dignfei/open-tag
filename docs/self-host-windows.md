@@ -25,7 +25,7 @@
 ## Step 1 — Clone and handle line endings
 
 ```powershell
-git clone https://github.com/fancyboi999-bot/open-tag.git
+git clone https://github.com/fancyboi999/open-tag.git
 cd open-tag
 ```
 

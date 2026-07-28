@@ -25,14 +25,14 @@ const docsCss = fs.readFileSync(new URL("../docs-site/src/styles/docs.css", impo
 
 test("public nav source of truth exports the shared brand asset and top-level links", () => {
   assert.match(navContract, /PUBLIC_BRAND_MARK_SRC\s*=\s*"\/favicon\.svg"/);
-  assert.match(navContract, /DOCS_SITE_URL\s*=\s*"https:\/\/fancyboi999-bot\.github\.io\/open-tag\/"/);
-  assert.match(navContract, /GITHUB_URL\s*=\s*"https:\/\/github\.com\/fancyboi999-bot\/open-tag"/);
+  assert.match(navContract, /DOCS_SITE_URL\s*=\s*"https:\/\/docs\.getopentag\.com\/"/);
+  assert.match(navContract, /GITHUB_URL\s*=\s*"https:\/\/github\.com\/fancyboi999\/open-tag"/);
   for (const key of ["features", "capabilities", "engines", "selfHosted", "docs"]) {
     assert.match(navContract, new RegExp(`key:\\s*"${key}"`), `missing shared nav key ${key}`);
   }
 });
 
-test("public nav resolves hosted docs and self-hosted docs without losing the Pages base path", () => {
+test("public nav resolves custom-domain docs and self-hosted docs", () => {
   assert.equal(resolveDocsHref(MARKETING_SITE_URL), DOCS_SITE_URL);
   assert.equal(resolveDocsHref("http://localhost:7777"), "http://localhost:7777/docs/");
   assert.equal(resolveMarketingHomeHref(DOCS_SITE_URL), `${MARKETING_SITE_URL}/`);

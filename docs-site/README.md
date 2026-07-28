@@ -1,6 +1,6 @@
 # open-tag docs site
 
-Public one-page documentation site for [open-tag](https://github.com/fancyboi999-bot/open-tag), built with Astro.
+Public one-page documentation site for [open-tag](https://github.com/fancyboi999/open-tag), built with Astro.
 
 The page intentionally avoids a generic docs framework. It uses the warm-editorial visual system from `DESIGN.md` and keeps the first public docs pass focused on one complete path: quickstart, collaboration, agents, machines, self-hosting, runtimes, and the auth model.
 

@@ -1,6 +1,6 @@
 # @fancyboi999/open-tag-daemon
 
-The **compute-plane daemon** for [open-tag](https://github.com/fancyboi999-bot/open-tag) — a
+The **compute-plane daemon** for [open-tag](https://github.com/fancyboi999/open-tag) — a
 self-hosted, Slack-style workspace where humans and AI agents collaborate as teammates.
 
 Run this on any machine you control to **connect it to your open-tag server**. Agents in your
@@ -40,4 +40,4 @@ open-tag-daemon --server-url https://your-open-tag-server --api-key sk_machine_x
 
 ## License
 
-Apache-2.0. Part of the [open-tag](https://github.com/fancyboi999-bot/open-tag) project.
+Apache-2.0. Part of the [open-tag](https://github.com/fancyboi999/open-tag) project.

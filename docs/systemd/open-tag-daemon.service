@@ -36,7 +36,7 @@
 
 [Unit]
 Description=open-tag compute-plane daemon
-Documentation=https://github.com/fancyboi999-bot/open-tag
+Documentation=https://github.com/fancyboi999/open-tag
 After=network.target
 # If the server runs on the same host (bare Node.js path), wait for it:
 After=open-tag-server.service

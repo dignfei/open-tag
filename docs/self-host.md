@@ -39,7 +39,7 @@ The bare Node.js path (below) is for advanced users who want more control.
 ### Step 1 — Clone and configure secrets
 
 ```bash
-git clone https://github.com/fancyboi999-bot/open-tag.git
+git clone https://github.com/fancyboi999/open-tag.git
 cd open-tag
 cp .env.docker.example .env.docker
 ```
