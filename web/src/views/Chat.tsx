@@ -7,7 +7,7 @@ import { fmtDateTime, isSameLocalDay, fmtDateDivider } from "../format";
 import { PAGE_SIZE, appendWithCap, nextScrollState } from "../lib/msgPaging";
 import { AGENT_REPLY_PREVIEW_TYPE, AGENT_REPLY_STREAM_TICK_MS, absorbPersistedAgentMessagePreview, applyAgentReplyPreview, dropAgentReplyPreviewsForMessage, hasStreamingAgentReplyPreview, mergePersistedAgentMessageUpdate, renderKeyForMessage, tickAgentReplyPreviews, type AgentReplyEvent, type AgentReplyPreviewMsg } from "../lib/agentReplyPreview";
 import { avatarSeedFor } from "../lib/avatarIdentity";
-import { MessageContent } from "../messageRender.tsx";
+import { MessageContent, type NameItem, type Nav } from "../messageRender.tsx";
 import { nextThreadMeta } from "../threadUnread";
 import { Smile, X, ExternalLink, CheckCircle2, MessageCircle, MoreHorizontal, Link2, Clipboard, Bookmark, CheckSquare, Circle, Play, Eye, Ban, ArrowDown, BellOff, Lock, Globe, Archive, Trash2, Users } from "lucide-react";
 // Task badge per message row: icon changes with task status; color tokens from DESIGN.md (see .task-pill.st-* styles)
@@ -107,6 +107,18 @@ function Reactions({ m, mine, onReact }: { m: Msg; mine: string; onReact: (emoji
 }
 
 // Action card: a proposal card sent by an agent. User clicks it → a pre-filled creation dialog opens → resource is created on behalf of the user → markExecuted is called.
+// System messages (task lifecycle events) render as one centered banner. Single component for
+// both the channel feed and the thread panel so the two surfaces can't drift — task refs (#N)
+// stay clickable everywhere.
+function SysMsg({ m, channels, nav, pill }: { m: Msg; channels: NameItem[]; nav: Nav; pill?: ReactNode }) {
+  return (
+    <div className="msg-sys" id={"m-" + m.id}>
+      <MessageContent content={m.content} mentions={m.mentions || []} channels={channels} nav={nav} />
+      {pill}
+    </div>
+  );
+}
+
 function ActionCardMsg({ m }: { m: Msg }) {
   const { t } = useTranslation();
   const { createChannel, markActionExecuted, slug, agents, attachmentUrl } = useStore();
@@ -462,10 +474,7 @@ export function Chat() {
                 if (m.senderType === "system") return (
                   <Fragment key={m.id}>
                     {dateDivider}
-                    <div className="msg-sys" id={"m-" + m.id}>
-                      <MessageContent content={m.content} mentions={m.mentions || []} channels={channels} nav={navToken} />
-                      {tm?.replyCount ? <button className="thread-pill" onClick={() => startThread(m)}><MessageCircle size={12} /> {t("chat.replyCount", { count: tm.replyCount })}</button> : null}
-                    </div>
+                    <SysMsg m={m} channels={channels} nav={navToken} pill={tm?.replyCount ? <button className="thread-pill" onClick={() => startThread(m)}><MessageCircle size={12} /> {t("chat.replyCount", { count: tm.replyCount })}</button> : null} />
                   </Fragment>
                 );
                 const staggerIdx = newMsgOrderRef.current.get(m.id);
@@ -717,7 +726,7 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
   }, [streamingPreviewActive]);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [msgs]);
   const row = (m: Msg, dateDivider?: ReactNode) => {
-    if (m.senderType === "system") return <Fragment key={m.id}>{dateDivider}<div className="msg-sys" id={"m-" + m.id}>{m.content}</div></Fragment>; // system messages render as a banner with no avatar
+    if (m.senderType === "system") return <Fragment key={m.id}>{dateDivider}<SysMsg m={m} channels={channels} nav={navToken} /></Fragment>; // system messages render as a banner with no avatar
     const ag = m.senderType === "agent" && m.senderId ? agents.find((a) => a.id === m.senderId) : undefined; // agent sender → avatar and name are clickable to open the profile panel
     const live = ag ? ((ag.activity && ag.activity !== "offline" ? ag.activity : ag.status) || "offline") : "offline";
     const isAgentReplyPreview = m.messageType === AGENT_REPLY_PREVIEW_TYPE;

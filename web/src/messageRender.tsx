@@ -36,9 +36,9 @@ const alertConfig: Record<string, { labelKey: string; Icon: LucideIcon }> = {
   caution: { labelKey: "md.alertCaution", Icon: OctagonAlert },
 };
 
-type NameItem = { name?: string; id?: string };
+export type NameItem = { name?: string; id?: string };
 type MentionItem = { type?: string; id?: string; name?: string };
-type Nav = (type: string, args: string[]) => void;
+export type Nav = (type: string, args: string[]) => void;
 const lc = (x?: string) => (x ?? "").toLowerCase();
 
 function textFromReact(node: ReactNode): string {

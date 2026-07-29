@@ -20,7 +20,7 @@
   --task-mention:#f5ddd9;--task-mention-strong:#efcbc5;
   --human-mention:#fde9ec;--human-mention-strong:#fad9df;
   --alert-note:#92B6FF;--alert-tip:#72bd8f;--alert-important:#a98ad5;--alert-warning:#d9ad2b;--alert-caution:#d67b72;
-  --read-measure:76ch;--read-pad:24px;--read-top:40px;--read-bottom:80px;--scrollbar-gutter:16px;--chat-card-width:1440px;
+  --read-pad:24px;--read-top:40px;--read-bottom:80px;--scrollbar-gutter:16px;--chat-card-width:1440px;
   --md-text-size:14.5px;--md-line-height:1.68;--md-paragraph-gap:.75em;
   --md-h1-size:1.4em;--md-h2-size:1.25em;--md-h3-size:1.12em;--md-h-rest-size:1em;
   /* Motion tokens — app shell (not landing page --lp-* system) */
@@ -266,9 +266,11 @@ main.content-col > .scroll::-webkit-scrollbar-thumb{background:rgba(87,96,106,.3
    line breaks in code blocks. */
 .mbody{white-space:pre-wrap;color:var(--body);overflow-wrap:anywhere}
 /* Message body markdown (MessageContent .md): react-markdown+remark-breaks already structures line breaks, explicit white-space:normal overrides pre-wrap inherited from .mbody — otherwise consecutive blank lines/paragraphs are double-preserved and inflate height (diagnosed: .md inherits pre-wrap + p default 16px margin → 3 paragraphs = 176px). Paragraph/list spacing tightened for compact body; code blocks retain their own line breaks */
-.md{white-space:normal;font-size:var(--md-text-size);line-height:var(--md-line-height);max-width:min(100%,var(--read-measure));margin-left:0;margin-right:auto;--inline-code-size:.9em}
-.msg .md{max-width:100%} /* operational chat should use the message content column; the readable measure remains for document-style .md surfaces */
-.thread-panel .msg .md{max-width:100%}
+/* .md is geometry-free by design: containers own width (a self-imposed max-width left-pins the
+   block, defeating any container text-align:center — the .msg-sys off-center bug) and set the
+   --md-* typography tokens. A future document-style surface wants an explicit opt-in class, not
+   a width default here that every chat surface must remember to escape. */
+.md{white-space:normal;font-size:var(--md-text-size);line-height:var(--md-line-height);--inline-code-size:.9em}
 .md > :first-child{margin-top:0}.md > h1:first-child,.md > h2:first-child,.md > h3:first-child{margin-top:.45em}.md > :last-child{margin-bottom:0}
 .md p{margin:0}.md p + p{margin-top:var(--md-paragraph-gap)}
 .md ul,.md ol{margin:.65em 0;padding-left:1.1em}.md li{margin:.18em 0;position:relative;padding-left:1.38em}
@@ -373,7 +375,8 @@ main.content-col > .composer{position:absolute;left:0;right:var(--scrollbar-gutt
 .file-acts{display:flex;gap:4px;flex:none}
 .file-acts button,.file-acts a{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid var(--hair-strong);border-radius:8px;background:var(--surface);color:var(--muted);cursor:pointer;text-decoration:none}
 .file-acts button:hover,.file-acts a:hover{color:var(--ink);background:var(--surface-strong)}
-.msg-sys{text-align:center;font-size:12px;color:var(--muted);padding:6px 12px;line-height:1.4}
+/* --md-* token overrides keep nested MessageContent markdown on the banner's 12px scale instead of the body's 14.5px */
+.msg-sys{text-align:center;font-size:12px;color:var(--muted);padding:6px 12px;line-height:1.4;--md-text-size:12px;--md-line-height:1.4}
 .msg.msg-hl{background:var(--g-peach);border-radius:12px;transition:background .4s}
 .composer .astask{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--muted);cursor:pointer;user-select:none}
 .composer .astask input{margin:0;cursor:pointer;accent-color:var(--ink-2)}
