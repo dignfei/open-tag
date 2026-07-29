@@ -27,10 +27,11 @@ export function hermesProfileRoots(home = homedir(), env: NodeJS.ProcessEnv = pr
   return [env.HERMES_PROFILE_DIR, path.join(home, ".hermes", "profiles")].filter((v): v is string => !!v);
 }
 
-export function buildHermesPrompt(message: string, opts: Pick<StartOpts, "cwd" | "systemPrompt">): string {
+export function buildHermesPrompt(message: string, opts: Pick<StartOpts, "cwd" | "stateDir" | "systemPrompt">): string {
   return [
     "[OpenTag runtime context]",
-    `You are running as an OpenTag agent in this isolated workspace: ${opts.cwd}`,
+    `You are running in the operator-selected project directory: ${opts.cwd}`,
+    `Your OpenTag-owned state directory is: ${opts.stateDir}`,
     "Follow this OpenTag system prompt for collaboration, @mentions, and reporting:",
     opts.systemPrompt,
     "",
@@ -45,7 +46,7 @@ export function buildHermesArgs(prompt: string, sessionId?: string | null): stri
   return args;
 }
 
-interface TurnState { sent: boolean; held: boolean; engaged: boolean; target: string | null; messageId?: string | null; grant?: string | null; }
+interface TurnState { sent: boolean; held: boolean; checked: boolean; checkCount: number | null; engaged: boolean; target: string | null; messageId?: string | null; grant?: string | null; }
 type BridgeDecision = { ok: true; target: string; content: string; replyTo?: string; hasGrant?: boolean } | { ok: false; reason: string };
 interface BridgePostResult { ok: boolean; held?: boolean; sentDraft?: boolean; status?: number; text?: string }
 
@@ -59,13 +60,17 @@ function isMissingHermesSession(stderr: string): boolean {
 }
 
 export function parseHermesTurnEvents(jsonl: string): TurnState {
-  const state: TurnState = { sent: false, held: false, engaged: false, target: null };
+  const state: TurnState = { sent: false, held: false, checked: false, checkCount: null, engaged: false, target: null };
   for (const line of jsonl.split("\n")) {
     if (!line.trim()) continue;
     let evt: any;
     try { evt = JSON.parse(line); } catch { continue; }
     if (evt.type === "send") state.sent = true;
     if (evt.type === "held") state.held = true;
+    if (evt.type === "check") {
+      state.checked = true;
+      state.checkCount = typeof evt.count === "number" ? evt.count : null;
+    }
     if ((evt.type === "check" || evt.type === "read") && typeof evt.target === "string" && evt.target.trim()) {
       state.engaged = true;
       state.target = evt.target.trim();
@@ -96,6 +101,7 @@ function cleanHermesStdout(stdout: string): BridgeDecision {
 export function hermesBridgeDecision(stdout: string, state: TurnState): BridgeDecision {
   if (state.sent) return { ok: false, reason: "already-sent" };
   if (state.held) return { ok: false, reason: "already-held" };
+  if (state.checked && state.checkCount === 0 && !state.engaged) return { ok: false, reason: "empty-inbox" };
   if (!state.engaged || !state.target) return { ok: false, reason: "no-open-tag-read" };
   if (!/^(#|dm:|thread:)/.test(state.target)) return { ok: false, reason: "invalid-target" };
   if (!state.messageId) return { ok: false, reason: "no-reply-trigger" };
@@ -166,6 +172,13 @@ class HermesRun {
   private sessionId: string | null;
   private readonly admission: ReturnType<typeof initialTurnAdmission>;
   private currentInput: HermesInput | null = null;
+  private exitReported = false;
+
+  private reportExit(code: number | null): void {
+    if (this.exitReported) return;
+    this.exitReported = true;
+    this.cb.onExit(code);
+  }
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
     this.admission = initialTurnAdmission(cb);
@@ -235,13 +248,13 @@ class HermesRun {
       if (this.stopped) return;
       this.cb.log.error("hermes spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "hermes not found");
-      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); }
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.reportExit(1); }
       else this.pump();
     });
     proc.on("exit", async (code) => {
       this.proc = null;
       if (this.currentInput === input) this.currentInput = null;
-      if (this.stopped) return;
+      if (this.stopped) { this.reportExit(code); return; }
       const out = stdout.trim();
       const tail = errTail.join("").trim();
       if (code === 0) {
@@ -273,7 +286,7 @@ class HermesRun {
       this.turnBusy = false;
       if (!this.everSucceeded) {
         this.rejectQueue(new Error(last));
-        this.cb.onExit(code ?? 1);
+        this.reportExit(code ?? 1);
         return;
       }
       this.pump();
@@ -281,13 +294,13 @@ class HermesRun {
   }
 
   private async bridgeFinalResponse(turnFile: string, stdout: string): Promise<boolean | null> {
-    let state: TurnState = { sent: false, held: false, engaged: false, target: null };
+    let state: TurnState = { sent: false, held: false, checked: false, checkCount: null, engaged: false, target: null };
     try { state = parseHermesTurnEvents(await readFile(turnFile, "utf8")); }
     catch { /* no CLI side-channel events recorded */ }
     finally { try { await unlink(turnFile); } catch { /* best-effort cleanup */ } }
     const decision = hermesBridgeDecision(stdout, state);
     if (!decision.ok) {
-      if (stdout.trim() && decision.reason !== "already-sent") {
+      if (stdout.trim() && decision.reason !== "already-sent" && decision.reason !== "empty-inbox") {
         this.cb.log.warn("hermes final response not bridged", { reason: decision.reason });
         this.cb.onActivity("error", `hermes reply not sent (${decision.reason})`);
         return false;
@@ -345,9 +358,8 @@ class HermesRun {
     this.rejectQueue(error);
     const p = this.proc;
     this.proc = null;
-    if (p) {
-      killTree(p);
-    }
+    if (p) killTree(p);
+    else this.reportExit(0);
   }
 }
 

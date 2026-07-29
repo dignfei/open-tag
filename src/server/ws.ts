@@ -130,7 +130,7 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
         await db.update(schema.machines).set({ lastHeartbeat: new Date(), status: "online" }).where(eq(schema.machines.id, machineId));
         if (prev && prev.status !== "online") await publish(serverId!, { type: "machine", online: true, machineId });
       }
-      else if ((msg.type === "workspace:file_tree" || msg.type === "workspace:file_content" || msg.type === "workspace:file_write" || msg.type === "workspace:file_delete" || msg.type === "skills:list" || msg.type === "models" || msg.type === "agent:resource-budget" || msg.type === "rpc:ack" || msg.type === "rpc:nack") && msg.requestId) resolveDaemonRequest(msg.requestId, msg);
+      else if ((msg.type === "workspace:file_tree" || msg.type === "workspace:file_content" || msg.type === "workspace:file_write" || msg.type === "workspace:file_delete" || msg.type === "skills:list" || msg.type === "project:resolved" || msg.type === "project:directories" || msg.type === "models" || msg.type === "agent:resource-budget" || msg.type === "rpc:ack" || msg.type === "rpc:nack") && msg.requestId) resolveDaemonRequest(msg.requestId, msg, ws);
     } catch (e: any) { log.error("ws handler error", { type: msg?.type, detail: String(e?.message ?? e) }); }
   });
   ws.on("close", async () => {
@@ -195,7 +195,7 @@ async function onReady(serverId: string, key: string, msg: any): Promise<string>
       }
       continue;
     }
-    if (a.status === "active" || a.status === "queued") {
+    if (a.status === "starting" || a.status === "active" || a.status === "queued") {
       await db.update(schema.agents).set({ status: "inactive", activity: "offline" }).where(eq(schema.agents.id, a.id));
       await publish(serverId, { type: "agent", id: a.id, name: a.name, status: "inactive", activity: "offline" });
       log.info("reconciled stale-active/queued agent → inactive", { agentId: a.id, machineId });

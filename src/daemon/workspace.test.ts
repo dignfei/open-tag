@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -119,6 +119,34 @@ test("readWorkspaceFile returns error for invalid path", async () => {
 test("readWorkspaceFile returns error for directory", async () => {
   const r = await readWorkspaceFile(AGENT_ID, ".claude");
   assert.ok(r.error);
+});
+
+test("workspace read and write reject a symlinked parent that escapes agent state", async () => {
+  const outside = join(tmp, "outside-workspace-parent");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "secret.txt"), "outside secret");
+  symlinkSync(outside, join(DATA_DIR, AGENT_ID, "escape"), "dir");
+
+  const read = await readWorkspaceFile(AGENT_ID, "escape/secret.txt");
+  assert.match(read.error ?? "", /escapes|symbolic link/);
+  const write = await writeWorkspaceFile(AGENT_ID, "escape/written.txt", "escaped write");
+  assert.match(write.error ?? "", /symbolic link/);
+  assert.equal(existsSync(join(outside, "written.txt")), false);
+
+  const deleted = await deleteWorkspaceFile(AGENT_ID, "escape/secret.txt");
+  assert.match(deleted.error ?? "", /symbolic link/);
+  assert.equal(readFileSync(join(outside, "secret.txt"), "utf8"), "outside secret");
+});
+
+test("workspace write rejects an agent state directory symlink", async () => {
+  const outside = join(tmp, "outside-agent-root");
+  const linkedAgent = "linked-agent";
+  mkdirSync(outside);
+  symlinkSync(outside, join(DATA_DIR, linkedAgent), "dir");
+
+  const write = await writeWorkspaceFile(linkedAgent, "MEMORY.md", "escaped write");
+  assert.match(write.error ?? "", /symbolic link/);
+  assert.equal(existsSync(join(outside, "MEMORY.md")), false);
 });
 
 test("auto-generated frontmatter is parsed correctly by readSkillsDir", async () => {

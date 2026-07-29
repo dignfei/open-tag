@@ -23,7 +23,7 @@ test("agent activity detail is forwarded to the UI activity signal", () => {
 test("agent wake delivery handles machine send failure after preview start", () => {
   assert.match(
     turnDispatchSrc,
-    /const startSent = deps\.sendAgentStart\(input\.serverId, target, input\.member\.id\);/,
+    /const startSent = deps\.sendAgentStart\(input\.serverId, target, input\.member\.id, Boolean\(input\.turnId\)\);/,
     "message wake should check whether agent:start was actually sent",
   );
   assert.match(
@@ -46,7 +46,7 @@ test("agent lifecycle control awaits bound-machine ACK and preserves unbound fal
   );
   assert.match(
     coreSrc,
-    /async function requestAgentControl\(serverId: string, target: AgentControlTarget, msg: Record<string, unknown>\): Promise<AgentControlResult> \{[\s\S]*?requestDaemonByMachine\(target\.machineId, msg, 30_000\)[\s\S]*?requestDaemon\(serverId, msg, 30_000, true\)[\s\S]*?response\?\.type !== "rpc:ack"/,
+    /async function requestAgentControl\(serverId: string, target: AgentControlTarget, msg: Record<string, unknown>\): Promise<AgentControlResult> \{[\s\S]*?requestDaemonByMachine\(target\.machineId, msg, 30_000, \{[\s\S]*?serverId,[\s\S]*?capabilities:[\s\S]*?requestDaemon\(serverId, msg, 30_000, true\)[\s\S]*?response\?\.type !== "rpc:ack"/,
     "settled lifecycle controls should await one bound machine or the legacy unbound broadcast RPC",
   );
   assert.match(

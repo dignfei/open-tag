@@ -48,4 +48,11 @@ test("workspace root mirrors the runtime's project-local provider dir", () => {
   assert.ok(posix(skillRootsFor("codex", "agent-1").workspace?.dir ?? "").endsWith("agent-1/.codex/skills"));
   assert.ok(posix(skillRootsFor("hermes", "agent-1").workspace?.dir ?? "").endsWith("agent-1/.hermes/skills"));
   assert.ok(posix(skillRootsFor("kimi", "agent-1").workspace?.dir ?? "").endsWith("agent-1/.skills"), "kimi workspace dir is .skills/ (without /skills/ subfolder): " + (skillRootsFor("kimi", "agent-1").workspace?.dir ?? "null"));
+  assert.match(skillRootsFor("codex", "agent-1").workspace?.label ?? "", /^<workspace>/);
+});
+
+test("a bound project replaces only the project-local skill root and is marked read-only", () => {
+  const r = skillRootsFor("codex", "agent-1", "/srv/existing-project");
+  assert.equal(posix(r.workspace?.dir ?? ""), "/srv/existing-project/.codex/skills");
+  assert.match(r.workspace?.label ?? "", /^<project>/);
 });

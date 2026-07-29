@@ -29,9 +29,10 @@ test("Hermes session id is parsed from quiet stderr", () => {
   assert.equal(parseHermesSessionId("Session not found: missing"), null);
 });
 
-test("Hermes prompt carries OpenTag system prompt, cwd, and user message", () => {
-  const prompt = buildHermesPrompt("please help", { cwd: "/tmp/open-tag-agent", systemPrompt: "use open-tag cli" });
-  assert.match(prompt, /isolated workspace: \/tmp\/open-tag-agent/);
+test("Hermes prompt carries OpenTag system prompt, project cwd, state dir, and user message", () => {
+  const prompt = buildHermesPrompt("please help", { cwd: "/tmp/project", stateDir: "/tmp/open-tag-agent", systemPrompt: "use open-tag cli" });
+  assert.match(prompt, /operator-selected project directory: \/tmp\/project/);
+  assert.match(prompt, /OpenTag-owned state directory is: \/tmp\/open-tag-agent/);
   assert.match(prompt, /use open-tag cli/);
   assert.match(prompt, /please help/);
 });
@@ -100,7 +101,7 @@ test("Hermes runtime resolves profiles from HERMES_PROFILE_DIR as well as ~/.her
 
 test("Hermes final response bridge requires a checked reply trigger and filters unsafe stdout", () => {
   const checked = parseHermesTurnEvents(JSON.stringify({ type: "check", target: "dm:@User", count: 1, messageId: "1234abcd", grant: "primary" }));
-  assert.deepEqual(checked, { sent: false, held: false, engaged: true, target: "dm:@User", messageId: "1234abcd", grant: "primary" });
+  assert.deepEqual(checked, { sent: false, held: false, checked: true, checkCount: 1, engaged: true, target: "dm:@User", messageId: "1234abcd", grant: "primary" });
   assert.deepEqual(hermesBridgeDecision("⚠ scanner warning\n\nI handled that.", checked), {
     ok: true,
     target: "dm:@User",
@@ -122,6 +123,15 @@ test("Hermes final response bridge requires a checked reply trigger and filters 
   }))).ok, true);
   assert.equal(hermesBridgeDecision("Error: provider rejected the request", checked).ok, false);
   assert.equal(hermesBridgeDecision("┊ review diff\na/MEMORY.md → b/MEMORY.md\n@@ -1 +1", checked).ok, false);
+});
+
+test("Hermes treats a recorded empty inbox check as a successful no-op turn", () => {
+  const empty = parseHermesTurnEvents(JSON.stringify({ type: "check", count: 0 }));
+  assert.deepEqual(empty, { sent: false, held: false, checked: true, checkCount: 0, engaged: false, target: null });
+  assert.deepEqual(hermesBridgeDecision("No new messages were waiting. Standing by.", empty), {
+    ok: false,
+    reason: "empty-inbox",
+  });
 });
 
 test("Hermes final response bridge avoids double posting after explicit send or hold", () => {
@@ -160,7 +170,7 @@ test("Hermes rejects initial admission exactly once when its argv process cannot
   const admissions: Array<Error | undefined> = [];
   let session: ReturnType<typeof hermesRuntime.start> | undefined;
   try {
-    session = hermesRuntime.start({ cwd: root, env: { [PATH_KEY]: root }, systemPrompt: "system", initialPrompt: "start" }, {
+    session = hermesRuntime.start({ cwd: root, stateDir: root, env: { [PATH_KEY]: root }, systemPrompt: "system", initialPrompt: "start" }, {
       onSession: () => {},
       onInitialTurnAdmission: (error) => admissions.push(error),
       onActivity: () => {},
@@ -176,6 +186,47 @@ test("Hermes rejects initial admission exactly once when its argv process cannot
     await runningDelivery;
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(admissions.length, 1);
+  } finally {
+    session?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Hermes completes an empty-inbox turn so a queued delivery can run", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-hermes-empty-inbox-"));
+  const binDir = path.join(root, "bin");
+  mkdirSync(binDir);
+  writeFileSync(path.join(binDir, "hermes"), [
+    "#!/bin/sh",
+    "printf '%s\\n' '{\"type\":\"check\",\"count\":0}' >> \"$OPEN_TAG_TURN_FILE\"",
+    "printf '%s\\n' 'No new open-tag messages were waiting. Standing by.'",
+    "exit 0",
+  ].join("\n"), { mode: 0o755 });
+  const activities: string[] = [];
+  let session: ReturnType<typeof hermesRuntime.start> | undefined;
+  try {
+    session = hermesRuntime.start({
+      cwd: root,
+      stateDir: root,
+      env: { [PATH_KEY]: binDir, HOME: root },
+      systemPrompt: "system",
+      initialPrompt: "start",
+    }, {
+      onSession: () => {},
+      onInitialTurnAdmission: () => {},
+      onActivity: (activity) => activities.push(activity),
+      onTrajectory: () => {},
+      onExit: () => {},
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+    });
+    await session.deliver("queued delivery");
+    const deadline = Date.now() + 1_000;
+    while (activities.filter((activity) => activity === "online").length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(activities.filter((activity) => activity === "working").length, 2);
+    assert.equal(activities.filter((activity) => activity === "online").length, 2);
+    assert.equal(activities.includes("error"), false);
   } finally {
     session?.stop();
     rmSync(root, { recursive: true, force: true });

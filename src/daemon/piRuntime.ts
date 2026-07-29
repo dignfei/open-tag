@@ -10,9 +10,9 @@
 import { type ChildProcess } from "node:child_process";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
-import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
+import { writeRuntimeArtifact } from "./runtimeArtifacts.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -75,14 +75,21 @@ class PiRun {
   private promptWriteFailed = false;
   private readonly admission: ReturnType<typeof initialTurnAdmission>;
   private currentInput: PiInput | null = null;
+  private exitReported = false;
+
+  private reportExit(code: number | null): void {
+    if (this.exitReported) return;
+    this.exitReported = true;
+    this.cb.onExit(code);
+  }
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
     this.admission = initialTurnAdmission(cb);
     this.sessionId = opts.sessionId ?? null;
-    this.promptFile = path.join(opts.cwd, ".pi-system-prompt.md");
+    this.promptFile = path.join(opts.stateDir, ".runtime", "pi", "system-prompt.md");
     this.env = { ...opts.env };
     delete this.env.NODE_OPTIONS; // pi's bundled node rejects proxy flags (e.g. --use-env-proxy)
-    try { writeFileSync(this.promptFile, opts.systemPrompt); }
+    try { writeRuntimeArtifact(opts.stateDir, "pi", "system-prompt.md", opts.systemPrompt); }
     catch (e) { this.promptWriteFailed = true; cb.log.warn("pi: system-prompt write failed", { detail: String(e) }); }
     if (this.sessionId) cb.onSession(this.sessionId);
     void this.enqueue(opts.initialPrompt, true).catch(() => {});
@@ -115,11 +122,11 @@ class PiRun {
       // System prompt couldn't be written at startup — fail loudly rather than running without it.
       this.cb.onTrajectory([{ kind: "text", text: "[pi error] system-prompt write failed — check cwd permissions" }]);
       this.cb.onActivity("error", "pi: system-prompt write failed");
-      this.turnBusy = false; if (!this.everSucceeded) { this.rejectQueue(new Error("pi system-prompt write failed")); this.cb.onExit(1); return; }
+      this.turnBusy = false; if (!this.everSucceeded) { this.rejectQueue(new Error("pi system-prompt write failed")); this.reportExit(1); return; }
       return;
     }
     this.cb.onActivity("working", "turn");
-    const args = buildArgs(prompt, this.opts.model, this.sessionId, this.opts.cwd, this.promptFile);
+    const args = buildArgs(prompt, this.opts.model, this.sessionId, this.opts.stateDir, this.promptFile);
     const proc = spawnSafe("pi", args, { cwd: this.opts.cwd, stdio: ["ignore", "pipe", "pipe"], env: this.env });
     this.proc = proc;
     proc.once("spawn", () => { input.admission.accept(); if (input.initial) this.admission.accept(); });
@@ -153,18 +160,18 @@ class PiRun {
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
       this.cb.log.error("pi spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "pi not found");
-      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); } else this.pump();
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.reportExit(1); } else this.pump();
     });
     proc.on("exit", (code) => {
       if (buf.trim()) processLine(buf); buf = "";
-      this.proc = null; this.turnBusy = false; if (this.stopped) return;
+      this.proc = null; this.turnBusy = false; if (this.stopped) { this.reportExit(code); return; }
       if (this.currentInput === input) this.currentInput = null;
       if (code === 0) { this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return; }
       const tail = errTail.join("").trim();
       const last = tail.split("\n").filter(Boolean).pop() || `pi exited ${code ?? "signal"}`;
       this.cb.onTrajectory([{ kind: "text", text: "[pi error] " + clip(tail).slice(0, 500) }]);
       this.cb.onActivity("error", last.slice(0, 200));
-      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.cb.onExit(code ?? 1); return; } // first-turn hard failure (bad provider/key) → crashed
+      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.reportExit(code ?? 1); return; } // first-turn hard failure (bad provider/key) → crashed
       this.pump();
     });
   }
@@ -175,7 +182,8 @@ class PiRun {
     this.currentInput?.admission.reject(error); this.currentInput = null;
     this.rejectQueue(error);
     const p = this.proc; this.proc = null;
-    if (p) { killTree(p); }
+    if (p) killTree(p);
+    else this.reportExit(0);
   }
 }
 

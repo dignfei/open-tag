@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { handleKimiEvent } from "./kimiRuntime.js";
+import { buildKimiPrompt, handleKimiEvent } from "./kimiRuntime.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 function fixtureEvents(name: string): any[] {
@@ -49,4 +49,10 @@ test("tool_calls arguments are parsed from the JSON string", () => {
 test("empty content and user echo produce no trajectory", () => {
   assert.equal(handleKimiEvent({ role: "assistant", content: "" }).trajectory.length, 0);
   assert.equal(handleKimiEvent({ role: "user", content: "hi" }).trajectory.length, 0);
+});
+
+test("Kimi compatibility mode composes standing instructions on every turn", () => {
+  const prompt = buildKimiPrompt("open-tag standing instructions", "user turn");
+  assert.match(prompt, /open-tag standing instructions/);
+  assert.match(prompt, /user turn/);
 });

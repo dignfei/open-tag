@@ -5,7 +5,7 @@
 // Run: npx tsx --test test/daemonHub.unit.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, agentControlBlockReason, conversationTurnDeliveryBlockReason, registerDaemon, registerDaemonCapabilities, unregisterDaemon, registerMachineConn, unregisterMachineConn, broadcastToDaemons, isMachineConnected, sendToMachine, requestDaemon, requestDaemonByMachine, resolveDaemonRequest } from "../src/server/daemonHub.js";
+import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, PROJECT_BROWSER_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY, agentControlBlockReason, conversationTurnDeliveryBlockReason, projectDirectoryBlockReason, registerDaemon, registerDaemonCapabilities, unregisterDaemon, registerMachineConn, unregisterMachineConn, broadcastToDaemons, isMachineConnected, sendToMachine, requestDaemon, requestDaemonByMachine, resolveDaemonRequest } from "../src/server/daemonHub.js";
 
 // Minimal fake ws: readyState=OPEN(1), counts sends + close.
 function fakeWs(): any {
@@ -130,6 +130,55 @@ test("agent control requires completion ACK capability before sending lifecycle 
   unregisterDaemon(ws); unregisterMachineConn(ws);
 });
 
+test("project-bound starts require an explicitly capable current daemon", () => {
+  const sid = "s-project-cap-" + Math.random().toString(36).slice(2);
+  const ws = fakeWs();
+  registerDaemon(ws, sid);
+  registerMachineConn("m-project-cap", ws);
+  registerDaemonCapabilities(ws, [AGENT_CONTROL_ACK_CAPABILITY]);
+  assert.match(projectDirectoryBlockReason(sid, "m-project-cap") ?? "", /project-directory-v2/);
+  registerDaemonCapabilities(ws, [AGENT_CONTROL_ACK_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY]);
+  assert.equal(projectDirectoryBlockReason(sid, "m-project-cap"), null);
+  assert.match(projectDirectoryBlockReason(sid, null) ?? "", /machine-bound/);
+  unregisterDaemon(ws); unregisterMachineConn(ws);
+});
+
+test("project browsing requires the separate browser capability", async () => {
+  const sid = "s-browser-cap-" + Math.random().toString(36).slice(2);
+  const ws = fakeWs();
+  registerDaemon(ws, sid); registerMachineConn("m-browser-cap", ws);
+  registerDaemonCapabilities(ws, [PROJECT_DIRECTORY_CAPABILITY]);
+  const response = await requestDaemonByMachine("m-browser-cap", { type: "project:browse" }, 100, {
+    serverId: sid, capabilities: [PROJECT_BROWSER_CAPABILITY], responseTypes: ["project:directories"],
+  });
+  assert.match(response.error, /project-browser-v1/);
+  assert.equal(ws.sends, 0, "an old daemon receives no directory metadata request");
+  unregisterDaemon(ws); unregisterMachineConn(ws);
+});
+
+test("capability requirements are checked on the exact replacement connection that receives a frame", async () => {
+  const sid = "s-project-send-cap-" + Math.random().toString(36).slice(2);
+  const capable = fakeWs(), replacement = fakeWs();
+  registerDaemon(capable, sid); registerMachineConn("m-project-send-cap", capable);
+  registerDaemonCapabilities(capable, [AGENT_CONTROL_ACK_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY]);
+  assert.equal(projectDirectoryBlockReason(sid, "m-project-send-cap"), null, "initial preflight sees capable daemon");
+
+  registerDaemon(replacement, sid); registerMachineConn("m-project-send-cap", replacement);
+  registerDaemonCapabilities(replacement, [AGENT_CONTROL_ACK_CAPABILITY]);
+  assert.equal(sendToMachine("m-project-send-cap", { type: "agent:start" }, {
+    serverId: sid, capabilities: [PROJECT_DIRECTORY_CAPABILITY],
+  }), false);
+  assert.equal(replacement.sends, 0, "replacement daemon receives no project-bound start without the capability");
+  const response = await requestDaemonByMachine("m-project-send-cap", { type: "agent:start" }, 100, {
+    serverId: sid, capabilities: [AGENT_CONTROL_ACK_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY],
+  });
+  assert.match(response.error, /project-directory-v2/);
+  assert.equal(replacement.sends, 0);
+
+  unregisterDaemon(capable); unregisterMachineConn(capable);
+  unregisterDaemon(replacement); unregisterMachineConn(replacement);
+});
+
 test("single-daemon lifecycle RPC remains pending until completion ACK and fails immediately on NACK", async () => {
   const sid = "s-control-rpc-" + Math.random().toString(36).slice(2);
   const ws = fakeWs();
@@ -188,9 +237,33 @@ test("rpc:nack on a directed (by-machine) request resolves immediately", async (
   const t0 = Date.now();
   const p = requestDaemonByMachine("m-nack-c", { type: "agent:workspace:write" }, 5000);
   const rid = sentRequestId(ws);
-  resolveDaemonRequest(rid, { type: "rpc:nack", requestId: rid, error: "daemon dev does not support it" });
+  resolveDaemonRequest(rid, { type: "rpc:nack", requestId: rid, error: "daemon dev does not support it" }, ws);
   const r = await p;
   assert.match(r.error, /does not support/);
   assert.ok(Date.now() - t0 < 1000, "did not wait out the 5s timeout");
   unregisterMachineConn(ws);
+});
+
+test("machine-targeted directory RPC ignores forged and mismatched responses", async () => {
+  const sid = "s-browser-rpc-" + Math.random().toString(36).slice(2);
+  const target = fakeWs(), attacker = fakeWs();
+  registerDaemon(target, sid); registerDaemonCapabilities(target, [PROJECT_BROWSER_CAPABILITY]); registerMachineConn("m-browser-target", target);
+  registerDaemon(attacker, sid); registerDaemonCapabilities(attacker, [PROJECT_BROWSER_CAPABILITY]); registerMachineConn("m-browser-attacker", attacker);
+
+  let settled = false;
+  const response = requestDaemonByMachine("m-browser-target", { type: "project:browse" }, 5_000, {
+    serverId: sid, capabilities: [PROJECT_BROWSER_CAPABILITY], responseTypes: ["project:directories"],
+  }).then((value) => { settled = true; return value; });
+  const rid = sentRequestId(target);
+  resolveDaemonRequest(rid, { type: "project:directories", requestId: rid, mode: "roots", roots: [] }, attacker);
+  await Promise.resolve();
+  assert.equal(settled, false, "a second authenticated daemon cannot resolve the target machine RPC");
+  resolveDaemonRequest(rid, { type: "models", requestId: rid, models: ["forged"] }, target);
+  await Promise.resolve();
+  assert.equal(settled, false, "the target daemon cannot resolve a request with the wrong response type");
+  resolveDaemonRequest(rid, { type: "project:directories", requestId: rid, mode: "roots", roots: [], nextCursor: null, truncated: false }, target);
+  assert.equal((await response).type, "project:directories");
+
+  unregisterDaemon(target); unregisterMachineConn(target);
+  unregisterDaemon(attacker); unregisterMachineConn(attacker);
 });

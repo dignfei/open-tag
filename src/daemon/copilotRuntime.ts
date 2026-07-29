@@ -2,15 +2,15 @@
 // self-assigned `--session-id <uuid>` (idempotent create-or-resume). Unlike claude (persistent
 // stdin stream-json) and codex (persistent app-server), Copilot's pipe mode runs one turn and
 // exits — so each deliver() spawns a fresh process that resumes the same session id. The standing
-// system prompt is injected via {cwd}/AGENTS.md, which Copilot reads natively.
+// system prompt is injected through COPILOT_CUSTOM_INSTRUCTIONS_DIRS, leaving project files intact.
 // Protocol verified against GitHub Copilot CLI 1.0.61 (see src/daemon/__fixtures__/copilot-*.jsonl).
 import { type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
 import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
+import { writeRuntimeArtifact } from "./runtimeArtifacts.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -85,6 +85,15 @@ function buildArgs(prompt: string, sessionId: string, model: string | undefined,
   return args;
 }
 
+export function copilotInstructionEnv(env: NodeJS.ProcessEnv, stateDir: string, systemPrompt: string): NodeJS.ProcessEnv {
+  const next = { ...env };
+  const instructionFile = writeRuntimeArtifact(stateDir, "copilot", "instructions/AGENTS.md", systemPrompt);
+  const instructionDir = path.dirname(instructionFile);
+  const existing = (next.COPILOT_CUSTOM_INSTRUCTIONS_DIRS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+  next.COPILOT_CUSTOM_INSTRUCTIONS_DIRS = [...new Set([...existing, instructionDir])].join(",");
+  return next;
+}
+
 // CopilotRun owns the serial turn queue for one agent session. Mirrors codexRuntime's
 // queue/turnBusy/pump pattern, but each turn is a fresh one-shot process rather than a message to a
 // persistent one.
@@ -100,16 +109,21 @@ class CopilotRun {
   private readonly env: NodeJS.ProcessEnv;
   private readonly admission: ReturnType<typeof initialTurnAdmission>;
   private currentInput: CopilotInput | null = null;
+  private exitReported = false;
+
+  private reportExit(code: number | null): void {
+    if (this.exitReported) return;
+    this.exitReported = true;
+    this.cb.onExit(code);
+  }
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
     this.admission = initialTurnAdmission(cb);
     // Self-assign the session id (idempotent create-or-resume via --session-id, verified). Announce
     // it up front so the server's resume pointer survives a crash/timeout before any `result` line.
     this.sessionId = opts.sessionId || randomUUID();
-    this.env = { ...opts.env };
+    this.env = copilotInstructionEnv(opts.env, opts.stateDir, opts.systemPrompt);
     delete this.env.NODE_OPTIONS; // copilot's bundled node rejects proxy flags (e.g. --use-env-proxy)
-    try { writeFileSync(path.join(opts.cwd, "AGENTS.md"), opts.systemPrompt); }
-    catch (e) { cb.log.warn("copilot: AGENTS.md write failed", { detail: String(e) }); }
     cb.onSession(this.sessionId);
     void this.enqueue(opts.initialPrompt, true).catch(() => {});
   }
@@ -168,11 +182,11 @@ class CopilotRun {
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
       this.cb.log.error("copilot spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "copilot not found");
-      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); } else this.pump();
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.reportExit(1); } else this.pump();
     });
     proc.on("exit", (code) => {
       if (buf.trim()) processLine(buf); buf = "";
-      this.proc = null; this.turnBusy = false; if (this.stopped) return;
+      this.proc = null; this.turnBusy = false; if (this.stopped) { this.reportExit(code); return; }
       if (this.currentInput === input) this.currentInput = null;
       if (code === 0 || resultSeen) {
         this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return;
@@ -183,7 +197,7 @@ class CopilotRun {
       const last = tail.split("\n").filter(Boolean).pop() || `copilot exited ${code ?? "signal"}`;
       this.cb.onTrajectory([{ kind: "text", text: "[copilot error] " + clip(tail).slice(0, 500) }]);
       this.cb.onActivity("error", last.slice(0, 200));
-      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.cb.onExit(code ?? 1); return; } // first-turn hard failure → crashed
+      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.reportExit(code ?? 1); return; } // first-turn hard failure → crashed
       this.pump(); // a later turn failed; keep the session alive so the next message can retry
     });
   }
@@ -194,7 +208,8 @@ class CopilotRun {
     this.currentInput?.admission.reject(error); this.currentInput = null;
     this.rejectQueue(error);
     const p = this.proc; this.proc = null;
-    if (p) { killTree(p); }
+    if (p) killTree(p);
+    else this.reportExit(0);
   }
 }
 

@@ -277,9 +277,17 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     await waitForTurnDispatch(second.body.id);
     const refreshedDelegate = await api(live.base, "GET", "/agent-api/message/check", agentHeaders(1));
     assert.equal(refreshedDelegate.status, 200);
-    const published = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), { target: `#${channel!.name}`, replyTo: triggerId, content: "delegated joke" });
+    let published = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), { target: `#${channel!.name}`, replyTo: triggerId, content: "delegated joke" });
     assert.equal(published.status, 200, JSON.stringify(published.body));
-    assert.equal(published.body.replyTo, triggerId);
+    // The earlier reconnect catch-up ambient message may belong to another randomly selected owner.
+    // In that case it is intentionally absent from this agent's check but still triggers the send-time
+    // freshness guard. Follow the public contract and submit the saved draft after reviewing the hold.
+    if (published.body.held) {
+      assert.equal(published.body.draft, true);
+      published = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), { target: `#${channel!.name}`, replyTo: triggerId, sendDraft: true });
+      assert.equal(published.status, 200, JSON.stringify(published.body));
+    }
+    assert.equal(published.body.replyTo, triggerId, JSON.stringify({ refreshedDelegate: refreshedDelegate.body, published: published.body }));
     assert.equal(published.body.replySlot, "primary");
 
     const oldOwner = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(0), { target: `#${channel!.name}`, replyTo: triggerId, content: "duplicate" });
@@ -315,9 +323,12 @@ test("real API: reconnect catch-up and reply coordination preserve their contrac
     assert.equal(backend.status, 200, JSON.stringify(backend.body));
     await waitForTurnDispatch(backend.body.id);
     await api(live.base, "GET", "/agent-api/message/check", agentHeaders(1));
-    const frontend = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), {
+    const frontendAttempt = await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), {
       target: `#${channel!.name}`, replyTo: multiId, content: "frontend answer",
     });
+    const frontend = frontendAttempt.body.held
+      ? await api(live.base, "POST", "/agent-api/message/send", agentHeaders(1), { target: `#${channel!.name}`, replyTo: multiId, sendDraft: true })
+      : frontendAttempt;
     assert.equal(frontend.status, 200, JSON.stringify(frontend.body));
     assert.equal(frontend.body.replySlot, "directed");
     const multiReplies = await db.select().from(schema.messages).where(eq(schema.messages.replyToMessageId, multiId));

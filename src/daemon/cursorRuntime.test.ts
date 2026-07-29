@@ -2,10 +2,11 @@
 // cursor-agent 2025.09.17 (src/daemon/__fixtures__/cursor-*.jsonl). Run: `npx tsx --test src/daemon/cursorRuntime.test.ts`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { handleCursorEvent } from "./cursorRuntime.js";
+import { buildCursorArgs, handleCursorEvent, prepareCursorPlugin } from "./cursorRuntime.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 function fixtureEvents(name: string): any[] {
@@ -54,4 +55,22 @@ test("system:error event is surfaced as an error", () => {
   const emit = handleCursorEvent({ type: "system", subtype: "error", session_id: "s", error: "fatal: crashed" });
   assert.match(emit.error ?? "", /fatal: crashed/);
   assert.equal(emit.trajectory.length, 0);
+});
+
+test("Cursor uses a state-managed always-on plugin on fresh and resumed turns", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "open-tag-cursor-state-"));
+  try {
+    const pluginDir = prepareCursorPlugin(stateDir, "open-tag prompt");
+    const manifest = JSON.parse(readFileSync(path.join(pluginDir, ".cursor-plugin", "plugin.json"), "utf8"));
+    const rule = readFileSync(path.join(pluginDir, "rules", "open-tag.mdc"), "utf8");
+    assert.match(manifest.name, /^open-tag-/);
+    assert.match(rule, /alwaysApply: true/);
+    assert.match(rule, /open-tag prompt/);
+    assert.deepEqual(buildCursorArgs("fresh", undefined, null, pluginDir).slice(-2), ["--plugin-dir", pluginDir]);
+    const resumed = buildCursorArgs("resume", undefined, "session-1", pluginDir);
+    assert.equal(resumed[resumed.indexOf("--plugin-dir") + 1], pluginDir);
+    assert.equal(resumed[resumed.indexOf("--resume") + 1], "session-1");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });

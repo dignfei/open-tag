@@ -29,6 +29,7 @@ test("missing codex binary reports offline instead of crashing daemon", async ()
   try {
     const session = codexRuntime.start({
       cwd: root,
+      stateDir: root,
       env: { PATH: root },
       systemPrompt: "system",
       initialPrompt: "start",
@@ -66,7 +67,7 @@ test("initial admission rejects exactly once when Codex turn/start RPC rejects",
   try {
     writeFileSync(executable, `#!${process.execPath}\nconst readline = require("node:readline");\nconst rl = readline.createInterface({ input: process.stdin });\nrl.on("line", (line) => {\n  const request = JSON.parse(line);\n  if (request.id === undefined) return;\n  if (request.method === "initialize") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }));\n  else if (request.method === "thread/start") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { thread: { id: "thread-test" } } }));\n  else if (request.method === "turn/start") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "turn rejected" } }));\n});\n`);
     chmodSync(executable, 0o755);
-    session = codexRuntime.start({ cwd: root, env: { PATH: root }, systemPrompt: "system", initialPrompt: "start" }, {
+    session = codexRuntime.start({ cwd: root, stateDir: root, env: { PATH: root }, systemPrompt: "system", initialPrompt: "start" }, {
       onSession: () => {},
       onInitialTurnAdmission: (error) => admissions.push(error),
       onActivity: () => {},

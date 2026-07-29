@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { AgentManager, type AgentConfig } from "./agentManager.js";
@@ -1086,6 +1086,126 @@ test("reset rejects when workspace cleanup fails instead of acknowledging a fals
     const mgr = new AgentManager(() => {}, { dataDir: blockedDataDir, binDir: root, budget: noPressureBudget, runtimeResolver: () => null });
     await assert.rejects(mgr.reset("reset-error", false, true), /memory reset failed/);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("clearMemory atomically replaces a MEMORY.md symlink without touching its target", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-reset-memory-link-"));
+  const agentId = "reset-memory-link";
+  const dir = path.join(root, agentId);
+  const outside = path.join(root, "outside-memory.md");
+  mkdirSync(dir);
+  writeFileSync(outside, "outside memory\n");
+  symlinkSync(outside, path.join(dir, "MEMORY.md"));
+  try {
+    const mgr = new AgentManager(() => {}, { dataDir: root, binDir: root, budget: noPressureBudget, runtimeResolver: () => null });
+    await mgr.reset(agentId, false, true);
+
+    assert.equal(readFileSync(outside, "utf8"), "outside memory\n");
+    assert.equal(lstatSync(path.join(dir, "MEMORY.md")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(dir, "MEMORY.md"), "utf8"), "# Memory\n\n(reset)\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("syncProfile never reads or writes through a MEMORY.md symlink", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-profile-memory-link-"));
+  const agentId = "profile-memory-link";
+  const dir = path.join(root, agentId);
+  const outside = path.join(root, "outside-memory.md");
+  mkdirSync(dir);
+  writeFileSync(outside, "# Outside\n\n## Role\nsecret\n");
+  symlinkSync(outside, path.join(dir, "MEMORY.md"));
+  try {
+    const mgr = new AgentManager(() => {}, { dataDir: root, binDir: root, budget: noPressureBudget, runtimeResolver: () => null });
+    await mgr.syncProfile(agentId, "Changed", "changed role");
+
+    assert.equal(readFileSync(outside, "utf8"), "# Outside\n\n## Role\nsecret\n");
+    assert.equal(lstatSync(path.join(dir, "MEMORY.md")).isSymbolicLink(), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("start rejects a symlinked agent state directory before writing or spawning", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-state-link-"));
+  const outside = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-state-link-outside-"));
+  const agentId = "linked-state";
+  let starts = 0;
+  symlinkSync(outside, path.join(root, agentId), "dir");
+  const fakeRuntime: Runtime = {
+    name: "fake",
+    start() { starts++; return { deliver: async () => {}, stop: () => {} }; },
+  };
+  try {
+    const mgr = new AgentManager(() => {}, { dataDir: root, binDir: root, budget: noPressureBudget, runtimeResolver: () => fakeRuntime });
+    await assert.rejects(mgr.start(agentId, baseConfig(agentId)), /symbolic link/);
+    assert.equal(starts, 0);
+    assert.equal(existsSync(path.join(outside, "notes")), false);
+    assert.equal(existsSync(path.join(outside, "MEMORY.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("a bound project is runtime cwd while state and full reset remain isolated", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-project-"));
+  const projectDir = path.join(root, "existing-project");
+  const dataDir = path.join(root, "state");
+  const sentinel = path.join(projectDir, "AGENTS.md");
+  let startOpts: StartOpts | undefined;
+  let callbacks: RuntimeCallbacks | undefined;
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(sentinel, "existing project instructions\n");
+  const previousRoots = process.env.OPEN_TAG_PROJECT_ROOTS;
+  process.env.OPEN_TAG_PROJECT_ROOTS = JSON.stringify([root]);
+  const fakeRuntime: Runtime = {
+    name: "fake",
+    start(opts, cb) {
+      startOpts = opts;
+      callbacks = cb;
+      cb.onInitialTurnAdmission();
+      return { deliver: async () => {}, stop: () => cb.onExit(0) };
+    },
+  };
+  try {
+    const agentId = "bound-project";
+    const mgr = new AgentManager(() => {}, { dataDir, binDir: root, budget: noPressureBudget, runtimeResolver: () => fakeRuntime });
+    await mgr.start(agentId, { ...baseConfig(agentId), projectPath: projectDir });
+    assert.equal(startOpts?.cwd, realpathSync(projectDir));
+    assert.equal(startOpts?.stateDir, path.join(dataDir, agentId));
+    assert.equal(readFileSync(sentinel, "utf8"), "existing project instructions\n");
+    assert.equal(existsSync(path.join(dataDir, agentId, "MEMORY.md")), true);
+    await mgr.reset(agentId, true, false);
+    assert.equal(callbacks !== undefined, true);
+    assert.equal(existsSync(path.join(dataDir, agentId)), false);
+    assert.equal(readFileSync(sentinel, "utf8"), "existing project instructions\n");
+  } finally {
+    if (previousRoots === undefined) delete process.env.OPEN_TAG_PROJECT_ROOTS;
+    else process.env.OPEN_TAG_PROJECT_ROOTS = previousRoots;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a missing bound project fails before spawning the runtime", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-missing-project-"));
+  const previousRoots = process.env.OPEN_TAG_PROJECT_ROOTS;
+  process.env.OPEN_TAG_PROJECT_ROOTS = JSON.stringify([root]);
+  let starts = 0;
+  const fakeRuntime: Runtime = {
+    name: "fake",
+    start() { starts++; return { deliver: async () => {}, stop: () => {} }; },
+  };
+  try {
+    const mgr = new AgentManager(() => {}, { dataDir: path.join(root, "state"), binDir: root, budget: noPressureBudget, runtimeResolver: () => fakeRuntime });
+    await assert.rejects(mgr.start("missing-project", { ...baseConfig("missing-project"), projectPath: path.join(root, "missing") }), /does not exist/);
+    assert.equal(starts, 0);
+  } finally {
+    if (previousRoots === undefined) delete process.env.OPEN_TAG_PROJECT_ROOTS;
+    else process.env.OPEN_TAG_PROJECT_ROOTS = previousRoots;
     rmSync(root, { recursive: true, force: true });
   }
 });

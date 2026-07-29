@@ -1,10 +1,9 @@
 // claude runtime: `claude -p stream-json` continuous session. User messages are written to stdin to drive turns;
 // stdout is parsed as stream-json events.
-import { writeFileSync } from "node:fs";
-import path from "node:path";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
 import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
+import { writeRuntimeArtifact } from "./runtimeArtifacts.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -48,7 +47,7 @@ export const claudeRuntime: Runtime = {
     // planning/cron/ask tools disabled (they cause undesirable autonomous-agent detours).
     // Standing prompt written to a file then passed via --append-system-prompt-file (avoids excessively long CLI args).
     let promptFlag = ["--append-system-prompt", opts.systemPrompt];
-    try { const pf = path.join(opts.cwd, ".claude-system-prompt.md"); writeFileSync(pf, opts.systemPrompt); promptFlag = ["--append-system-prompt-file", pf]; } catch { /* fallback to inline */ }
+    try { const pf = writeRuntimeArtifact(opts.stateDir, "claude", "system-prompt.md", opts.systemPrompt); promptFlag = ["--append-system-prompt-file", pf]; } catch { /* fallback to inline */ }
     const rc = opts.runtimeConfig;
     const args = buildClaudeArgs({
       promptFileFlag: promptFlag,

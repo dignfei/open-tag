@@ -7,13 +7,63 @@ import { can, capabilitiesFor, requireCap } from "../capabilities.js";
 import { createServer } from "../core.js";
 import { publish } from "../realtime.js";
 import { DYNAMIC_RUNTIMES, getDynamicModels } from "../runtimeModels.js";
-import { readJson, sendErr, sendJson } from "../util.js";
+import { PROJECT_BROWSER_CAPABILITY, requestDaemonByMachine } from "../daemonHub.js";
+import { isUuid, readJson, sendErr, sendJson } from "../util.js";
 import { createRequire } from "node:module";
 
 // Single source of truth for the newest published daemon version (packages/daemon/package.json). The web client
 // compares each machine's reported daemonVersion against this to raise an "outdated daemon" system alert. Falls
 // back to "" — a safe no-op that raises no outdated alert — if the file isn't reachable in the current layout.
 const LATEST_DAEMON_VERSION: string = (() => { try { return String(createRequire(import.meta.url)("../../../packages/daemon/package.json").version ?? ""); } catch { return ""; } })();
+
+const PROJECT_DIRECTORY_RESPONSE_LIMIT = 200;
+const PROJECT_DIRECTORY_QUERY_BYTES = 8 * 1024;
+async function readProjectDirectoryQuery(req: import("node:http").IncomingMessage): Promise<Record<string, unknown> | null> {
+  let bytes = 0, tooLarge = false;
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += value.length;
+    if (bytes > PROJECT_DIRECTORY_QUERY_BYTES) tooLarge = true;
+    else chunks.push(value);
+  }
+  if (tooLarge || !chunks.length) return null;
+  try {
+    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
+}
+
+function cleanProjectDirectoryEntries(value: unknown): { name: string; path: string }[] | null {
+  if (!Array.isArray(value) || value.length > PROJECT_DIRECTORY_RESPONSE_LIMIT) return null;
+  const entries: { name: string; path: string }[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return null;
+    const name = (item as any).name, entryPath = (item as any).path;
+    if (typeof name !== "string" || !name || name.length > 255 || typeof entryPath !== "string" || !entryPath || entryPath.length > 4096) return null;
+    entries.push({ name, path: entryPath });
+  }
+  return entries;
+}
+
+function cleanProjectDirectoryResponse(value: any): Record<string, unknown> | null {
+  if (!value || value.type !== "project:directories" || !["roots", "list", "discover"].includes(value.mode)) return null;
+  const nextCursor = value.nextCursor;
+  if (nextCursor !== null && (!Number.isSafeInteger(nextCursor) || nextCursor < 0 || nextCursor > 2_000)) return null;
+  if (typeof value.truncated !== "boolean") return null;
+  if (value.mode === "roots") {
+    const roots = cleanProjectDirectoryEntries(value.roots);
+    return roots ? { mode: "roots", roots, nextCursor, truncated: value.truncated } : null;
+  }
+  if (value.mode === "list") {
+    const directories = cleanProjectDirectoryEntries(value.directories);
+    if (!directories || typeof value.path !== "string" || !value.path || value.path.length > 4096) return null;
+    return { mode: "list", path: value.path, directories, nextCursor, truncated: value.truncated };
+  }
+  const projects = cleanProjectDirectoryEntries(value.projects);
+  if (!projects || (value.path !== null && (typeof value.path !== "string" || !value.path || value.path.length > 4096))) return null;
+  return { mode: "discover", path: value.path, projects, nextCursor, truncated: value.truncated };
+}
 
 export async function handleServersUserScope(ctx: UserCtx): Promise<boolean> {
   const { req, res, method, p, userId } = ctx;
@@ -71,7 +121,7 @@ export async function handleServersUserScope(ctx: UserCtx): Promise<boolean> {
 }
 
 export async function handleServersServerScope(ctx: ServerCtx): Promise<boolean> {
-  const { req, res, method, p, userId, serverId } = ctx;
+  const { req, res, url, method, p, userId, serverId } = ctx;
   const rm = /^\/api\/servers\/[^/]+\/machines\/([^/]+)\/runtime-models\/([^/]+)$/.exec(p);
   if (rm && method === "GET") {
     const machineId = rm[1]!, runtime = rm[2]!;
@@ -184,6 +234,59 @@ export async function handleServersServerScope(ctx: ServerCtx): Promise<boolean>
     }
     const machines = await db.select().from(schema.machines).where(eq(schema.machines.serverId, serverId));
     return (sendJson(res, 200, { machines: machines.map((m) => ({ id: m.id, name: m.name, hostname: m.hostname, os: m.os, runtimes: m.runtimes, status: m.status, daemonVersion: m.daemonVersion, isComputer: m.isComputer, apiKeyPrefix: m.apiKeyPrefix, lastHeartbeat: m.lastHeartbeat })), latestDaemonVersion: LATEST_DAEMON_VERSION }), true);
+  }
+  // Metadata-only directory picker for one daemon machine. The daemon owns the allowlist and filesystem
+  // checks; the server enforces human authorization, tenant ownership, capability/version, and RPC binding.
+  const projectRoots = /^\/api\/servers\/[^/]+\/machines\/([^/]+)\/project-directories$/.exec(p);
+  const projectQuery = /^\/api\/servers\/[^/]+\/machines\/([^/]+)\/project-directories\/query$/.exec(p);
+  const pd = projectRoots ?? projectQuery;
+  if (pd && ((projectRoots && method === "GET") || (projectQuery && method === "POST"))) {
+    if (!await requireCap(serverId, userId, "manageAgents")) return (sendErr(res, 403, "need manageAgents capability"), true);
+    if (!await requireCap(serverId, userId, "manageMachines")) return (sendErr(res, 403, "need manageMachines capability"), true);
+    const machineId = pd[1]!;
+    if (!isUuid(machineId)) return (sendErr(res, 404, "machine not found", { code: "machine_not_found" }), true);
+    const owns = (await db.select({ id: schema.machines.id }).from(schema.machines).where(and(eq(schema.machines.id, machineId), eq(schema.machines.serverId, serverId))))[0];
+    if (!owns) return (sendErr(res, 404, "machine not found", { code: "machine_not_found" }), true);
+
+    let pathValue: string | undefined, discover = false, cursorValue: number | undefined, limitValue: number | undefined;
+    if (url.search) return (sendErr(res, 400, "project directory queries must use the request body", { code: "invalid_query" }), true);
+    if (projectQuery) {
+      const body = await readProjectDirectoryQuery(req);
+      const allowed = new Set(["path", "discover", "cursor", "limit"]);
+      if (!body || Object.keys(body).some((key) => !allowed.has(key))) return (sendErr(res, 400, "invalid project-directory request", { code: "invalid_query" }), true);
+      if (body.path !== undefined && (typeof body.path !== "string" || !body.path || body.path.length > 4096)) return (sendErr(res, 400, "invalid project directory", { code: "invalid_query" }), true);
+      if (body.discover !== undefined && typeof body.discover !== "boolean") return (sendErr(res, 400, "discover must be boolean", { code: "invalid_query" }), true);
+      if (body.cursor !== undefined && (!Number.isSafeInteger(body.cursor) || Number(body.cursor) < 0 || Number(body.cursor) > 2_000)) return (sendErr(res, 400, "invalid cursor", { code: "invalid_query" }), true);
+      if (body.limit !== undefined && (!Number.isSafeInteger(body.limit) || Number(body.limit) < 1 || Number(body.limit) > PROJECT_DIRECTORY_RESPONSE_LIMIT)) return (sendErr(res, 400, "invalid limit", { code: "invalid_query" }), true);
+      pathValue = body.path as string | undefined;
+      discover = body.discover === true;
+      cursorValue = body.cursor as number | undefined;
+      limitValue = body.limit as number | undefined;
+      if (!discover && pathValue === undefined) return (sendErr(res, 400, "path is required for directory listing", { code: "invalid_query" }), true);
+    }
+    const result = await requestDaemonByMachine(machineId, {
+      type: "project:browse", path: pathValue, discover, cursor: cursorValue, limit: limitValue,
+    }, 6_000, {
+      serverId, capabilities: [PROJECT_BROWSER_CAPABILITY], responseTypes: ["project:directories"],
+    });
+    if (result?.type !== "project:directories") {
+      return (sendErr(res, 503, "Project browser is unavailable.", { code: "project_browser_unavailable" }), true);
+    }
+    if (result.error) {
+      const messages: Record<string, string> = {
+        project_roots_not_configured: "No project roots are shared by this daemon.",
+        project_path_not_shared: "Project directory is outside shared roots.",
+        invalid_project_path: "Project directory is unavailable.",
+        invalid_query: "Invalid project-directory request.",
+        project_browser_busy: "Project discovery is already running.",
+      };
+      const code = typeof result.code === "string" && messages[result.code] ? result.code : "invalid_project_path";
+      const status = code === "project_roots_not_configured" || code === "project_browser_busy" ? 409 : 400;
+      return (sendErr(res, status, messages[code]!, { code }), true);
+    }
+    const clean = cleanProjectDirectoryResponse(result);
+    if (!clean) return (sendErr(res, 503, "Project browser returned an invalid response.", { code: "project_browser_unavailable" }), true);
+    return (sendJson(res, 200, clean), true);
   }
   // Machine budget (GET /api/servers/:id/machines/:id/budget) — WS-RPC to the daemon
   const bm = /^\/api\/servers\/[^/]+\/machines\/([^/]+)\/budget$/.exec(p);

@@ -3,7 +3,7 @@ import { and, eq, ne, desc, gt, inArray, like, sql, or, isNull, isNotNull } from
 import { db, schema } from "../db/index.js";
 import { nextSeq, publish } from "./realtime.js";
 import { nextTaskNumber } from "../redis.js";
-import { agentControlBlockReason, broadcastToDaemons, conversationTurnDeliveryBlockReason, daemonCount, isMachineConnected, requestDaemon, requestDaemonByMachine, sendToMachine } from "./daemonHub.js";
+import { agentControlBlockReason, broadcastToDaemons, conversationTurnDeliveryBlockReason, daemonCount, isMachineConnected, projectDirectoryBlockReason, requestDaemon, requestDaemonByMachine, sendToMachine } from "./daemonHub.js";
 import { createLogger } from "../log.js";
 import { canUserReadChannel } from "./channelAccess.js";
 import { canAutoJoinMentionedMembers } from "./agentWakePolicy.js";
@@ -14,12 +14,14 @@ import { assignActivityRows, claimPendingAgentActivity, pendingActivityForStream
 import { agentConfig } from "./agentConfig.js";
 import { attachMessageToConversationTurn, scheduleConversationTurn, type ConversationBoundaryKind } from "./conversationTurns.js";
 import { dispatchConversationTurn as dispatchConversationTurnWithDeps, dispatchLegacyMessage, prepareConversationTurnResponsibility, type ConversationTurnDispatchDeps } from "./conversationTurnDispatch.js";
+import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY } from "../daemonProtocol.js";
 
 const log = createLogger("server:core");
 const conversationTurnDispatchDeps: ConversationTurnDispatchDeps<AgentStartTarget> = {
   channelMembers,
   parseMentions,
   agentStartTarget: conversationTurnAgentStartTarget,
+  agentStartPreflight: conversationTurnAgentStartPreflight,
   sendAgentStart,
   sendAgentDeliver,
   markAgentUnavailable,
@@ -863,16 +865,25 @@ type AgentStartTarget = { ok: true; machineId: string | null; cfg: NonNullable<A
 type AgentControlTarget = { ok: true; machineId: string | null };
 type AgentControlResult = { ok: boolean; reason?: string };
 
-function sendAgentStart(serverId: string, target: AgentStartTarget, agentId: string): boolean {
+function sendAgentStart(serverId: string, target: AgentStartTarget, agentId: string, durableTurn = false): boolean {
   const msg = { type: "agent:start", agentId, config: target.cfg };
-  if (target.machineId) return sendToMachine(target.machineId, msg);
+  if (target.machineId) return sendToMachine(target.machineId, msg, {
+    serverId,
+    capabilities: [
+      ...(target.cfg.projectPath ? [PROJECT_DIRECTORY_CAPABILITY] : []),
+      ...(durableTurn ? [DELIVERY_ADMISSION_CAPABILITY] : []),
+    ],
+  });
   if (daemonCount(serverId) === 0) return false;
   broadcastToDaemons(serverId, msg);
   return true;
 }
 
 function sendAgentDeliver(serverId: string, target: AgentStartTarget, msg: Record<string, unknown>): boolean {
-  if (target.machineId) return sendToMachine(target.machineId, { type: "agent:deliver", ...msg });
+  if (target.machineId) return sendToMachine(target.machineId, { type: "agent:deliver", ...msg }, {
+    serverId,
+    capabilities: msg.deliveryId ? [DELIVERY_ADMISSION_CAPABILITY] : [],
+  });
   if (daemonCount(serverId) === 0) return false;
   broadcastToDaemons(serverId, { type: "agent:deliver", ...msg });
   return true;
@@ -906,18 +917,31 @@ function sendAgentControl(serverId: string, target: AgentControlTarget, msg: Rec
 async function requestAgentControl(serverId: string, target: AgentControlTarget, msg: Record<string, unknown>): Promise<AgentControlResult> {
   const blocked = agentControlBlockReason(serverId, target.machineId);
   if (blocked) return { ok: false, reason: blocked };
+  const projectBoundStart = msg.type === "agent:start" && Boolean((msg.config as { projectPath?: string | null } | undefined)?.projectPath);
   const response = target.machineId
-    ? await requestDaemonByMachine(target.machineId, msg, 30_000)
+    ? await requestDaemonByMachine(target.machineId, msg, 30_000, {
+      serverId,
+      capabilities: [AGENT_CONTROL_ACK_CAPABILITY, ...(projectBoundStart ? [PROJECT_DIRECTORY_CAPABILITY] : [])],
+    })
     : await requestDaemon(serverId, msg, 30_000, true);
   if (response?.error) return { ok: false, reason: String(response.error) };
   if (response?.type !== "rpc:ack") return { ok: false, reason: "invalid daemon control response" };
   return { ok: true };
 }
 
-async function agentStartTarget(serverId: string, agentId: string): Promise<AgentStartTarget | { ok: false; reason: string }> {
+type AgentStartPreflight = {
+  ok: true;
+  machineId: string | null;
+  projectPath: string | null;
+  status: string;
+};
+
+async function agentStartPreflight(serverId: string, agentId: string): Promise<AgentStartPreflight | { ok: false; reason: string }> {
   const a = (await db.select({
     machineId: schema.agents.machineId,
     runtime: schema.agents.runtime,
+    projectPath: schema.agents.projectPath,
+    status: schema.agents.status,
     machineStatus: schema.machines.status,
     machineRuntimes: schema.machines.runtimes,
   }).from(schema.agents)
@@ -925,25 +949,52 @@ async function agentStartTarget(serverId: string, agentId: string): Promise<Agen
     .where(and(eq(schema.agents.id, agentId), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt))))[0];
   if (!a) return { ok: false, reason: "agent not found" };
   if (!a.machineId) {
+    if (a.projectPath) return { ok: false, reason: "project directory requires a machine-bound agent" };
     if (daemonCount(serverId) === 0) return { ok: false, reason: "no daemon online" };
-    const cfg = await agentConfig(agentId);
-    if (!cfg) return { ok: false, reason: "agent not found" };
-    return { ok: true, machineId: null, cfg };
+    return { ok: true, machineId: null, projectPath: null, status: a.status };
   }
   if (a.machineStatus !== "online" || !isMachineConnected(a.machineId)) return { ok: false, reason: "machine offline" };
   const runtime = a.runtime ?? "claude";
   const runtimes = Array.isArray(a.machineRuntimes) ? a.machineRuntimes : [];
   if (!runtimes.includes(runtime)) return { ok: false, reason: `runtime unavailable: ${runtime}` };
+  if (a.projectPath) {
+    const blocked = projectDirectoryBlockReason(serverId, a.machineId);
+    if (blocked) return { ok: false, reason: blocked };
+  }
+  return { ok: true, machineId: a.machineId, projectPath: a.projectPath, status: a.status };
+}
+
+async function agentStartTarget(serverId: string, agentId: string): Promise<AgentStartTarget | { ok: false; reason: string }> {
+  const preflight = await agentStartPreflight(serverId, agentId);
+  if (!preflight.ok) return preflight;
+  // Claim the configuration before reading it. A project-path PATCH requires status=inactive in the
+  // same UPDATE, so either PATCH wins and this start reads the new path, or start wins and PATCH gets
+  // 409. This closes the old-config/new-DB cwd race across manual and automatic wake paths.
+  if (preflight.status === "inactive" || preflight.status === "sleeping") {
+    const [claimed] = await db.update(schema.agents).set({ status: "starting" })
+      .where(and(eq(schema.agents.id, agentId), eq(schema.agents.serverId, serverId), eq(schema.agents.status, preflight.status)))
+      .returning({ id: schema.agents.id });
+    if (!claimed) return agentStartTarget(serverId, agentId);
+  }
   const cfg = await agentConfig(agentId);
   if (!cfg) return { ok: false, reason: "agent not found" };
-  return { ok: true, machineId: a.machineId, cfg };
+  return { ok: true, machineId: preflight.machineId, cfg };
+}
+
+async function conversationTurnAgentStartPreflight(serverId: string, agentId: string): Promise<{ ok: true } | { ok: false; reason: string; retryable?: boolean }> {
+  const preflight = await agentStartPreflight(serverId, agentId);
+  if (!preflight.ok) return preflight.reason === "no daemon online" ? { ...preflight, retryable: false } : preflight;
+  const reason = conversationTurnDeliveryBlockReason(serverId, preflight.machineId);
+  if (reason) return { ok: false, reason, retryable: false };
+  // The dispatcher only consumes ok/machineId during this pure phase. Deliberately avoid generating
+  // an agent token or claiming status=starting until it is ready to send this recipient's frames.
+  return { ok: true };
 }
 
 async function conversationTurnAgentStartTarget(serverId: string, agentId: string): Promise<AgentStartTarget | { ok: false; reason: string; retryable?: boolean }> {
-  const target = await agentStartTarget(serverId, agentId);
-  if (!target.ok) return target.reason === "no daemon online" ? { ...target, retryable: false } : target;
-  const reason = conversationTurnDeliveryBlockReason(serverId, target.machineId);
-  return reason ? { ok: false, reason, retryable: false } : target;
+  const preflight = await conversationTurnAgentStartPreflight(serverId, agentId);
+  if (!preflight.ok) return preflight;
+  return agentStartTarget(serverId, agentId);
 }
 async function agentControlTarget(serverId: string, agentId: string): Promise<AgentControlTarget | { ok: false; reason: string }> {
   const a = (await db.select({

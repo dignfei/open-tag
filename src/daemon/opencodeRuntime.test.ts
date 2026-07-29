@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { handleOpencodeEvent } from "./opencodeRuntime.js";
+import { handleOpencodeEvent, opencodeInstructionEnv } from "./opencodeRuntime.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 function fixtureEvents(name: string): any[] {
@@ -65,4 +65,19 @@ test("reasoning maps to thinking; empty text is skipped; lifecycle events are si
   assert.equal(fin.trajectory.length, 0);
   assert.equal(fin.activity, undefined);
   assert.equal(fin.sessionId, "ses_y"); // session id is still captured from any event
+});
+
+test("OpenCode merges a managed primary agent into existing config content", () => {
+  const existing = JSON.stringify({ theme: "dark", agent: { reviewer: { mode: "subagent", prompt: "review" } } });
+  const configured = opencodeInstructionEnv({ OPENCODE_CONFIG_CONTENT: existing }, "/state/Agent One", "open-tag prompt");
+  const parsed = JSON.parse(configured.env.OPENCODE_CONFIG_CONTENT!);
+  assert.equal(parsed.theme, "dark");
+  assert.equal(parsed.agent.reviewer.prompt, "review");
+  assert.equal(parsed.agent[configured.agentName].mode, "primary");
+  assert.equal(parsed.agent[configured.agentName].prompt, "open-tag prompt");
+});
+
+test("OpenCode fails loudly rather than discarding invalid inherited config", () => {
+  assert.throws(() => opencodeInstructionEnv({ OPENCODE_CONFIG_CONTENT: "{" }, "/state/agent", "prompt"), /valid JSON/);
+  assert.throws(() => opencodeInstructionEnv({ OPENCODE_CONFIG_CONTENT: '{"agent":[]}' }, "/state/agent", "prompt"), /agent must contain/);
 });

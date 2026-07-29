@@ -1,6 +1,8 @@
 // Kimi Code runtime: one-shot `kimi -p --output-format stream-json` per turn (like copilot/opencode —
 // not a persistent process), chained by the `session_...` id Kimi prints in its `session.resume_hint`
-// event and passed back via `-r <id>`. System prompt is injected via {cwd}/AGENTS.md.
+// event and passed back via `-r <id>`. Kimi <0.29 has no independent append-system-prompt flag;
+// open-tag therefore repeats a compatibility instruction envelope on every one-shot turn. Project
+// AGENTS.md and .kimi-code/AGENTS.md remain untouched and are still merged by Kimi itself.
 //
 // Auth is NOT via env: Kimi Code (kimi-code, the maintained successor to the deprecated kimi-cli)
 // reads provider credentials only from ~/.kimi-code/config.toml. The host must have a provider +
@@ -10,9 +12,7 @@
 import { type ChildProcess } from "node:child_process";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
-import { writeFileSync } from "node:fs";
-import path from "node:path";
-import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
+import { initialTurnAdmission, protocolAdmission, runtimeInstructionEnvelope, type ProtocolAdmission, type Runtime, type StartOpts, type RuntimeCallbacks, type RuntimeSession, type TrajectoryEntry } from "./runtime.js";
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
@@ -63,6 +63,10 @@ function buildArgs(prompt: string, model: string | undefined, sessionId: string 
   return args;
 }
 
+export function buildKimiPrompt(systemPrompt: string, input: string): string {
+  return runtimeInstructionEnvelope(systemPrompt, input);
+}
+
 // KimiRun owns the serial turn queue for one agent (mirrors opencode/copilot's queue/pump): each turn
 // is a fresh one-shot `kimi -p` process resumed by the captured session id.
 interface KimiInput { text: string; initial: boolean; admission: ProtocolAdmission }
@@ -77,14 +81,19 @@ class KimiRun {
   private readonly env: NodeJS.ProcessEnv;
   private readonly admission: ReturnType<typeof initialTurnAdmission>;
   private currentInput: KimiInput | null = null;
+  private exitReported = false;
+
+  private reportExit(code: number | null): void {
+    if (this.exitReported) return;
+    this.exitReported = true;
+    this.cb.onExit(code);
+  }
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
     this.admission = initialTurnAdmission(cb);
     this.sessionId = opts.sessionId ?? null;
     this.env = { ...opts.env, PWD: opts.cwd };
     delete this.env.NODE_OPTIONS; // kimi's bundled node rejects proxy flags (e.g. --use-env-proxy)
-    try { writeFileSync(path.join(opts.cwd, "AGENTS.md"), opts.systemPrompt); }
-    catch (e) { cb.log.warn("kimi: AGENTS.md write failed", { detail: String(e) }); }
     if (this.sessionId) cb.onSession(this.sessionId);
     void this.enqueue(opts.initialPrompt, true).catch(() => {});
   }
@@ -107,7 +116,7 @@ class KimiRun {
 
   private runTurn(input: KimiInput): void {
     this.currentInput = input;
-    const prompt = input.text;
+    const prompt = buildKimiPrompt(this.opts.systemPrompt, input.text);
     this.turnBusy = true;
     this.cb.onActivity("working", "turn");
     const args = buildArgs(prompt, this.opts.model, this.sessionId);
@@ -142,11 +151,11 @@ class KimiRun {
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
       this.cb.log.error("kimi spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "kimi not found");
-      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); } else this.pump();
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.reportExit(1); } else this.pump();
     });
     proc.on("exit", (code) => {
       if (buf.trim()) processLine(buf); buf = "";
-      this.proc = null; this.turnBusy = false; if (this.stopped) return;
+      this.proc = null; this.turnBusy = false; if (this.stopped) { this.reportExit(code); return; }
       if (this.currentInput === input) this.currentInput = null;
       if (code === 0) { this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return; }
       const tail = errTail.join("").trim();
@@ -156,7 +165,7 @@ class KimiRun {
       const last = tail.split("\n").filter(Boolean).pop() || `kimi exited ${code ?? "signal"}`;
       this.cb.onTrajectory([{ kind: "text", text: "[kimi error] " + clip(tail).slice(0, 500) }]);
       this.cb.onActivity("error", last.slice(0, 200));
-      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.cb.onExit(code ?? 1); return; } // first-turn hard failure (bad config/auth) → crashed
+      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.reportExit(code ?? 1); return; } // first-turn hard failure (bad config/auth) → crashed
       this.pump();
     });
   }
@@ -167,7 +176,8 @@ class KimiRun {
     this.currentInput?.admission.reject(error); this.currentInput = null;
     this.rejectQueue(error);
     const p = this.proc; this.proc = null;
-    if (p) { killTree(p); }
+    if (p) killTree(p);
+    else this.reportExit(0);
   }
 }
 

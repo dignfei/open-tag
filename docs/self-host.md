@@ -133,6 +133,7 @@ control plane over WebSocket using `DAEMON_BOOTSTRAP_KEY`.
 
 ```bash
 # Using the published npm package — no repo clone needed:
+export OPEN_TAG_PROJECT_ROOTS='["/srv/projects"]'
 npx @fancyboi999/open-tag-daemon@latest \
   --server-url http://localhost:7788 \
   --api-key <DAEMON_BOOTSTRAP_KEY>
@@ -141,6 +142,7 @@ npx @fancyboi999/open-tag-daemon@latest \
 **Remote machine** (daemon on your dev machine or another server):
 
 ```bash
+export OPEN_TAG_PROJECT_ROOTS='["/absolute/path/to/projects"]'
 npx @fancyboi999/open-tag-daemon@latest \
   --server-url https://your-domain.com \
   --api-key <DAEMON_BOOTSTRAP_KEY>
@@ -151,6 +153,8 @@ web UI to confirm it appears online.
 
 > The daemon stores agent workspaces, `MEMORY.md` files, and logs under `OPEN_TAG_HOME`
 > (default: `~/.open-tag`). See [Data directory](#data-directory-open_tag_home) below.
+> `OPEN_TAG_PROJECT_ROOTS` is separate: it controls which host directories may be browsed or
+> selected as an agent project cwd. Project binding fails closed when it is unset.
 
 ### Step 5 — Firewall and HTTPS
 
@@ -248,6 +252,30 @@ export OPEN_TAG_HOME=/data/open-tag
 
 Set this in `.env.prod` or the systemd unit's `[Service]` section (see
 [Bare Node.js](#bare-nodejs-advanced) below) to keep it consistent across restarts.
+
+## Shared project roots (`OPEN_TAG_PROJECT_ROOTS`)
+
+The daemon never exposes or accepts an arbitrary host path for project binding. Share the smallest
+set of directories that contain projects agents may work on:
+
+```bash
+# Portable form (recommended, including Windows): JSON string array
+export OPEN_TAG_PROJECT_ROOTS='["/srv/projects","/home/agent/code"]'
+
+# Also accepted: the platform PATH delimiter (`:` on POSIX, `;` on Windows)
+export OPEN_TAG_PROJECT_ROOTS=/srv/projects:/home/agent/code
+```
+
+The create/edit Agent form can then browse those roots, lazily list safe child directories, or run
+a bounded marker-only project discovery. It does not read file contents or persist the directory
+tree on the control-plane server. Manual paths use the same allowlist, and every start canonicalizes
+and rechecks the selected path. Hidden/sensitive descendants and symbolic-link escapes are rejected.
+
+Do not share the filesystem root, an entire home directory, credential stores, browser profiles, or
+system directories. `OPEN_TAG_PROJECT_ROOTS` is a disclosure/binding policy, **not a runtime sandbox**:
+the runtime still executes as the daemon OS user and keeps its real `HOME` for existing CLI auth,
+MCP, config, and skills. Use a dedicated OS account, container, or OS sandbox when the runtime itself
+must be unable to read outside its project.
 
 For the **control-plane server** (running in Docker), agent uploads are also written to
 `OPEN_TAG_HOME/uploads/` on the container's filesystem. Since the container is stateless
@@ -544,6 +572,7 @@ sudo systemctl restart open-tag-daemon
 | `ADMIN_SETUP_TOKEN` | yes (first deploy only) | — | One-time admin bootstrap; clear after use |
 | `ALLOW_DEV_LOGIN` | no | unset | `true` enables passwordless dev-login — **never set in production** |
 | `OPEN_TAG_HOME` | no | `~/.open-tag` | Base dir for agent workspaces, logs, uploads |
+| `OPEN_TAG_PROJECT_ROOTS` | for project binding | unset (fail closed) | JSON array or platform PATH-delimited daemon-host roots exposed to the project picker and accepted as project cwd |
 | `OPEN_TAG_UPLOAD_DIR` | no | `$OPEN_TAG_HOME/uploads` | Override local upload directory |
 | `OPEN_TAG_STORAGE` | no | `local` | `local` or `s3` for S3-compatible object storage |
 | `OPEN_TAG_S3_ENDPOINT` | if `s3` | — | S3 endpoint URL |

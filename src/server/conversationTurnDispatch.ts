@@ -35,7 +35,9 @@ export interface ConversationTurnDispatchDeps<TTarget extends { ok: true }> {
   channelMembers(channelId: string): Promise<DispatchMember[]>;
   parseMentions(content: string, members: DispatchMember[]): DispatchMember[];
   agentStartTarget(serverId: string, agentId: string): Promise<TTarget | { ok: false; reason: string; retryable?: boolean }>;
-  sendAgentStart(serverId: string, target: TTarget, agentId: string): boolean;
+  /** Pure capability/topology check used before an explicit multi-recipient Turn becomes visible. */
+  agentStartPreflight?(serverId: string, agentId: string): Promise<{ ok: true } | { ok: false; reason: string; retryable?: boolean }>;
+  sendAgentStart(serverId: string, target: TTarget, agentId: string, durableTurn?: boolean): boolean;
   sendAgentDeliver(serverId: string, target: TTarget, message: Record<string, unknown>): boolean;
   markAgentUnavailable(serverId: string, agentId: string, reason: string): Promise<void>;
   finalizeAgentActivityRun(serverId: string, agentId: string, channelId: string, streamId: string, agentName: string, state: "handled" | "error"): Promise<void>;
@@ -134,7 +136,7 @@ async function deliverAgentResponsibility<TTarget extends { ok: true }>(
   }
 
   const replyStreamId = `${input.trigger.id}:${input.member.id}`;
-  const startSent = deps.sendAgentStart(input.serverId, target, input.member.id);
+  const startSent = deps.sendAgentStart(input.serverId, target, input.member.id, Boolean(input.turnId));
   const deliveryId = input.turnId ? `${input.turnId}:${input.member.id}` : undefined;
   const ack = startSent && deliveryId ? expectAgentDeliveryAck(deliveryId, input.member.id, input.latest.seq) : null;
   let deliverSent = false;
@@ -312,7 +314,7 @@ export async function dispatchConversationTurn<TTarget extends { ok: true }>(
       // Turn or its grants become visible so a mixed-version fleet cannot start only half the team.
       const preflight = await Promise.all(admittedCandidates.map(async (member) => ({
         member,
-        target: await deps.agentStartTarget(claimed.serverId, member.id),
+        target: await (deps.agentStartPreflight ?? deps.agentStartTarget)(claimed.serverId, member.id),
       })));
       const capabilityBlocked = preflight.find(({ target }) => !target.ok && target.retryable === false);
       if (capabilityBlocked && !capabilityBlocked.target.ok) {

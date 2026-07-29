@@ -4,13 +4,34 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { db, schema } from "../../db/index.js";
 import { requireCap } from "../capabilities.js";
 import { DESC_TOO_LONG, INVALID_AGENT_NAME, addChannelMembers, descTooLong, invalidAgentName, dequeueAgent, resetAgent, startAgent, stopAgent, syncAgentProfile } from "../core.js";
-import { requestDaemon, requestDaemonByMachine } from "../daemonHub.js";
+import { PROJECT_DIRECTORY_CAPABILITY, projectDirectoryBlockReason, requestDaemon, requestDaemonByMachine } from "../daemonHub.js";
 import { publish } from "../realtime.js";
 import { ALL_SCOPE_KEYS, SCOPES, effectiveScopes, isScopeLiteral } from "../scopes.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
 
+async function canonicalProjectPath(serverId: string, machineId: string, value: unknown): Promise<{ projectPath: string | null } | { error: string; status: number }> {
+  if (value === undefined || value === null || value === "") return { projectPath: null };
+  if (typeof value !== "string") return { error: "projectPath must be a string", status: 400 };
+  if (value.length > 4096) return { error: "project directory is too long", status: 400 };
+  const blocked = projectDirectoryBlockReason(serverId, machineId);
+  if (blocked) return { error: blocked, status: 503 };
+  const result = await requestDaemonByMachine(machineId, { type: "project:resolve", path: value }, 6000, {
+    serverId,
+    capabilities: [PROJECT_DIRECTORY_CAPABILITY],
+  });
+  if (result?.error) {
+    const error = String(result.error);
+    const status = /does not support|daemon|machine offline|send failed/i.test(error) ? 503 : 400;
+    return { error, status };
+  }
+  if (result?.type !== "project:resolved" || typeof result.projectPath !== "string") return { error: "invalid project-directory response", status: 503 };
+  return { projectPath: result.projectPath };
+}
+
 export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
   const { req, res, url, method, p, userId, serverId } = ctx;
+  const requestAgentDaemon = (a: { machineId: string | null }, msg: Record<string, unknown>) =>
+    a.machineId ? requestDaemonByMachine(a.machineId, msg) : requestDaemon(serverId, msg);
   if (p === "/api/agents" && method === "GET") {
     const machineId = url.searchParams.get("machineId"); // computer page filters by machine
     let agents = await db.select().from(schema.agents).where(and(eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt)));
@@ -35,13 +56,15 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
     const machine = (await db.select({ id: schema.machines.id }).from(schema.machines)
       .where(and(eq(schema.machines.id, b.machineId), eq(schema.machines.serverId, serverId))))[0];
     if (!machine) return (sendErr(res, 404, "machine not found"), true); // 404, not 400: existence-hiding for a cross-tenant/bogus id, consistent with this repo's other ownership pre-checks
+    const resolvedProject = await canonicalProjectPath(serverId, machine.id, b.projectPath);
+    if ("error" in resolvedProject) return (sendErr(res, resolvedProject.status, resolvedProject.error), true);
     // A live agent name must be unique per server — it is the @mention / dm:@<name> routing key, so a duplicate
     // becomes an unreachable routing blind spot. ON CONFLICT against the agents_name_uniq partial index is
     // race-proof (no SELECT-then-INSERT gap): a duplicate live name inserts no row → friendly 409. Soft-deleted
     // names are excluded by the index predicate, so a deleted agent's name can be reused.
     const [agent] = await db.insert(schema.agents).values({
       serverId, name: b.name, displayName: b.displayName || b.name, description: b.description ?? null,
-      model: b.model || null, runtime: b.runtime || "claude", machineId: b.machineId,
+      model: b.model || null, runtime: b.runtime || "claude", machineId: b.machineId, projectPath: resolvedProject.projectPath,
       runtimeConfig: { provider: b.provider ?? "default", model: b.model ?? null, reasoningEffort: b.reasoning ?? null, mode: b.fastMode ? "fast" : "default" },
       envVars: b.envVars ?? {}, executionMode: b.fastMode ? "fast" : "auto", creatorType: "user", creatorId: userId,
     }).onConflictDoNothing({ target: [schema.agents.serverId, schema.agents.name], where: isNull(schema.agents.deletedAt) }).returning();
@@ -59,25 +82,59 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
   if (am && !isUuid(am[1]!)) return (sendErr(res, 404, "agent not found"), true); // covers GET/PATCH/DELETE — non-uuid would throw casting into the uuid column
   if (am && method === "GET") {
     const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId))))[0];
-    return (a ? sendJson(res, 200, a) : sendErr(res, 404, "agent not found"), true);
+    if (!a) return (sendErr(res, 404, "agent not found"), true);
+    const canManage = await requireCap(serverId, userId, "manageAgents");
+    return (sendJson(res, 200, {
+      id: a.id, name: a.name, displayName: a.displayName, avatarUrl: a.avatarUrl, description: a.description,
+      status: a.status, activity: a.activity, sessionId: a.sessionId, model: a.model, runtime: a.runtime,
+      runtimeConfig: a.runtimeConfig, executionMode: a.executionMode, machineId: a.machineId,
+      creatorType: a.creatorType, creatorId: a.creatorId, createdAt: a.createdAt,
+      projectBound: Boolean(a.projectPath),
+      projectPath: canManage ? a.projectPath : null,
+    }), true);
   }
   if (am && method === "PATCH") {
     if (!await requireCap(serverId, userId, "manageAgents")) return (sendErr(res, 403, "need manageAgents capability"), true);
     const b = await readJson(req); const patch: Record<string, unknown> = {};
     if (descTooLong(b.description)) return (sendErr(res, 400, DESC_TOO_LONG), true);
+    const current = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt))))[0];
+    if (!current) return (sendErr(res, 404, "agent not found"), true);
     for (const k of ["displayName", "description", "model", "runtime", "avatarUrl"]) if (b[k] !== undefined) patch[k] = b[k];
     if (b.envVars !== undefined) patch.envVars = b.envVars;
-    await db.update(schema.agents).set(patch).where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId)));
+    let projectPathChanged = false;
+    if (b.projectPath !== undefined) {
+      if (current.status !== "inactive") return (sendErr(res, 409, "stop the agent before changing its project directory"), true);
+      if (!current.machineId) return (sendErr(res, 409, "agent must be bound to a machine before setting a project directory"), true);
+      const resolvedProject = await canonicalProjectPath(serverId, current.machineId, b.projectPath);
+      if ("error" in resolvedProject) return (sendErr(res, resolvedProject.status, resolvedProject.error), true);
+      projectPathChanged = resolvedProject.projectPath !== current.projectPath;
+      patch.projectPath = resolvedProject.projectPath;
+      if (projectPathChanged) patch.sessionId = null;
+    }
+    const [updated] = await db.update(schema.agents).set(patch)
+      .where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId), ...(b.projectPath !== undefined ? [eq(schema.agents.status, "inactive")] : [])))
+      .returning();
+    if (!updated) return (sendErr(res, 409, "agent state changed; stop it before changing its project directory"), true);
     // Title/role changed → push the current profile to the daemon so it syncs the workspace MEMORY.md.
     if (patch.displayName !== undefined || patch.description !== undefined) {
-      const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId))))[0];
-      if (a) await syncAgentProfile(serverId, am[1]!, a.displayName, a.description);
+      await syncAgentProfile(serverId, am[1]!, updated.displayName, updated.description);
     }
-    return (sendJson(res, 200, { ok: true }), true);
+    return (sendJson(res, 200, { ok: true, projectPath: updated.projectPath, sessionCleared: projectPathChanged }), true);
   }
   if (am && method === "DELETE") {
     if (!await requireCap(serverId, userId, "manageAgents")) return (sendErr(res, 403, "need manageAgents capability"), true);
-    await stopAgent(serverId, am[1]!).catch(() => {}); // stop the local process before deleting
+    const current = (await db.select().from(schema.agents).where(and(
+      eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt),
+    )))[0];
+    if (!current) return (sendErr(res, 404, "agent not found"), true);
+    // A project-bound process can keep modifying an operator-owned repository after its machine
+    // disconnects. Never hide/revoke the agent until its daemon has confirmed stop, even when the
+    // DB status looks inactive (that status can be stale after a network partition).
+    const mustConfirmStopped = Boolean(current.projectPath) || ["starting", "active", "queued"].includes(current.status);
+    if (mustConfirmStopped) {
+      const stopped = await stopAgent(serverId, am[1]!);
+      if (!stopped.ok) return (sendErr(res, 503, `cannot safely delete before stop: ${stopped.reason ?? "stop not confirmed"}`), true);
+    }
     await db.delete(schema.channelMembers).where(and(eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, am[1]!)));
     await db.update(schema.agents).set({ deletedAt: new Date(), status: "inactive", activity: "offline", agentTokenHash: null }).where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId))); // soft delete: row is kept so historical messages/DM names remain resolvable by id, no orphans; clear the token hash so a still-running deleted agent can no longer authenticate (C4, with resolveAgent's deletedAt filter)
     await publish(serverId, { type: "agent:deleted", id: am[1]! });
@@ -126,18 +183,16 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
     const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, agId), eq(schema.agents.serverId, serverId))))[0];
     if (!a) return (sendErr(res, 404, "agent not found"), true);
     if (awsList) {
-      const r = await requestDaemon(serverId, { type: "agent:workspace:list", agentId: agId });
+      const r = await requestAgentDaemon(a, { type: "agent:workspace:list", agentId: agId });
       return (sendJson(res, 200, r.error ? { error: r.error } : { files: r.files ?? [], root: r.root }), true);
     }
-    const r = await requestDaemon(serverId, { type: "agent:workspace:read", agentId: agId, path: url.searchParams.get("path") ?? "" });
+    const r = await requestAgentDaemon(a, { type: "agent:workspace:read", agentId: agId, path: url.searchParams.get("path") ?? "" });
     return (sendJson(res, 200, r.error ? { error: r.error } : { path: r.path, content: r.content }), true);
   }
   // Personality/skills files live on the agent's OWN machine (agents.machineId): route the RPC to that
   // machine's daemon instead of a serverId-wide broadcast, where any connected daemon answers first —
   // wrong disk on a multi-machine server, and a silent timeout when an outdated daemon swallows the type.
   // Agents without a machine binding (legacy rows, seed-dev's @dev-bot) keep the broadcast fallback.
-  const requestAgentDaemon = (a: { machineId: string | null }, msg: Record<string, unknown>) =>
-    a.machineId ? requestDaemonByMachine(a.machineId, msg) : requestDaemon(serverId, msg);
   // Agent personality: read/write/delete personality.md via daemon workspace
   const aper = /^\/api\/agents\/([^/]+)\/personality$/.exec(p);
   if (aper && method === "GET") {
@@ -202,7 +257,10 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
   if (askill && method === "GET") {
     const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, askill[1]!), eq(schema.agents.serverId, serverId))))[0];
     if (!a) return (sendErr(res, 404, "agent not found"), true);
-    try { const r = await requestAgentDaemon(a, { type: "agent:skills:list", agentId: askill[1]!, runtime: a.runtime }); return (sendJson(res, 200, { global: r.global ?? [], workspace: r.workspace ?? [] }), true); }
+    if (a.projectPath && !await requireCap(serverId, userId, "manageAgents")) {
+      return (sendErr(res, 403, "need manageAgents capability to inspect project-local skills"), true);
+    }
+    try { const r = await requestAgentDaemon(a, { type: "agent:skills:list", agentId: askill[1]!, runtime: a.runtime, projectPath: a.projectPath }); return (sendJson(res, 200, { global: r.global ?? [], workspace: r.workspace ?? [] }), true); }
     catch { return (sendJson(res, 200, { global: [], workspace: [] }), true); }
   }
   // Agent Skills write/delete (upload/remove SKILL.md in the workspace <runtime>/skills/ dir)
@@ -212,6 +270,7 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
     const agId = askillOp[1]!; const skillName = askillOp[2]!;
     const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, agId), eq(schema.agents.serverId, serverId))))[0];
     if (!a) return (sendErr(res, 404, "agent not found"), true);
+    if (a.projectPath) return (sendErr(res, 409, "project-local skills are read-only; manage them in the bound project"), true);
     const wsName = ({ claude: ".claude", codex: ".codex", copilot: ".copilot", hermes: ".hermes", kimi: ".skills", opencode: ".opencode", cursor: ".cursor", pi: ".pi" } as Record<string, string>)[a.runtime] || ".claude";
     const relPath = `${wsName}${a.runtime === "kimi" ? "" : "/skills"}/${skillName}/SKILL.md`;
     if (method === "PUT") {

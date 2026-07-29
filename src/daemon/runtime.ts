@@ -63,13 +63,19 @@ export function protocolAdmission(): ProtocolAdmission {
 }
 
 export interface StartOpts {
-  cwd: string;
+  cwd: string;                     // operator-owned project directory, or stateDir when unbound
+  stateDir: string;                // open-tag-owned durable memory/runtime artifacts; safe to reset
   model?: string;
   runtimeConfig?: Record<string, unknown> | null;
   sessionId?: string | null;       // for session resume
   systemPrompt: string;            // injected system prompt (claude=--append-system-prompt; codex=developerInstructions)
   env: NodeJS.ProcessEnv;          // includes PATH injection for open-tag + OPEN_TAG_* env vars
   initialPrompt: string;           // first drive message (new session="Start."; resume=RESUME_NUDGE)
+}
+
+/** Compatibility channel for one-shot CLIs that expose no independent system/custom-instruction API. */
+export function runtimeInstructionEnvelope(systemPrompt: string, input: string): string {
+  return `<open-tag-runtime-instructions>\n${systemPrompt}\n</open-tag-runtime-instructions>\n\n<open-tag-turn>\n${input}\n</open-tag-turn>`;
 }
 
 export interface RuntimeSession {
