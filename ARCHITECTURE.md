@@ -185,4 +185,4 @@ cd web && npm run dev  # Vite HMR dev server
 
 - This file is intentionally short. **Do not keep it in sync line-by-line with the code.** Come back only when a module's purpose, boundary, or invariant changes.
 - `CLAUDE.md` acts only as a **directory** pointing here and to `docs/`; architecture detail does not belong in `CLAUDE.md`.
-- When changing `src/db/schema.ts`, regenerate `docs/generated/db-schema.md`. When adding or removing routes or CLI subcommands, update the Codemap in §II. When completing a feature, tick it off in `FEATURES.md`.
+- When changing `src/db/schema.ts`, update `docs/generated/db-schema.md` by hand (no generator script exists despite the directory name). When adding or removing routes or CLI subcommands, update the Codemap in §II. When completing a feature, tick it off in `FEATURES.md`.
