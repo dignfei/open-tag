@@ -20,7 +20,7 @@
   --task-mention:#f5ddd9;--task-mention-strong:#efcbc5;
   --human-mention:#fde9ec;--human-mention-strong:#fad9df;
   --alert-note:#92B6FF;--alert-tip:#72bd8f;--alert-important:#a98ad5;--alert-warning:#d9ad2b;--alert-caution:#d67b72;
-  --read-pad:24px;--read-top:40px;--read-bottom:80px;--scrollbar-gutter:16px;--chat-card-width:1440px;
+  --scrollbar-gutter:16px;--chat-card-width:1440px;
   --md-text-size:14.5px;--md-line-height:1.68;--md-paragraph-gap:.75em;
   --md-h1-size:1.4em;--md-h2-size:1.25em;--md-h3-size:1.12em;--md-h-rest-size:1em;
   /* Motion tokens — app shell (not landing page --lp-* system) */
@@ -913,7 +913,6 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
 @media (prefers-reduced-motion:reduce){.msg-enter,.agent-run-enter{animation:none}}
 
 @media (max-width:700px){
-  :root{--read-pad:16px}
   .scroll{padding-left:16px;padding-right:16px}
   .composer{padding-left:16px;padding-right:16px}
   .composer-input{font-size:16px}
