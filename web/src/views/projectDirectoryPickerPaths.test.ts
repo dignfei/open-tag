@@ -20,11 +20,11 @@ test("builds breadcrumbs below a Windows drive root", () => {
 
 test("uses the most specific shared root", () => {
   assert.deepEqual(projectPathBreadcrumbs([
-    { name: "Home", path: "/Users/dev" },
-    { name: "Projects", path: "/Users/dev/Projects" },
-  ], "/Users/dev/Projects/open-tag"), [
-    { name: "Projects", path: "/Users/dev/Projects" },
-    { name: "open-tag", path: "/Users/dev/Projects/open-tag" },
+    { name: "Workspace", path: "/workspace" },
+    { name: "Projects", path: "/workspace/projects" },
+  ], "/workspace/projects/open-tag"), [
+    { name: "Projects", path: "/workspace/projects" },
+    { name: "open-tag", path: "/workspace/projects/open-tag" },
   ]);
 });
 

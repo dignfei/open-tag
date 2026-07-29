@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { browseProjectDirectories, ProjectDirectoryError, resolveProjectDirectory } from "./projectDirectory.js";
@@ -27,8 +28,8 @@ test("project resolution is fail-closed, canonical, and cannot escape shared roo
   symlinkSync(outside, escape, "dir");
   const restore = withRoots([root]);
   try {
-    assert.equal(await resolveProjectDirectory(project), realpathSync(project));
-    assert.equal(await resolveProjectDirectory(`  ${link}  `), realpathSync(project));
+    assert.equal(await resolveProjectDirectory(project), await realpath(project));
+    assert.equal(await resolveProjectDirectory(`  ${link}  `), await realpath(project));
     await assert.rejects(resolveProjectDirectory("relative/project"), /absolute path/);
     await assert.rejects(resolveProjectDirectory(path.join(root, "missing")), /does not exist or is not accessible/);
     await assert.rejects(resolveProjectDirectory(path.join(outside, "missing")), /outside.*shared roots/);
@@ -75,8 +76,9 @@ test("a configured root symlink returns canonical paths that resolve on the next
   try {
     const roots = await browseProjectDirectories({});
     assert.equal(roots.mode, "roots");
-    assert.equal(roots.roots[0]?.path, realpathSync(actual));
-    assert.equal(await resolveProjectDirectory(path.join(realpathSync(actual), "child")), realpathSync(child));
+    const canonicalRoot = await realpath(actual);
+    assert.equal(roots.roots[0]?.path, canonicalRoot);
+    assert.equal(await resolveProjectDirectory(path.join(canonicalRoot, "child")), await realpath(child));
   } finally {
     restore();
     rmSync(base, { recursive: true, force: true });
@@ -97,7 +99,7 @@ test("manual resolution rejects hidden and sensitive descendants unless they are
   } finally { restore(); }
 
   restore = withRoots([ssh]);
-  try { assert.equal(await resolveProjectDirectory(ssh), realpathSync(ssh)); }
+  try { assert.equal(await resolveProjectDirectory(ssh), await realpath(ssh)); }
   finally {
     restore();
     rmSync(base, { recursive: true, force: true });
@@ -160,11 +162,12 @@ test("browser lists only safe directories with stable bounded pagination", async
   const restore = withRoots([root]);
   try {
     const roots = await browseProjectDirectories({});
-    assert.deepEqual(roots, { mode: "roots", roots: [{ name: "shared", path: realpathSync(root) }], nextCursor: null, truncated: false });
+    const canonicalRoot = await realpath(root);
+    assert.deepEqual(roots, { mode: "roots", roots: [{ name: "shared", path: canonicalRoot }], nextCursor: null, truncated: false });
     const first = await browseProjectDirectories({ path: root, limit: 1 });
-    assert.deepEqual(first, { mode: "list", path: realpathSync(root), directories: [{ name: "alpha", path: path.join(realpathSync(root), "alpha") }], nextCursor: 1, truncated: true });
+    assert.deepEqual(first, { mode: "list", path: canonicalRoot, directories: [{ name: "alpha", path: await realpath(path.join(root, "alpha")) }], nextCursor: 1, truncated: true });
     const second = await browseProjectDirectories({ path: root, cursor: 1, limit: 10 });
-    assert.deepEqual(second, { mode: "list", path: realpathSync(root), directories: [{ name: "bravo", path: path.join(realpathSync(root), "bravo") }], nextCursor: null, truncated: false });
+    assert.deepEqual(second, { mode: "list", path: canonicalRoot, directories: [{ name: "bravo", path: await realpath(path.join(root, "bravo")) }], nextCursor: null, truncated: false });
   } finally {
     restore();
     rmSync(base, { recursive: true, force: true });
@@ -192,7 +195,7 @@ test("discovery checks marker names only, skips symlinks and hidden trees, and i
   try {
     const result = await browseProjectDirectories({ discover: true, limit: 20 });
     assert.equal(result.mode, "discover");
-    assert.deepEqual(result.projects.map((project) => project.path).sort(), [realpathSync(first), realpathSync(nested), realpathSync(depth4)].sort());
+    assert.deepEqual(result.projects.map((project) => project.path).sort(), await Promise.all([first, nested, depth4].map((directory) => realpath(directory))).then((paths) => paths.sort()));
     assert.equal(result.truncated, false);
   } finally {
     restore();

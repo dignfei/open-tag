@@ -196,12 +196,21 @@ test("Hermes completes an empty-inbox turn so a queued delivery can run", async 
   const root = mkdtempSync(path.join(tmpdir(), "open-tag-hermes-empty-inbox-"));
   const binDir = path.join(root, "bin");
   mkdirSync(binDir);
-  writeFileSync(path.join(binDir, "hermes"), [
-    "#!/bin/sh",
-    "printf '%s\\n' '{\"type\":\"check\",\"count\":0}' >> \"$OPEN_TAG_TURN_FILE\"",
-    "printf '%s\\n' 'No new open-tag messages were waiting. Standing by.'",
-    "exit 0",
-  ].join("\n"), { mode: 0o755 });
+  if (process.platform === "win32") {
+    writeFileSync(path.join(binDir, "hermes.cmd"), [
+      "@echo off",
+      "echo {\"type\":\"check\",\"count\":0}>>\"%OPEN_TAG_TURN_FILE%\"",
+      "echo No new open-tag messages were waiting. Standing by.",
+      "exit /b 0",
+    ].join("\r\n"), "utf8");
+  } else {
+    writeFileSync(path.join(binDir, "hermes"), [
+      "#!/bin/sh",
+      "printf '%s\\n' '{\"type\":\"check\",\"count\":0}' >> \"$OPEN_TAG_TURN_FILE\"",
+      "printf '%s\\n' 'No new open-tag messages were waiting. Standing by.'",
+      "exit 0",
+    ].join("\n"), { mode: 0o755 });
+  }
   const activities: string[] = [];
   let session: ReturnType<typeof hermesRuntime.start> | undefined;
   try {

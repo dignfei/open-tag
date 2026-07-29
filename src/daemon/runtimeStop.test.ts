@@ -27,9 +27,16 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 }
 
 function fakeCommand(binDir: string, command: string, body: string): void {
-  const file = path.join(binDir, command);
-  writeFileSync(file, `#!/bin/sh\n${body}\n`, "utf8");
-  chmodSync(file, 0o755);
+  if (process.platform === "win32") {
+    const batchBody = body === "exit 0"
+      ? "exit /b 0"
+      : "ping -n 31 127.0.0.1 >nul";
+    writeFileSync(path.join(binDir, `${command}.cmd`), `@echo off\r\n${batchBody}\r\n`, "utf8");
+  } else {
+    const file = path.join(binDir, command);
+    writeFileSync(file, `#!/bin/sh\n${body}\n`, "utf8");
+    chmodSync(file, 0o755);
+  }
 }
 
 function callbacks(admissions: Array<Error | undefined>, activities: string[], exits: Array<number | null>): RuntimeCallbacks {

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { AgentManager, type AgentConfig } from "./agentManager.js";
@@ -173,10 +174,11 @@ test("deliver received during async start is consumed by the wake nudge, not re-
       runtimeResolver: () => fakeRuntime,
     });
     const start = mgr.start("agent-1", baseConfig("agent-1"));
-    mgr.deliver("agent-1", "User", "dm:agent-1", true, {
+    const delivery = mgr.deliver("agent-1", "User", "dm:agent-1", true, {
       targetName: "dm:Agent", msgShort: "m1", turnId: "turn-startup", deliveryId: "turn-startup:agent-1",
     });
     await start;
+    await delivery;
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     // The startup nudge itself drives the "check inbox" turn — the queued deliver
@@ -1175,7 +1177,7 @@ test("a bound project is runtime cwd while state and full reset remain isolated"
     const agentId = "bound-project";
     const mgr = new AgentManager(() => {}, { dataDir, binDir: root, budget: noPressureBudget, runtimeResolver: () => fakeRuntime });
     await mgr.start(agentId, { ...baseConfig(agentId), projectPath: projectDir });
-    assert.equal(startOpts?.cwd, realpathSync(projectDir));
+    assert.equal(startOpts?.cwd, await realpath(projectDir));
     assert.equal(startOpts?.stateDir, path.join(dataDir, agentId));
     assert.equal(readFileSync(sentinel, "utf8"), "existing project instructions\n");
     assert.equal(existsSync(path.join(dataDir, agentId, "MEMORY.md")), true);

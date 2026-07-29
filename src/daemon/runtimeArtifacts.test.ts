@@ -11,7 +11,7 @@ test("managed runtime artifacts stay below the agent state directory", () => {
     const file = writeRuntimeArtifact(root, "test", "instructions/prompt.md", "standing prompt\n");
     assert.equal(file, path.join(root, ".runtime", "test", "instructions", "prompt.md"));
     assert.equal(readFileSync(file, "utf8"), "standing prompt\n");
-    assert.equal(statSync(file).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(statSync(file).mode & 0o777, 0o600);
     assert.throws(() => writeRuntimeArtifact(root, "test", "../../outside", "bad"), /invalid runtime artifact path/);
   } finally {
     rmSync(root, { recursive: true, force: true });
