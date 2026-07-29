@@ -6,18 +6,16 @@
 > - **Small changes**: a lightweight plan is enough — one-sentence goal + verification criterion, written in the PR description or as a short entry below.
 > - **Complex work**: write a full execution plan in `docs/exec-plans/active/<slug>.md` (containing goal, steps, progress log, decision log). Move to `docs/exec-plans/completed/` when done.
 > - Every step carries a **verifiable criterion** — translate vague tasks into testable goals and loop until the criterion passes.
-> - **Historical archive**: `docs/superpowers/{plans,specs}` holds plan/spec documents produced by an earlier planning workflow (2026-06-24 → 2026-07-01, e.g. dev-e2e harness, S3 storage, connect-computer wizard, task handoff). They are read-only records of shipped work — new plans go in `docs/exec-plans/`, not there.
+> - **Historical archive**: `docs/superpowers/specs/` holds design-spec documents from an earlier planning workflow (2026-06-24 → 2026-07-01); kept read-only because code still cites them as design rationale. The matching execution-log `plans/` were deleted 2026-07-29 (shipped work; recover via git history). New plans go in `docs/exec-plans/`, not there.
 >
 > **Status single-source rule**: this file *indexes* work; it does not mirror per-item states owned elsewhere. Security/authorization item states live **only** in `docs/authorization.md` §6; feature completion lives in `FEATURES.md`; drift/debt lives in `docs/tech-debt-tracker.md`. (A mirrored list here once kept C10 marked "remaining" for ten days after it was fixed.)
 
 ## Active
 
 - **Authorization hardening** — a two-plane security audit (human `routes-api` + agent `routes-agent`)
-  surfaced ~20 access-control gaps; nearly all are closed (cross-tenant IDOR batch, agent-plane
-  channel-access layer, human capability gates, human-plane IDOR-B1…B6, timing-safe compares).
-  The canonical model + the **live status register** are in **[`docs/authorization.md`](./authorization.md)** §6
-  — check there, not here. Open at last audit (2026-07-06): **C5** task-ownership (product decision)
-  and **C12** agent-token TTL. **越权很危险 — verify each fix.**
+  surfaced ~20 access-control gaps; nearly all are closed. The canonical model + the **live status
+  register** are in **[`docs/authorization.md`](./authorization.md)** §6 — check there, not here
+  (per the single-source rule above, this file names no per-item states). **越权很危险 — verify each fix.**
 
 - **Harness engineering rollout** — remaining: mechanically enforce invariants (lint/CI — tech-debt I5),
   independent evaluator loop, scheduled doc-gardening. Done: `ARCHITECTURE.md` codemap, `docs/` skeleton,
@@ -46,7 +44,7 @@ their verified end state is recorded in `FEATURES.md`:
   [`docs/exec-plans/completed/directed-reply-coordination.md`](./exec-plans/completed/directed-reply-coordination.md).
 - **Conversation Turns** — sender/channel-scoped burst admission, durable responsibility,
   stable-check visibility, idempotent daemon delivery, and bounded agent causality. Evidence:
-  [`docs/exec-plans/active/conversation-turns.md`](./exec-plans/active/conversation-turns.md).
+  [`docs/exec-plans/completed/conversation-turns.md`](./exec-plans/completed/conversation-turns.md).
 - **01 Agent communication loop + agent ↔ agent collaboration** ✅ (FEATURES P5)
 - **02 Saved Messages** ✅ (FEATURES P3)
 - **03 / 03b Tasks end-to-end + interaction rework** ✅ (FEATURES P4 — board move UX, layout toggle, DM tasks, handoff)

@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: open-tag-design-system
-description: The warm-editorial design system used across open-tag's web surfaces. The base canvas is off-white (`#f5f5f5`) holding warm near-black ink (`#292524`); visual energy comes from soft pastel atmospheric gradient orbs (mint → peach → lavender → sky → rose) — the only deliberate "color" moments. Display runs EB Garamond Light at weight 300 as the editorial serif accent; Inter carries body, navigation, captions, and buttons. CTAs are subtle: a near-black ink pill is the primary, a transparent outline is the secondary. The system trusts atmospheric composition and modest type weights to carry all brand work — no neon accents, no saturated CTA color, no dark-canvas developer-tools atmosphere.
+description: The warm-editorial design system used across open-tag's web surfaces. The base canvas is off-white (`#f5f5f5`) holding warm near-black ink (`#292524`); visual energy comes from soft pastel atmospheric gradient orbs (mint → peach → lavender → sky) — the only deliberate "color" moments. Display runs EB Garamond Light at weight 300 as the editorial serif accent; Inter carries body, navigation, captions, and buttons. CTAs are subtle: a near-black ink pill is the primary, a transparent outline is the secondary. The system trusts atmospheric composition and modest type weights to carry all brand work — no neon accents, no saturated CTA color, no dark-canvas developer-tools atmosphere.
 
 colors:
   primary: "#292524"
@@ -28,7 +28,6 @@ colors:
   gradient-peach: "#f4c5a8"
   gradient-lavender: "#c8b8e0"
   gradient-sky: "#a8c8e8"
-  gradient-rose: "#e8b8c4"
   semantic-error: "#dc2626"
   semantic-success: "#16a34a"
 
@@ -312,7 +311,7 @@ components:
 
 ## Overview
 
-open-tag's warm-editorial design system reads like a quietly editorial print magazine. The base canvas is off-white `{colors.canvas}` (#f5f5f5) holding warm near-black ink `{colors.ink}` (#0c0a09). Visual energy is **atmospheric, not chromatic**: soft pastel gradient orbs (mint, peach, lavender, sky, rose) drift through the page as the only deliberate "color" moments. There is no neon accent, no saturated CTA color, no dark-canvas developer-tools atmosphere.
+open-tag's warm-editorial design system reads like a quietly editorial print magazine. The base canvas is off-white `{colors.canvas}` (#f5f5f5) holding warm near-black ink `{colors.ink}` (#0c0a09). Visual energy is **atmospheric, not chromatic**: soft pastel gradient orbs (mint, peach, lavender, sky) drift through the page as the only deliberate "color" moments. There is no neon accent, no saturated CTA color, no dark-canvas developer-tools atmosphere.
 
 Type pairs **EB Garamond Light** (open-source serif at weight 300) for display with **Inter** for body, navigation, captions, and buttons. The display weight at 300 is the editorial signature — never bold, never heavy. Licensed alternatives such as GT Sectra are also compatible if closer optical fidelity to a narrower modern serif is desired.
 
@@ -323,7 +322,7 @@ CTAs are subtle: a near-black ink pill (`{component.button-primary}`) is the pri
 - Single primary action: ink pill at `{rounded.pill}`. Atmospheric gradients carry visual energy.
 - Display runs EB Garamond Light at weight 300 — the editorial magazine voice.
 - Body runs Inter at 400 with subtle letter-spacing (+0.15–0.18px).
-- Pastel gradient orbs (5 tokens: mint, peach, lavender, sky, rose) used as atmospheric decoration only.
+- Pastel gradient orbs (4 tokens: mint, peach, lavender, sky) used as atmospheric decoration only.
 - Soft pill geometry (`{rounded.pill}` for CTAs, `{rounded.xl}` for cards).
 - 96px section rhythm.
 
@@ -362,7 +361,6 @@ CTAs are subtle: a near-black ink pill (`{component.button-primary}`) is the pri
 - **Gradient Peach** (`{colors.gradient-peach}` — #f4c5a8): Peach orb.
 - **Gradient Lavender** (`{colors.gradient-lavender}` — #c8b8e0): Lavender orb.
 - **Gradient Sky** (`{colors.gradient-sky}` — #a8c8e8): Sky-blue orb.
-- **Gradient Rose** (`{colors.gradient-rose}` — #e8b8c4): Rose orb.
 
 These appear ONLY as soft radial-gradient atmospheric orbs inside `{component.gradient-orb-card}` and as background atmospheric blooms behind hero copy. Never as button fills, never as text colors.
 
@@ -455,7 +453,7 @@ The system uses **hairline + restrained drop shadow**. Flat surfaces float above
 | `--shadow-7` | .45 | Lightbox image (over scrim) |
 
 ### Decorative Depth
-- **Pastel gradient orbs** are the system's strongest atmospheric pattern. Soft radial blooms in mint, peach, lavender, sky, or rose drift through hero bands and feature sections without containing any content — they are pure atmosphere.
+- **Pastel gradient orbs** are the system's strongest atmospheric pattern. Soft radial blooms in mint, peach, lavender, or sky drift through hero bands and feature sections without containing any content — they are pure atmosphere.
 
 ## Shapes
 
@@ -495,7 +493,7 @@ The system uses **hairline + restrained drop shadow**. Flat surfaces float above
 
 **`editorial-serif-accent`** — Local serif emphasis for otherwise Inter-led surfaces. Use it for brand mark letters, compact page titles, modal headings, empty states, testimonial pull-quotes, stat numerals, or one phrase inside a larger headline. This is the reusable "serif accent" pattern; it is not limited to hero titles. Keep it short and sparse.
 
-**`gradient-orb-card`** — A large card with a soft radial-gradient orb behind centered display copy. Background `{colors.canvas-soft}`, rounded `{rounded.xxl}` (24px), padding 32px. Each variant uses one of the five gradient tokens (`gradient-mint`, `gradient-peach`, `gradient-lavender`, `gradient-sky`, `gradient-rose`).
+**`gradient-orb-card`** — A large card with a soft radial-gradient orb behind centered display copy. Background `{colors.canvas-soft}`, rounded `{rounded.xxl}` (24px), padding 32px. Each variant uses one of the four gradient tokens (`gradient-mint`, `gradient-peach`, `gradient-lavender`, `gradient-sky`).
 
 ### Cards
 
@@ -538,7 +536,7 @@ The system uses **hairline + restrained drop shadow**. Flat surfaces float above
 - Use EB Garamond Light at weight 300 for every display headline. Never bold.
 - Use `{typography.editorial-serif-accent}` for short brand/accent moments outside hero: sidebar title, modal title, empty-state phrase, testimonial pull-quote, stat numeral, or a single emphasized phrase.
 - Use Inter at +0.15–0.18px tracking for body — the editorial dialect.
-- Use atmospheric gradient orbs (mint/peach/lavender/sky/rose) as decoration only.
+- Use atmospheric gradient orbs (mint/peach/lavender/sky) as decoration only.
 - Use the pill shape for every CTA and badge.
 
 ### Don't

@@ -1,7 +1,7 @@
 # Conversation Turns execution plan
 
-Status: implementation and focused remediation tests complete; full-suite split run, final live E2E,
-independent re-review, merge, and release pending, 2026-07-24.
+Status: complete — merged and released (Turn delivery fence `delivery-admission-v2` shipped in
+daemon 0.13.0; see `CHANGELOG.md`). Moved to completed 2026-07-29.
 
 ## Goal
 
