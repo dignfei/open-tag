@@ -521,6 +521,7 @@ test("multi-recipient capability preflight starts nobody until every mentioned a
     let starts = 0;
     let deliveries = 0;
     let preflightCalls = 0;
+    let claimedStarts = 0;
     let preflightStarted!: () => void;
     let releasePreflight!: () => void;
     const started = new Promise<void>((resolve) => { preflightStarted = resolve; });
@@ -531,7 +532,7 @@ test("multi-recipient capability preflight starts nobody until every mentioned a
         ...agentMembers,
       ],
       parseMentions: () => agentMembers,
-      agentStartTarget: async (_serverId, agentId) => {
+      agentStartPreflight: async (_serverId, agentId) => {
         preflightCalls++;
         if (preflightCalls === agentMembers.length) preflightStarted();
         await gate;
@@ -539,6 +540,7 @@ test("multi-recipient capability preflight starts nobody until every mentioned a
           ? { ok: false, reason: "daemon missing capability: delivery-admission-v2", retryable: false }
           : { ok: true };
       },
+      agentStartTarget: async () => { claimedStarts++; return { ok: true }; },
       sendAgentStart: () => { starts++; return true; },
       sendAgentDeliver: () => { deliveries++; return true; },
       markAgentUnavailable: async () => {},
@@ -561,6 +563,7 @@ test("multi-recipient capability preflight starts nobody until every mentioned a
     assert.deepEqual([paused.state, paused.responsibilityState, paused.dispatchAttempts], ["active", "active", 1]);
     assert.equal(paused.dispatchLeaseUntil?.toISOString(), "9999-12-31T23:59:59.999Z", "ordinary recovery cannot steal a capability-paused Turn");
     assert.deepEqual([starts, deliveries], [0, 0], "fan-out is all-or-paused before runtime side effects");
+    assert.equal(claimedStarts, 0, "pure fan-out preflight cannot claim an agent as starting");
     const decisions = await db.select({ grantStatus: schema.agentMessageDecisions.grantStatus })
       .from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, request.id));
     assert.deepEqual(decisions.map((row) => row.grantStatus).sort(), ["active", "active"]);

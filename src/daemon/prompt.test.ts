@@ -10,7 +10,8 @@ test("coordinated task grants are reserved for results, not acknowledgements", (
     serverId: "server-1",
     hostname: "host",
     os: "test",
-    workspace: "/workspace",
+    stateDir: "/state",
+    projectDir: "/project",
   });
 
   assert.match(prompt, /the recorded `accept` decision is the acknowledgement/i);
@@ -27,7 +28,8 @@ test("conversation turns preserve ambient ownership without permitting duplicate
     serverId: "server-1",
     hostname: "host",
     os: "test",
-    workspace: "/workspace",
+    stateDir: "/state",
+    projectDir: "/project",
   });
 
   assert.match(prompt, /`attention=assigned` means the server selected you as the accountable owner of an unmentioned human Turn/i);

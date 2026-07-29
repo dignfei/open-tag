@@ -9,6 +9,53 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-28
+
+### Added
+
+- **Per-agent project directory binding**: an owner can bind an inactive agent to an existing
+  absolute directory on its selected machine. The daemon canonicalizes the path on that machine,
+  revalidates it before every start, and launches the runtime with it as `cwd`. OpenTag-owned
+  memory, personality, notes, session artifacts, and reset scope remain under
+  `OPEN_TAG_HOME/agents/<agent-id>`.
+- Runtime instruction composition no longer writes generated `AGENTS.md` files into the runtime
+  cwd. Claude and Pi use managed prompt files, Codex uses `developerInstructions`, Copilot uses
+  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, OpenCode uses merged inline agent config, Cursor uses a
+  managed always-on plugin rule, and Hermes/Kimi use per-turn envelopes. Existing project
+  instructions and runtime/global configuration continue to load normally.
+- New `project-directory-v2` daemon capability and targeted `project:resolve` RPC make mixed-version
+  fleets fail closed instead of silently starting an agent in its old state directory. Changing a
+  bound directory is allowed only while inactive and atomically clears the runtime session.
+- A `project-browser-v1` machine-targeted RPC lets managers browse explicitly shared daemon roots
+  and run bounded, marker-only project discovery from the Agent form. `OPEN_TAG_PROJECT_ROOTS` is the
+  common fail-closed policy for the picker, manual paths, and every project-bound start; directory
+  paths travel in authenticated POST bodies rather than query strings that reverse proxies may log.
+
+### Fixed
+
+- One-shot runtime stop now settles exactly once for both a live child and an already-idle adapter,
+  so stop/reset/delete no longer wait for a process exit that already happened. This covers
+  Copilot, Cursor, Hermes, Kimi, OpenCode, and Pi.
+- A Hermes startup turn that successfully checks an empty inbox now completes as a normal no-op.
+  Previously its explanatory stdout was misclassified as `no-open-tag-read`, suppressing the
+  terminal `online` event and deadlocking a durable Turn queued just after startup.
+
+### Security
+
+- Agent detail responses now use an explicit serializer: environment variables and token/scope
+  internals are no longer returned, and machine-local absolute project paths are visible only to
+  members with `manageAgents`. Project-local skill metadata is also manager-only and project-local
+  skills are read-only through OpenTag.
+- Managed state reads/writes reject symbolic-link escapes, including generated runtime artifacts,
+  `MEMORY.md` reset/profile synchronization, and workspace file operations. A bound agent cannot
+  redirect an OpenTag management action into the operator-owned project through a state symlink.
+- Project-bound deletion now requires a confirmed daemon stop, and daemon capability requirements
+  are checked on the exact connection receiving each start/delivery frame. Durable multi-recipient
+  preflight is read-only, so a blocked peer cannot leave other agents stuck in `starting`.
+- Project-directory RPC responses are bound to the exact target daemon connection and expected
+  response type, then schema-clamped by the server before directory metadata reaches the browser.
+  Hidden/sensitive descendants and symbolic-link escapes cannot be selected even by manual path.
+
 ## [0.13.1] — 2026-07-28
 
 ### Fixed

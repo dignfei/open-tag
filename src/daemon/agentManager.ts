@@ -1,5 +1,5 @@
 // Manages local agents: spawns processes via the runtime interface, bridges events to the server, and handles delivery/sleep. Runtime protocol details live in each runtime file.
-import { mkdir, writeFile, readFile, access, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { buildSystemPrompt, STARTUP_NUDGE, RESUME_NUDGE, ONE_SHOT_WAKE_NUDGE, inboxNotice } from "./prompt.js";
@@ -12,6 +12,8 @@ import { agentsDir } from "../paths.js";
 import { ResourceBudget, PRESSURE_MEM_MB } from "./resourceBudget.js";
 import { readProcessMemoryMB, applyMemoryPressure } from "./resourceLimit.js";
 import { DeliveryAdmissionStore } from "./deliveryAdmissionStore.js";
+import { resolveProjectDirectory } from "./projectDirectory.js";
+import { atomicWriteManagedFile, ensureManagedDirectory, readManagedFile } from "./stateFiles.js";
 
 const DATA_DIR = agentsDir();
 const IDLE_MS = Number(process.env.OPEN_TAG_IDLE_MS ?? 10 * 60 * 1000); // how long before idle sleep (kills process to save memory; next wake uses --resume)
@@ -21,7 +23,7 @@ const PENDING_DELIVER_TTL_MS = Number(process.env.OPEN_TAG_PENDING_DELIVER_TTL_M
 
 export interface AgentConfig {
   name: string; displayName: string; description?: string | null;
-  model?: string; runtime?: string; runtimeConfig?: Record<string, unknown> | null; sessionId?: string;
+  model?: string; runtime?: string; projectPath?: string | null; runtimeConfig?: Record<string, unknown> | null; sessionId?: string;
   serverUrl: string; serverId: string; agentId: string; agentToken?: string; // per-agent token (slice10); re-sent start for a running agent may omit it (daemon ignores)
 }
 interface DeliveryAdmission { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; }
@@ -215,8 +217,9 @@ export class AgentManager {
       }
     } else if (clearMemory) {
       try {
-        await mkdir(dir, { recursive: true });
-        await writeFile(path.join(dir, "MEMORY.md"), "# Memory\n\n(reset)\n");
+        await mkdir(this.dataDir, { recursive: true });
+        await ensureManagedDirectory(this.dataDir, agentId);
+        await atomicWriteManagedFile(dir, "MEMORY.md", "# Memory\n\n(reset)\n");
         this.log.info("memory cleared", { agentId });
       }
       catch (cause) {
@@ -233,18 +236,18 @@ export class AgentManager {
    *  title + `## Role`, preserving the agent's own sections. No-op if the workspace/file doesn't exist
    *  yet (a not-yet-started agent gets fresh values from the DB when start() seeds it). */
   async syncProfile(agentId: string, displayName: string, description?: string | null): Promise<void> {
-    const mem = path.join(this.dataDir, agentId, "MEMORY.md");
+    const dir = path.join(this.dataDir, agentId);
     let content: string;
-    try { content = await readFile(mem, "utf8"); }
+    try { content = (await readManagedFile(dir, "MEMORY.md")).toString("utf8"); }
     catch { this.log.debug("syncProfile: no MEMORY.md yet", { agentId }); return; }
     let effectiveDesc = description;
     try {
-      const f = await readFile(path.join(this.dataDir, agentId, "personality.md"), "utf8");
+      const f = (await readManagedFile(dir, "personality.md")).toString("utf8");
       if (f.trim()) effectiveDesc = f;
     } catch {}
     const next = applyProfileToMemory(content, displayName || agentId, effectiveDesc);
     if (next !== content) {
-      try { await writeFile(mem, next); this.log.info("profile synced to MEMORY.md", { agentId }); }
+      try { await atomicWriteManagedFile(dir, "MEMORY.md", next); this.log.info("profile synced to MEMORY.md", { agentId }); }
       catch (e) { this.log.warn("syncProfile write failed", { agentId, detail: String(e) }); return; }
     }
     // Keep a running agent's cached config fresh so a later --resume uses the new values.
@@ -350,18 +353,21 @@ export class AgentManager {
     }
     if (runtime.experimental) this.log.warn("experimental runtime", { runtime: runtime.name });
 
-    const dir = path.join(this.dataDir, agentId);
-    await mkdir(path.join(dir, "notes"), { recursive: true });
+    const stateDir = path.join(this.dataDir, agentId);
+    const projectDir = config.projectPath ? await resolveProjectDirectory(config.projectPath) : stateDir;
+    await mkdir(this.dataDir, { recursive: true });
+    await ensureManagedDirectory(this.dataDir, agentId);
+    await ensureManagedDirectory(stateDir, "notes");
     this.assertStartActive(agentId, attempt);
-    const mem = path.join(dir, "MEMORY.md");
-    try { await access(mem); } catch {
-      await writeFile(mem, seedMemory(config.displayName || config.name, config.description));
+    try { await readManagedFile(stateDir, "MEMORY.md"); } catch (error: any) {
+      const replaceUnsafeLink = error instanceof Error && error.message.includes("file is a symbolic link");
+      if (error?.code !== "ENOENT" && !replaceUnsafeLink) throw error;
+      await atomicWriteManagedFile(stateDir, "MEMORY.md", seedMemory(config.displayName || config.name, config.description));
     }
     this.assertStartActive(agentId, attempt);
 
-    const personalityFile = path.join(dir, "personality.md");
     let personality: string | null | undefined;
-    try { personality = await readFile(personalityFile, "utf8"); if (!personality.trim()) personality = undefined; }
+    try { personality = (await readManagedFile(stateDir, "personality.md")).toString("utf8"); if (!personality.trim()) personality = undefined; }
     catch { personality = undefined; }
     this.assertStartActive(agentId, attempt);
 
@@ -369,7 +375,7 @@ export class AgentManager {
 
     const systemPrompt = buildSystemPrompt({
       name: config.name, displayName: config.displayName, description: effectiveDescription,
-      agentId, serverId: config.serverId, hostname: os.hostname(), os: `${os.platform()} ${os.arch()}`, workspace: dir,
+      agentId, serverId: config.serverId, hostname: os.hostname(), os: `${os.platform()} ${os.arch()}`, stateDir, projectDir,
     });
     const env: NodeJS.ProcessEnv = {
       ...process.env, FORCE_COLOR: "0",
@@ -455,7 +461,7 @@ export class AgentManager {
     if (startupDelivery) this.startReplyPreview(agentId, running, startupDelivery.target, startupDelivery.meta.streamId);
     try {
       running.session = runtime.start({
-        cwd: dir, model: config.model, runtimeConfig: config.runtimeConfig, sessionId: config.sessionId, systemPrompt, env,
+        cwd: projectDir, stateDir, model: config.model, runtimeConfig: config.runtimeConfig, sessionId: config.sessionId, systemPrompt, env,
         initialPrompt: useOneShotWakeNudge ? ONE_SHOT_WAKE_NUDGE : (config.sessionId ? RESUME_NUDGE : STARTUP_NUDGE),
       }, cb);
     } catch (cause) {

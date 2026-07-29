@@ -30,6 +30,12 @@
 The early capability slices shipped and their working notes were not retained as plan files;
 their verified end state is recorded in `FEATURES.md`:
 
+- **Safe daemon project browser** - manual entry plus a machine-targeted shared-root picker and
+  bounded marker discovery, with the same fail-closed policy applied again at runtime start.
+  Evidence: [`docs/exec-plans/completed/project-directory-browser.md`](./exec-plans/completed/project-directory-browser.md).
+- **Per-agent project directory binding** — runtime cwd/state separation across all eight adapters,
+  machine-local canonicalization, no project instruction rewrites, symlink-safe state operations, and
+  capability/stop race hardening. Evidence: [`docs/exec-plans/completed/project-directory-binding.md`](./exec-plans/completed/project-directory-binding.md).
 - **Reply coordination** — observation remains broad while trigger-bound primary/supplemental
   grants constrain publication; mistaken mentions transfer through audited intent and private
   coordination. Contract: [`docs/reply-coordination.md`](./reply-coordination.md); evidence:

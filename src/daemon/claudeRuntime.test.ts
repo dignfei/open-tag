@@ -75,7 +75,7 @@ test("stdin runtime rejects initial admission exactly once when Claude cannot sp
   const admissions: Array<Error | undefined> = [];
   let session: ReturnType<typeof claudeRuntime.start> | undefined;
   try {
-    session = claudeRuntime.start({ cwd: root, env: { [PATH_KEY]: root }, systemPrompt: "system", initialPrompt: "start" }, {
+    session = claudeRuntime.start({ cwd: root, stateDir: root, env: { [PATH_KEY]: root }, systemPrompt: "system", initialPrompt: "start" }, {
       onSession: () => {},
       onInitialTurnAdmission: (error) => admissions.push(error),
       onActivity: () => {},

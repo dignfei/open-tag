@@ -4,10 +4,11 @@
 // is stdlib (no new dependency) so it adds no infrastructure.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { handleCopilotEvent } from "./copilotRuntime.js";
+import { copilotInstructionEnv, handleCopilotEvent } from "./copilotRuntime.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 function fixtureEvents(name: string): any[] {
@@ -77,5 +78,18 @@ test("unknown / ignored events produce no output", () => {
     const emit = handleCopilotEvent({ type, data: { deltaContent: "x" } });
     assert.equal(emit.trajectory.length, 0, `${type} should emit no trajectory`);
     assert.equal(emit.activity, undefined, `${type} should emit no activity`);
+  }
+});
+
+test("managed instructions append to Copilot's existing instruction directories without touching the project", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "open-tag-copilot-state-"));
+  try {
+    const env = copilotInstructionEnv({ COPILOT_CUSTOM_INSTRUCTIONS_DIRS: "/existing,/shared,/existing" }, stateDir, "open-tag prompt");
+    const dirs = env.COPILOT_CUSTOM_INSTRUCTIONS_DIRS!.split(",");
+    assert.deepEqual(dirs.slice(0, 2), ["/existing", "/shared"]);
+    assert.equal(dirs.length, 3);
+    assert.equal(readFileSync(path.join(dirs[2]!, "AGENTS.md"), "utf8"), "open-tag prompt");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
   }
 });

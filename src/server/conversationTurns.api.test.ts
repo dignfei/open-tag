@@ -181,6 +181,11 @@ test("real API: sender-scoped turns debounce once without merging different huma
     assert.equal(earlyChecks.flatMap((check) => check.body.messages).some((message: any) => collectingMessageIds.includes(message.id)), false, "collecting turns are not exposed as partial work");
 
     await waitFor(() => daemonMessages.filter((m) => m.type === "agent:deliver" && m.turnId).length === 2, 3_000, () => JSON.stringify({ daemonMessages, logs: live.logs() }));
+    await waitFor(async () => {
+      const settled = await db.select({ state: schema.conversationTurns.state, responsibilityState: schema.conversationTurns.responsibilityState })
+        .from(schema.conversationTurns).where(eq(schema.conversationTurns.serverId, server!.id));
+      return settled.length === 2 && settled.every((turn) => turn.state === "dispatched" && turn.responsibilityState === "delivered");
+    }, 3_000, () => JSON.stringify({ daemonMessages, logs: live.logs() }));
     const turns = await db.select().from(schema.conversationTurns).where(eq(schema.conversationTurns.serverId, server!.id)).orderBy(asc(schema.conversationTurns.createdAt));
     assert.equal(turns.length, 2, "Alice and Bob must own separate windows in one channel");
     const aliceTurn = turns.find((turn) => turn.senderId === humans[0]!.id)!;

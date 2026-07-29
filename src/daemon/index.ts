@@ -12,7 +12,8 @@ import { detectRuntimes } from "./runtimes.js";
 import { listModels } from "./listModels.js";
 import { createLogger } from "../log.js";
 import { machineIdFile } from "../paths.js";
-import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY } from "../daemonProtocol.js";
+import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, PROJECT_BROWSER_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY } from "../daemonProtocol.js";
+import { browseProjectDirectories, ProjectDirectoryError, resolveProjectDirectory } from "./projectDirectory.js";
 
 const log = createLogger("daemon");
 const DELIVERY_PENDING_HEARTBEAT_MS = Math.max(250, Number(process.env.OPEN_TAG_DELIVERY_PENDING_HEARTBEAT_MS ?? 750));
@@ -121,7 +122,15 @@ conn = new Connection(serverUrl, apiKey, (msg) => {
     case "agent:workspace:read": void readWorkspaceFile(msg.agentId, msg.path ?? "").then((r) => conn.send({ type: "workspace:file_content", requestId: msg.requestId, agentId: msg.agentId, ...r })); break;
     case "agent:workspace:write": void writeWorkspaceFile(msg.agentId, msg.path ?? "", msg.content ?? "").then((r) => conn.send({ type: "workspace:file_write", requestId: msg.requestId, agentId: msg.agentId, ...r })); break;
     case "agent:workspace:delete": void deleteWorkspaceFile(msg.agentId, msg.path ?? "").then((r) => conn.send({ type: "workspace:file_delete", requestId: msg.requestId, agentId: msg.agentId, ...r })); break;
-    case "agent:skills:list": void listSkills(msg.agentId, msg.runtime).then((r) => conn.send({ type: "skills:list", requestId: msg.requestId, agentId: msg.agentId, ...r })); break;
+    case "agent:skills:list": void listSkills(msg.agentId, msg.runtime, msg.projectPath).then((r) => conn.send({ type: "skills:list", requestId: msg.requestId, agentId: msg.agentId, ...r })); break;
+    case "project:resolve": void resolveProjectDirectory(msg.path).then(
+      (projectPath) => conn.send({ type: "project:resolved", requestId: msg.requestId, projectPath }),
+      (cause) => conn.send({ type: "project:resolved", requestId: msg.requestId, error: String(cause instanceof Error ? cause.message : cause), code: cause instanceof ProjectDirectoryError ? cause.code : "invalid_project_path" }),
+    ); break;
+    case "project:browse": void browseProjectDirectories({ path: msg.path, discover: msg.discover === true, cursor: msg.cursor, limit: msg.limit }).then(
+      (result) => conn.send({ type: "project:directories", requestId: msg.requestId, ...result }),
+      (cause) => conn.send({ type: "project:directories", requestId: msg.requestId, error: String(cause instanceof Error ? cause.message : cause), code: cause instanceof ProjectDirectoryError ? cause.code : "invalid_project_path" }),
+    ); break;
     case "probe-models": void listModels(msg.runtime ?? "").then((models) => conn.send({ type: "models", requestId: msg.requestId, runtime: msg.runtime, models })).catch((e) => conn.send({ type: "models", requestId: msg.requestId, runtime: msg.runtime, models: null, error: String((e as any)?.message ?? e) })); break;
     case "agent:resource-budget": conn.send({ type: "agent:resource-budget", requestId: msg.requestId, ...mgr.budgetStatus() }); break;
     case "agent:dequeue": mgr.dequeue(msg.agentId); break;
@@ -136,7 +145,7 @@ conn = new Connection(serverUrl, apiKey, (msg) => {
   const runtimes = detectRuntimes();
   log.info("ready", { runtimes, hostname: os.hostname() });
   conn.send({
-    type: "ready", capabilities: ["agent:start", "agent:stop", "agent:sleep", "agent:reset", "agent:profile", "agent:deliver", "agent:workspace", "resource:limits", DELIVERY_ADMISSION_CAPABILITY, AGENT_CONTROL_ACK_CAPABILITY],
+    type: "ready", capabilities: ["agent:start", "agent:stop", "agent:sleep", "agent:reset", "agent:profile", "agent:deliver", "agent:workspace", "resource:limits", DELIVERY_ADMISSION_CAPABILITY, AGENT_CONTROL_ACK_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY, PROJECT_BROWSER_CAPABILITY],
     runtimes, runningAgents: mgr.running(), hostname: os.hostname(), os: `${os.platform()} ${os.arch()}`, daemonVersion: process.env.DAEMON_VERSION ?? "dev",
     machineId: readMachineId(), // Stable identity: empty on first connection; server sends it back via ready:ack for persistence.
   });

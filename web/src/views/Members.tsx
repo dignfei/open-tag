@@ -17,6 +17,7 @@ import { useToast } from "../toast.tsx";
 import { startFailReasonKey } from "../startFailReason.ts";
 import { CodeBlock, ColorSwatch, GithubAlertBlockquote, colorValueFromTag, markdownSchema, markdownUrlTransform, remarkColorSwatches, remarkGithubAlerts, remarkHtmlAsText } from "../messageRender.tsx";
 import i18n from "../i18n";
+import { ProjectDirectoryField } from "./ProjectDirectoryPicker.tsx";
 
 // Unified agent status label: fine-grained activity (working/thinking/online) takes priority;
 // offline/absent falls back to lifecycle status (active/sleeping/inactive).
@@ -147,14 +148,15 @@ function Roster({ agents, humans, onCreate, canCreate }: { agents: any[]; humans
 
 export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string; onDeleted: () => void; onClose?: () => void; onMessage?: () => void }) {
   const { t } = useTranslation();
-  const { api, reload, onEvent, capabilities, openDM, slug, uploadAgentAvatar, attachmentUrl } = useStore();
+  const { api, machines, reload, onEvent, capabilities, openDM, slug, uploadAgentAvatar, attachmentUrl } = useStore();
   const confirm = useConfirm();
   const toast = useToast();
   const nav = useNavigate();
   const [sp, setSp] = useSearchParams();
   const tab = sp.get("agentTab") || "profile";
   const [a, setA] = useState<any>(null);
-  const [edit, setEdit] = useState(false); const [dn, setDn] = useState(""); const [ds, setDs] = useState(""); // profile edit state (displayName/description)
+  const [edit, setEdit] = useState(false); const [dn, setDn] = useState(""); const [ds, setDs] = useState(""); const [projectPath, setProjectPath] = useState(""); // profile edit state
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [showRestart, setShowRestart] = useState(false);
   const [avBusy, setAvBusy] = useState(false); const [avErr, setAvErr] = useState(""); const [signedAvatar, setSignedAvatar] = useState<string | null>(null);
   const [perContent, setPerContent] = useState<string | null>(null); const [perBusy, setPerBusy] = useState(false);
@@ -190,8 +192,14 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
     setTimeout(refetch, 500);
   };
   const del = async () => { if (!(await confirm({ title: t("members.deleteAgentTitle", { name: a.name }), message: t("members.deleteAgentMessage"), confirmLabel: t("members.delete"), danger: true }))) return; await api("DELETE", "/api/agents/" + id); await reload(); onDeleted(); };
-  const startEdit = () => { setDn(a.displayName || a.name); setDs(a.description || ""); setEdit(true); };
-  const saveProfile = async () => { await api("PATCH", "/api/agents/" + id, { displayName: dn.trim() || a.name, description: ds.trim() }); setEdit(false); await refetch(); await reload(); }; // profile tab: editable displayName/description
+  const startEdit = () => { setDn(a.displayName || a.name); setDs(a.description || ""); setProjectPath(a.projectPath || ""); setProjectPickerOpen(false); setEdit(true); };
+  const saveProfile = async () => {
+    const body: Record<string, unknown> = { displayName: dn.trim() || a.name, description: ds.trim() };
+    if (projectPath.trim() !== (a.projectPath || "")) body.projectPath = projectPath.trim();
+    const r = await api("PATCH", "/api/agents/" + id, body);
+    if (r?.error) { toast.error(r.error); return; }
+    setEdit(false); await refetch(); await reload();
+  };
   const live = statusOf(a);
   const msgAgent = async () => { const cid = await openDM("agent", id); if (cid) nav(`/s/${slug}/channel/${cid}`); };
   // Header action bar: Message available to everyone; start/stop/restart/delete gated by manageAgents capability
@@ -244,7 +252,9 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
                   <label>{t("members.displayName")}</label><input value={dn} onChange={(e) => setDn(e.target.value)} placeholder={a.name} />
                   <label>{t("members.agentDescriptionLabel")}</label><textarea value={ds} maxLength={3000} onChange={(e) => setDs(e.target.value)} placeholder={t("members.agentDescriptionPlaceholder")} />
                   <div className="ta-count">{ds.trim().length}/3000</div>
-                  <div className="setrow"><button className="ok" onClick={saveProfile}>{t("members.save")}</button><button className="cancel" onClick={() => setEdit(false)}>{t("members.cancel")}</button></div>
+                  <label>{t("members.projectDirectoryLabel")}</label><ProjectDirectoryField value={projectPath} onChange={setProjectPath} machine={machines.find((machine) => machine.id === a.machineId)} disabled={a.status !== "inactive"} pickerOpen={projectPickerOpen} onPickerOpenChange={setProjectPickerOpen} />
+                  <div className="hint">{a.status === "inactive" ? t("members.projectDirectoryHint") : t("members.projectDirectoryStopHint")}</div>
+                  <div className="setrow"><button className="ok" onClick={saveProfile}>{t("members.save")}</button><button className="cancel" onClick={() => { setProjectPickerOpen(false); setEdit(false); }}>{t("members.cancel")}</button></div>
                 </div>
               ) : (<>
                 <div className="meta">{a.description || t("members.generalAgent")}</div>
@@ -253,7 +263,8 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
                 {a.runtimeConfig?.reasoningEffort && <div className="kv"><b>{t("common.reasoning")}</b> {a.runtimeConfig.reasoningEffort}</div>}
                 <div className="kv"><b>{t("common.status")}</b> <span className="kv-v"><span className={"dot " + live} /> {live}</span></div>
                 <div className="kv"><b>{t("common.session")}</b> {a.sessionId || "(none)"}</div>
-                <div className="kv"><b>{t("common.workspace")}</b> ~/.open-tag/agents/{a.id}</div>
+                <div className="kv"><b>{t("members.agentStateDirectory")}</b> ~/.open-tag/agents/{a.id}</div>
+                <div className="kv"><b>{t("members.projectDirectoryLabel")}</b> {a.projectPath || (a.projectBound ? t("members.projectDirectoryPrivate") : t("members.projectDirectoryIsolated"))}</div>
                 {a.createdAt && <div className="kv"><b>{t("common.created")}</b> {fmtDateTime(a.createdAt)}</div>}
                 {capabilities.manageAgents && <div className="task-acts" style={{ marginTop: 14 }}>
                   <button className="joinbtn" onClick={startEdit}>{t("members.editProfile")}</button>
@@ -268,7 +279,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
                 {perContent && <button className="joinbtn" style={{ color: "var(--error)" }} disabled={perBusy} onClick={deletePersonality}>{t("members.delete")}</button>}
               </div>}
             </div>
-            <SkillsSection id={id} />
+            <SkillsSection id={id} projectBound={!!a.projectBound} />
           </div>
         )}
       {showRestart && <RestartModal name={a.displayName || a.name} onClose={() => setShowRestart(false)} onPick={doRestart} />}
@@ -277,7 +288,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
 }
 
 // Profile tab SKILLS section (GET /api/agents/:id/skills — daemon reads skills from the host machine)
-function SkillsSection({ id }: { id: string }) {
+function SkillsSection({ id, projectBound }: { id: string; projectBound: boolean }) {
   const { t } = useTranslation();
   const { api, capabilities } = useStore();
   const confirm = useConfirm();
@@ -317,7 +328,7 @@ function SkillsSection({ id }: { id: string }) {
     <>
       <div className="sec">
         {t("common.skills")} <span className="cnt">{all.length}</span>
-        {capabilities.manageAgents && <span style={{ marginLeft: 8 }}>
+        {capabilities.manageAgents && !projectBound && <span style={{ marginLeft: 8 }}>
           <label className="joinbtn" style={{ cursor: busy ? "not-allowed" : "pointer", display: "inline-block", fontSize: "inherit", lineHeight: "inherit", padding: "2px 8px" }}>
             {busy ? t("members.uploading") : t("members.skillAdd")}
             <input type="file" accept=".md,text/markdown" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadSkill(f); e.target.value = ""; }} />
@@ -507,15 +518,17 @@ function WorkspaceTab({ id }: { id: string }) {
 export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () => void; prefill?: { name?: string; description?: string }; onCreated?: (r: { id: string; name: string }) => void }) {
   const { t } = useTranslation();
   const toast = useToast();
-  useEscClose(onClose);
   const { api, serverId, machines, reload } = useStore();
   const [name, setName] = useState(prefill?.name ?? ""); const [desc, setDesc] = useState(prefill?.description ?? "");
+  const [projectPath, setProjectPath] = useState("");
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [machineId, setMachineId] = useState(machines[0]?.id || "");
   const [runtime, setRuntime] = useState("claude"); const [model, setModel] = useState("");
   const [models, setModels] = useState<{ id: string; label?: string; thinking?: { levels: { value: string; label: string; description?: string }[]; default?: string } }[]>([]);   const [fast, setFast] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [reasoning, setReasoning] = useState(""); // reasoning effort (""=Default/no override); shown when selected model has thinking levels
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+  useEscClose(() => { if (projectPickerOpen) setProjectPickerOpen(false); else onClose(); });
   // Sentinel + per-runtime capability: claude/codex offer "use local default" (don't pass --model/--effort;
   // the CLI uses ~/.claude / ~/.codex config). Other runtimes keep their original picker behavior.
   const LOCAL_DEFAULT = "__default__";
@@ -548,7 +561,7 @@ export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () 
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(nm) || nm.length > 64) { setErr(t("members.nameInvalid")); return; } // @mention handle must be machine-safe; keep regex + length 64 in sync with core.ts AGENT_NAME_RE / MAX_AGENT_NAME
     setBusy(true); setErr("");
     try {
-      const r = await api("POST", "/api/agents", { machineId, name: nm, description: desc.trim() || null, runtime, model: model && model !== LOCAL_DEFAULT ? model : null, reasoning: thinkingLevels.length ? (reasoning || null) : null, fastMode: fast });
+      const r = await api("POST", "/api/agents", { machineId, name: nm, description: desc.trim() || null, projectPath: projectPath.trim() || null, runtime, model: model && model !== LOCAL_DEFAULT ? model : null, reasoning: thinkingLevels.length ? (reasoning || null) : null, fastMode: fast });
       if (r?.error) { setErr(r.error); return; } // api() resolves the JSON body even on 4xx (fetch only throws on network failure) — an unchecked error here previously closed the modal silently with no feedback, e.g. once the backend started rejecting a stale/deleted machineId.
       await reload();
       if (r?.id) { if (r.started === false) toast.info(t("members.agentCreatedOffline")); onCreated?.({ id: r.id, name: r.name ?? nm }); }
@@ -571,10 +584,12 @@ export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () 
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{t("members.createAgentTitle")}</h3>
         <label>{t("members.computerLabel")}<span className="req-mark">*</span></label>
-        <Select ariaLabel={t("members.computerAriaLabel")} value={machineId} options={machineOpts} onChange={setMachineId} placeholder={t("members.noMachineOnline")} />
+        <Select ariaLabel={t("members.computerAriaLabel")} value={machineId} options={machineOpts} onChange={(nextMachineId) => { setMachineId(nextMachineId); setProjectPath(""); setProjectPickerOpen(false); }} placeholder={t("members.noMachineOnline")} />
         {machineOpts.length === 0 && <div className="hint">{t("members.noMachineHint")}</div>}
         <label>{t("members.nameLabel")}</label><input value={name} maxLength={64} onChange={(e) => setName(e.target.value)} placeholder={t("members.namePlaceholder")} />
         <label>{t("members.descriptionLabel")}</label><textarea value={desc} maxLength={3000} onChange={(e) => setDesc(e.target.value)} placeholder={t("members.descriptionPlaceholder")} />
+        <label>{t("members.projectDirectoryLabel")}</label><ProjectDirectoryField value={projectPath} onChange={setProjectPath} machine={machines.find((machine) => machine.id === machineId)} pickerOpen={projectPickerOpen} onPickerOpenChange={setProjectPickerOpen} parentHandlesEscape />
+        <div className="hint">{t("members.projectDirectoryHint")}</div>
         <label>{t("common.runtime")}</label>
         <Select ariaLabel={t("common.runtime")} value={runtime} options={RUNTIMES} onChange={setRuntime} />
         <label>{t("common.model")}</label>

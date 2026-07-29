@@ -25,6 +25,7 @@ export async function agentConfig(agentId: string) {
     description: agent.description,
     model: agent.model,
     runtime: agent.runtime,
+    projectPath: agent.projectPath,
     runtimeConfig: agent.runtimeConfig,
     sessionId: agent.sessionId ?? undefined,
     serverUrl,

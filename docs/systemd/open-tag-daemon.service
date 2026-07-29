@@ -63,6 +63,11 @@ Environment=OPEN_TAG_API_KEY=change-me
 # Override here if you need a different path:
 # Environment=OPEN_TAG_HOME=/data/open-tag
 
+# Directories that this daemon may expose in the remote project picker and use
+# as an agent project cwd. Keep this narrower than HOME; no roots = fail closed.
+# systemd Environment= quoting is easiest with the POSIX PATH-delimited form.
+# Environment=OPEN_TAG_PROJECT_ROOTS=/srv/projects:/home/ubuntu/code
+
 # Bare Node.js form (requires repo checkout + tsx in devDependencies):
 ExecStart=/usr/bin/env npx tsx src/daemon/index.ts \
   --server-url ${OPEN_TAG_SERVER_URL} \

@@ -16,3 +16,7 @@ export const DELIVERY_ADMISSION_CAPABILITY = "delivery-admission-v2";
 // start/stop/reset operation has settled. Servers use it to avoid reporting a successful reset while
 // workspace cleanup is still running on an older fire-and-forget daemon.
 export const AGENT_CONTROL_ACK_CAPABILITY = "agent-control-ack-v1";
+/** Daemon can canonicalize a machine-local project directory and separate runtime cwd from agent state. */
+export const PROJECT_DIRECTORY_CAPABILITY = "project-directory-v2";
+/** Daemon can expose an allowlisted, metadata-only project directory picker over machine-targeted RPC. */
+export const PROJECT_BROWSER_CAPABILITY = "project-browser-v1";

@@ -65,11 +65,12 @@ export const agents = pgTable("agents", {
   displayName: text("display_name").notNull(),
   avatarUrl: text("avatar_url"),
   description: text("description"),               // role / system prompt seed
-  status: text("status").default("inactive").notNull(),   // inactive | active | sleeping | queued
+  status: text("status").default("inactive").notNull(),   // inactive | starting | active | sleeping | queued
   activity: text("activity").default("offline").notNull(),// offline|online|thinking|working
   sessionId: text("session_id"),                  // current runtime session (used with --resume)
   model: text("model"),                            // model alias or NULL → CLI uses its local default (~/.claude / ~/.codex)
   runtime: text("runtime").default("claude").notNull(),   // claude | codex | copilot | opencode | kimi | pi | cursor | hermes (registry: src/daemon/runtimes.ts REG)
+  projectPath: text("project_path"),               // canonical absolute cwd on machineId; null = use isolated agent state dir
   runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().default({}).notNull(),
   executionMode: text("execution_mode").default("auto").notNull(),
 

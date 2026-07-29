@@ -1,17 +1,21 @@
 // Reads agent workspace (~/.open-tag/agents/<id>/) and exposes file tree / file content via WS-RPC to the server.
 // File tree: returns {root, files:[{name,path,isDirectory,size,modifiedAt}]} — root is the absolute on-disk workspace dir (so the UI shows the real path instead of a hardcoded template that's wrong under a non-default OPEN_TAG_HOME);
 //            read file: returns {path, content}. Security: path must remain inside the workspace root (prevents ../ escape).
-import { mkdir, readdir, readFile, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rmdir, lstat, unlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { agentsDir } from "../paths.js";
+import { resolveProjectDirectory } from "./projectDirectory.js";
+import { atomicWriteManagedFile, ensureManagedDirectory, managedFilePath, readManagedFile } from "./stateFiles.js";
 
 const DATA_DIR = agentsDir();
 const MAX_FILE = 256 * 1024;
 const SKIP = new Set(["node_modules", ".git"]);
 
 function safe(agentId: string, rel: string): string | null {
-  const root = path.join(DATA_DIR, agentId);
+  const dataRoot = path.resolve(DATA_DIR);
+  const root = path.resolve(dataRoot, agentId);
+  if (root !== dataRoot && !root.startsWith(dataRoot + path.sep)) return null;
   const target = path.resolve(root, rel || ".");
   if (target !== root && !target.startsWith(root + path.sep)) return null;
   return target;
@@ -26,7 +30,7 @@ async function walk(root: string, rel: string, acc: FileNode[], depth: number): 
     if (SKIP.has(d.name)) continue;
     const childRel = rel ? `${rel}/${d.name}` : d.name;
     let size = 0; let modifiedAt: string | null = null;
-    try { const s = await stat(path.join(root, childRel)); size = d.isFile() ? s.size : 0; modifiedAt = s.mtime.toISOString(); } catch { /* */ }
+    try { const s = await lstat(path.join(root, childRel)); size = d.isFile() ? s.size : 0; modifiedAt = s.mtime.toISOString(); } catch { /* */ }
     acc.push({ name: d.name, path: childRel, isDirectory: d.isDirectory(), size, modifiedAt });
     if (d.isDirectory()) await walk(root, childRel, acc, depth + 1);
   }
@@ -113,17 +117,20 @@ const PROVIDER_HOME_SKILLS: Record<string, SkillRoot> = {
 const PROVIDER_WS_DIR: Record<string, string> = { claude: ".claude", codex: ".codex", copilot: ".copilot", hermes: ".hermes", kimi: ".skills", opencode: ".opencode", cursor: ".cursor", pi: ".pi" };
 
 /** Resolve which skills dirs to scan for an agent, by its runtime. Pure (no I/O) — unit-tested. */
-export function skillRootsFor(runtime: string, agentId: string): { global: SkillRoot[]; workspace: SkillRoot | null } {
+export function skillRootsFor(runtime: string, agentId: string, projectPath?: string | null): { global: SkillRoot[]; workspace: SkillRoot | null } {
   const home = PROVIDER_HOME_SKILLS[runtime];
   const global = home ? [home, UNIVERSAL_SKILLS] : [UNIVERSAL_SKILLS];
   const wsName = PROVIDER_WS_DIR[runtime];
   const wsSkills = wsName ? (runtime === "kimi" ? "" : "skills") : null;
-  const workspace = wsName ? { dir: path.join(DATA_DIR, agentId, wsName, wsSkills!), label: wsSkills ? `<workspace>/${wsName}/skills` : `<workspace>/${wsName}` } : null;
+  const workspaceRoot = projectPath ?? path.join(DATA_DIR, agentId);
+  const sourceLabel = projectPath ? "<project>" : "<workspace>";
+  const workspace = wsName ? { dir: path.join(workspaceRoot, wsName, wsSkills!), label: wsSkills ? `${sourceLabel}/${wsName}/skills` : `${sourceLabel}/${wsName}` } : null;
   return { global, workspace };
 }
 
-export async function listSkills(agentId: string, runtime = "claude") {
-  const roots = skillRootsFor(runtime, agentId);
+export async function listSkills(agentId: string, runtime = "claude", projectPath?: string | null) {
+  const canonicalProject = projectPath ? await resolveProjectDirectory(projectPath) : null;
+  const roots = skillRootsFor(runtime, agentId, canonicalProject);
   const global = (await Promise.all(roots.global.map((r) => readSkillsDir(r.dir, r.label)))).flat();
   const workspace = roots.workspace ? await readSkillsDir(roots.workspace.dir, roots.workspace.label) : [];
   return { global, workspace };
@@ -133,10 +140,8 @@ export async function readWorkspaceFile(agentId: string, rel: string) {
   const file = safe(agentId, rel);
   if (!file) return { error: "invalid path" };
   try {
-    const s = await stat(file);
-    if (!s.isFile()) return { error: "not a file" };
-    if (s.size > MAX_FILE) return { error: `file too large (${s.size} bytes, max ${MAX_FILE})` };
-    const buf = await readFile(file);
+    const root = path.resolve(DATA_DIR, agentId);
+    const buf = await readManagedFile(root, path.relative(root, file), MAX_FILE);
     if (buf.includes(0)) return { error: "binary file" };
     return { path: rel, content: buf.toString("utf8") };
   } catch (e: any) { return { error: String(e?.message ?? e) }; }
@@ -146,8 +151,9 @@ export async function writeWorkspaceFile(agentId: string, rel: string, content: 
   const file = safe(agentId, rel);
   if (!file) return { error: "invalid path" };
   try {
-    await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, content, "utf8");
+    await mkdir(DATA_DIR, { recursive: true });
+    const root = await ensureManagedDirectory(DATA_DIR, agentId);
+    await atomicWriteManagedFile(root, path.relative(root, file), content);
     return {};
   } catch (e: any) { return { error: String(e?.message ?? e) }; }
 }
@@ -156,8 +162,10 @@ export async function deleteWorkspaceFile(agentId: string, rel: string): Promise
   const file = safe(agentId, rel);
   if (!file) return { error: "invalid path" };
   try {
-    await unlink(file);
-    const dir = path.dirname(file);
+    const root = path.resolve(DATA_DIR, agentId);
+    const managedFile = await managedFilePath(root, path.relative(root, file));
+    await unlink(managedFile);
+    const dir = path.dirname(managedFile);
     if (dir !== path.join(DATA_DIR, agentId)) {
       await rmdir(dir).catch((err: any) => {
         if (err.code !== 'ENOENT' && err.code !== 'ENOTEMPTY') throw err;

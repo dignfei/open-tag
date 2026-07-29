@@ -8,9 +8,9 @@
 //     agent. We pass the message as argv and close stdin.
 //  2. --dangerously-skip-permissions is required for headless runs (otherwise it waits on approval),
 //     and NODE_OPTIONS is stripped from the child env (a proxy flag like `--use-env-proxy` makes some
-//     bundled CLIs refuse to start). The system prompt is injected via {cwd}/AGENTS.md (native).
+//     bundled CLIs refuse to start). The system prompt is injected as a managed primary agent through
+//     OPENCODE_CONFIG_CONTENT; project AGENTS.md remains untouched and is still discovered natively.
 import { type ChildProcess } from "node:child_process";
-import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSafe } from "./spawnSafe.js";
 import { killTree } from "./killTree.js";
@@ -70,8 +70,9 @@ export function handleOpencodeEvent(evt: any): OpencodeEmit {
   return out;
 }
 
-function buildArgs(message: string, opts: StartOpts, sessionId: string | null): string[] {
+function buildArgs(message: string, opts: StartOpts, sessionId: string | null, agentName: string): string[] {
   const args = ["run", "--format", "json", "--dangerously-skip-permissions", "--dir", opts.cwd];
+  args.push("--agent", agentName);
   const model = opts.model && opts.model !== "default" ? opts.model : "";
   if (model) args.push("--model", model);
   const v = variant(opts.runtimeConfig);
@@ -79,6 +80,30 @@ function buildArgs(message: string, opts: StartOpts, sessionId: string | null): 
   if (sessionId) args.push("--session", sessionId);
   args.push(message);
   return args;
+}
+
+export function opencodeInstructionEnv(env: NodeJS.ProcessEnv, stateDir: string, systemPrompt: string): { env: NodeJS.ProcessEnv; agentName: string } {
+  let existing: Record<string, unknown> = {};
+  const raw = env.OPENCODE_CONFIG_CONTENT?.trim();
+  if (raw) {
+    try { existing = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error("OPENCODE_CONFIG_CONTENT must be valid JSON before open-tag can append instructions"); }
+    if (!existing || Array.isArray(existing) || typeof existing !== "object") throw new Error("OPENCODE_CONFIG_CONTENT must contain a JSON object");
+  }
+  const currentAgents = existing.agent;
+  if (currentAgents !== undefined && (!currentAgents || Array.isArray(currentAgents) || typeof currentAgents !== "object")) {
+    throw new Error("OPENCODE_CONFIG_CONTENT.agent must contain a JSON object");
+  }
+  const suffix = path.basename(stateDir).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
+  const agentName = `open-tag-${suffix}`;
+  const merged = {
+    ...existing,
+    agent: {
+      ...(currentAgents as Record<string, unknown> | undefined),
+      [agentName]: { mode: "primary", description: "open-tag managed collaboration agent", prompt: systemPrompt },
+    },
+  };
+  return { env: { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify(merged) }, agentName };
 }
 
 // OpencodeRun owns the serial turn queue for one agent (mirrors codex/copilot's queue/pump), but each
@@ -93,18 +118,26 @@ class OpencodeRun {
   private sessionId: string | null;
   private everSucceeded = false;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly agentName: string;
   private readonly admission: ReturnType<typeof initialTurnAdmission>;
   private currentInput: OpencodeInput | null = null;
+  private exitReported = false;
+
+  private reportExit(code: number | null): void {
+    if (this.exitReported) return;
+    this.exitReported = true;
+    this.cb.onExit(code);
+  }
 
   constructor(private readonly opts: StartOpts, private readonly cb: RuntimeCallbacks) {
     this.admission = initialTurnAdmission(cb);
     this.sessionId = opts.sessionId ?? null; // resume an existing session, or null = let opencode create one
     // Strip NODE_OPTIONS (a proxy flag can make the bundled CLI refuse to start) and pin PWD — opencode
     // uses PWD (not just cwd) to anchor its AGENTS.md / project discovery.
-    this.env = { ...opts.env, PWD: opts.cwd };
+    const configured = opencodeInstructionEnv({ ...opts.env, PWD: opts.cwd }, opts.stateDir, opts.systemPrompt);
+    this.env = configured.env;
+    this.agentName = configured.agentName;
     delete this.env.NODE_OPTIONS;
-    try { writeFileSync(path.join(opts.cwd, "AGENTS.md"), opts.systemPrompt); }
-    catch (e) { cb.log.warn("opencode: AGENTS.md write failed", { detail: String(e) }); }
     if (this.sessionId) cb.onSession(this.sessionId);
     void this.enqueue(opts.initialPrompt, true).catch(() => {});
   }
@@ -130,7 +163,7 @@ class OpencodeRun {
     const message = input.text;
     this.turnBusy = true;
     this.cb.onActivity("working", "turn");
-    const args = buildArgs(message, this.opts, this.sessionId);
+    const args = buildArgs(message, this.opts, this.sessionId, this.agentName);
     // stdin "ignore" is mandatory: a piped stdin makes `opencode run` block forever (see file header).
     const proc = spawnSafe("opencode", args, { cwd: this.opts.cwd, stdio: ["ignore", "pipe", "pipe"], env: this.env });
     this.proc = proc;
@@ -166,18 +199,18 @@ class OpencodeRun {
       this.proc = null; this.turnBusy = false; if (this.stopped) return;
       this.cb.log.error("opencode spawn failed", { detail: String((e as any)?.message ?? e) });
       this.cb.onActivity("offline", "opencode not found");
-      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.cb.onExit(1); } else this.pump();
+      if (!this.everSucceeded) { this.rejectQueue(e instanceof Error ? e : new Error(String(e))); this.reportExit(1); } else this.pump();
     });
     proc.on("exit", (code) => {
       if (buf.trim()) processLine(buf); buf = "";
-      this.proc = null; this.turnBusy = false; if (this.stopped) return;
+      this.proc = null; this.turnBusy = false; if (this.stopped) { this.reportExit(code); return; }
       if (this.currentInput === input) this.currentInput = null;
       if (code === 0) { this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return; }
       const tail = errTail.join("").trim();
       const last = tail.split("\n").filter(Boolean).pop() || `opencode exited ${code ?? "signal"}`;
       this.cb.onTrajectory([{ kind: "text", text: "[opencode error] " + clip(tail).slice(0, 500) }]);
       this.cb.onActivity("error", last.slice(0, 200));
-      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.cb.onExit(code ?? 1); return; } // first-turn hard failure → crashed
+      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.reportExit(code ?? 1); return; } // first-turn hard failure → crashed
       this.pump(); // later-turn failure → keep the session alive so the next message can retry
     });
   }
@@ -188,7 +221,8 @@ class OpencodeRun {
     this.currentInput?.admission.reject(error); this.currentInput = null;
     this.rejectQueue(error);
     const p = this.proc; this.proc = null;
-    if (p) { killTree(p); }
+    if (p) killTree(p);
+    else this.reportExit(0);
   }
 }
 

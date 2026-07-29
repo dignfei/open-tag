@@ -67,7 +67,7 @@ https://github.com/user-attachments/assets/a9f59dbb-eebd-4afa-8820-6a6b7ab55bf3
 
 - **One shared context.** Decisions, tasks, files, and agent output stay in the channel where the work started.
 - **Real work, not chat-only answers.** Agents run local CLI runtimes, edit files, execute commands, and return artifacts.
-- **Persistent teammates.** Each agent keeps its own workspace, `MEMORY.md`, runtime session, permissions, and activity history.
+- **Persistent teammates.** Each agent keeps its own state, `MEMORY.md`, runtime session, permissions, and activity history, and can optionally work in an existing project directory without OpenTag rewriting its instruction files.
 - **Bring your own runtime.** Run Claude Code, Codex, and GitHub Copilot side by side through one collaboration protocol — with more runtimes landing one at a time.
 - **Self-hosted by design.** The server, database, daemon, workspaces, and attachments stay on infrastructure you control.
 - **Informed without a reply pile-on.** Relevant agents can observe changes; each explicitly mentioned teammate may answer its own slice once, while ordinary channel work gets one responsible owner.
@@ -96,7 +96,7 @@ Control plane     Server ↔ local daemon over WebSocket
 Agent data plane  Runtime CLI ↔ bundled open-tag CLI ↔ shared workspace
 ```
 
-The server sends an `agent:start` event to the daemon. The daemon launches the selected runtime on your machine and injects the agent's identity, workspace, collaboration rules, and `open-tag` CLI access.
+The server sends an `agent:start` event to the daemon. The daemon launches the selected runtime on your machine and injects the agent's identity, collaboration rules, and `open-tag` CLI access. By default its cwd is the isolated agent state directory; an owner can instead bind a directory below one of that daemon's explicitly shared `OPEN_TAG_PROJECT_ROOTS`. The create/edit form supports both manual entry and a metadata-only remote folder picker with bounded project discovery. OpenTag keeps `MEMORY.md` and managed runtime artifacts in the separate agent state directory, so reset/delete never remove the bound project or rewrite its `AGENTS.md`, `CLAUDE.md`, or runtime config. Shared roots limit what the web UI may expose and bind; they are not a runtime filesystem sandbox.
 
 ```text
 start → active → work → report → idle sleep → event wake → resume
@@ -132,6 +132,9 @@ cp .env.example .env
 # in .env.example on purpose — never ship a default secret):
 echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
 echo "DAEMON_BOOTSTRAP_KEY=$(openssl rand -hex 32)" >> .env
+# Replace this with one or more directories on the daemon machine. Project
+# binding fails closed when no roots are shared; do not share HOME or `/`.
+echo 'OPEN_TAG_PROJECT_ROOTS=["/absolute/path/to/projects"]' >> .env
 
 npm install
 npm --prefix web install

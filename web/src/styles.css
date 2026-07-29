@@ -120,7 +120,7 @@ button{font-family:inherit}
 .dot.working,.dot.thinking{background:var(--status-orange)}
 .dot.offline,.dot.inactive{background:var(--muted-soft)}
 .dot.error{background:var(--status-red)}
-.dot.queued{background:var(--status-yellow)}
+.dot.queued,.dot.starting{background:var(--status-yellow)}
 .dot.working:not(.live-bar__pip){position:relative}
 .dot.working:not(.live-bar__pip)::after{content:"";position:absolute;inset:0;border-radius:50%;background-color:inherit;animation:lb-ping 1.9s cubic-bezier(0,0,.2,1) infinite}
 .av{width:20px;height:20px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:var(--ink)}
@@ -726,6 +726,47 @@ main.content-col>.scroll .msg-head>.msg-agent-state{padding-right:76px}
 /* checkbox/radio inside modal should not be stretched by .modal input{width:100%} (that would push the label to wrap on a new line) */
 .modal input[type=checkbox],.modal input[type=radio]{width:16px;height:16px;flex:none;margin:0;accent-color:var(--ink-2);cursor:pointer}
 .modal .ck-row{display:flex;align-items:center;gap:10px;margin-top:16px;font-size:14px;color:var(--body);cursor:pointer}
+.project-path-field{display:grid;grid-template-columns:minmax(0,1fr) 42px;gap:7px;align-items:stretch}
+.project-path-field .project-path-browse{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--hair-strong);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer;transition:background .12s,border-color .12s}
+.project-path-field .project-path-browse:hover:not(:disabled){background:var(--surface-strong);border-color:var(--muted-soft)}
+.project-path-field .project-path-browse:disabled{opacity:.45;cursor:default}
+.project-picker-bg{z-index:70}
+.project-picker{width:620px;display:flex;flex-direction:column;overflow:hidden;padding:0;max-height:min(760px,88vh)}
+.project-picker-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 20px 14px;border-bottom:1px solid var(--hair)}
+.project-picker-head h3{margin:0 0 5px}
+.project-picker-machine{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
+.project-picker-machine .dot{width:7px;height:7px}
+.project-picker-tools{display:flex;gap:4px}
+.project-picker-tools button,.project-picker-back{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:0;border-radius:7px;background:transparent;color:var(--muted);cursor:pointer}
+.project-picker-tools button:hover:not(:disabled),.project-picker-back:hover:not(:disabled){background:var(--surface-strong);color:var(--ink)}
+.project-picker-tools button:disabled,.project-picker-back:disabled{opacity:.35;cursor:default}
+.project-picker-nav{display:grid;grid-template-columns:34px minmax(0,1fr);align-items:center;gap:7px;padding:8px 14px;border-bottom:1px solid var(--hair);background:var(--canvas-soft)}
+.project-picker-crumbs{display:flex;align-items:center;min-width:0;overflow-x:auto;scrollbar-width:thin}
+.project-picker-crumbs>button,.project-picker-crumbs span{display:inline-flex;align-items:center;flex:none}
+.project-picker-crumbs button{display:inline-flex;align-items:center;max-width:180px;padding:5px 6px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.project-picker-crumbs button:hover,.project-picker-crumbs button.current{color:var(--ink);background:var(--surface)}
+.project-picker-crumbs svg{color:var(--muted-soft);flex:none}
+.project-picker-body{flex:1;min-height:240px;overflow:auto;padding:4px 18px 16px}
+.project-picker-section{padding-top:15px}
+.project-picker-section+section{margin-top:8px;border-top:1px solid var(--hair)}
+.project-picker-section h4{margin:0 0 8px;color:var(--muted);font-size:11px;font-weight:650;letter-spacing:0;text-transform:uppercase}
+.project-picker-list{display:flex;flex-direction:column;gap:2px}
+.project-picker-row{display:grid;grid-template-columns:20px minmax(0,1fr) 16px;align-items:center;gap:10px;width:100%;padding:9px 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);text-align:left;cursor:pointer}
+.project-picker-row:hover,.project-picker-row:focus-visible{background:var(--surface-strong);color:var(--ink)}
+.project-picker-row>span{display:flex;flex-direction:column;min-width:0}
+.project-picker-row b{color:var(--ink);font-size:14px;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-picker-row small{margin-top:2px;color:var(--muted-soft);font-family:ui-monospace,monospace;font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-picker-empty,.project-picker-state{padding:18px 10px;color:var(--muted);font-size:13px;line-height:1.5;text-align:center}
+.project-picker-empty.is-error{color:var(--error)}
+.project-picker-state{display:flex;min-height:240px;flex-direction:column;align-items:center;justify-content:center;gap:11px}
+.project-picker-state p{max-width:48ch;margin:0}
+.project-picker-state.is-error{color:var(--body)}
+.project-picker-retry,.project-picker-more{border:1px solid var(--hair-strong);border-radius:9999px;background:var(--surface);color:var(--ink);padding:6px 13px;font-size:12px;cursor:pointer}
+.project-picker-more{display:block;margin:9px auto 0}
+.project-picker-more:disabled{opacity:.5;cursor:default}
+.project-picker-foot{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 18px;border-top:1px solid var(--hair);background:var(--canvas-soft)}
+.project-picker-foot>span{min-width:0;color:var(--muted);font-family:ui-monospace,monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-picker-foot .ok{display:inline-flex;align-items:center;gap:6px;flex:none;border-radius:9999px;padding:8px 15px;font-size:13px;cursor:pointer}
 .form-err{margin-top:12px;font-size:13px;color:var(--error);background:var(--error-soft);border:1px solid var(--error-line);border-radius:8px;padding:8px 11px}
 .danger-btn{font-size:13px;color:var(--muted);background:var(--surface);border:1px solid var(--hair-strong);border-radius:9999px;padding:6px 14px;cursor:pointer;transition:all .12s}
 .danger-btn:hover{color:var(--error);border-color:var(--error-line);background:var(--error-soft)}
@@ -965,6 +1006,11 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
   .mobile-scrim{display:none;position:fixed;inset:0;background:var(--scrim);z-index:55}
   .mobile-burger{display:inline-flex;align-items:center;justify-content:center;position:fixed;top:9px;left:9px;z-index:64;width:38px;height:38px;border:1px solid var(--hair-strong);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer}
   .head{padding-left:54px}  /* make room for hamburger */
+  .head.head-agent{display:grid;grid-template-columns:48px minmax(0,1fr);align-items:center;justify-content:initial}
+  .head.head-agent .head-id{min-width:0}
+  .head.head-agent h1{font-size:22px;line-height:1.15;letter-spacing:0;overflow-wrap:anywhere}
+  .head.head-agent>.agent-acts{grid-column:1/-1;width:100%;justify-content:flex-start;flex-wrap:wrap}
+  .head.head-agent>.agent-acts .joinbtn{flex:0 0 auto}
   /* thread/profile right panel → fullscreen overlay */
   .thread-panel,.traj-col.profile-mode{position:fixed;inset:0;z-index:70;width:100%}  /* a profile opened in the right column gets the same fullscreen treatment as a thread (otherwise .traj-col is display:none below and the profile would be invisible on mobile) */
   .traj-col.profile-mode{display:block;overflow:auto}
@@ -973,6 +1019,12 @@ aside.traj-col.profile-mode .scroll{flex:1;min-height:0;overflow:auto;margin:0 -
   /* Modal → full-width bottom sheet */
   .modal-bg{align-items:flex-end}
   .modal{width:100%;max-width:100%;border-radius:16px 16px 0 0}
+  .project-picker{max-height:92dvh;margin-top:0}
+  .project-picker-head{padding:16px 14px 12px}
+  .project-picker-body{padding-left:10px;padding-right:10px}
+  .project-picker-foot{align-items:stretch;flex-direction:column;gap:8px;padding:10px 14px}
+  .project-picker-foot .ok{justify-content:center;width:100%}
+  .project-picker-crumbs button{max-width:126px}
   /* Enlarge touch targets */
   .joinbtn{padding:6px 11px;font-size:13px}
   .addbtn{width:30px;height:30px}

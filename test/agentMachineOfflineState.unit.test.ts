@@ -61,14 +61,16 @@ test("startAgent refuses a disconnected target machine before marking the agent 
   );
   assert.match(
     coreSrc,
-    /if \(target\.machineId\) return sendToMachine\(target\.machineId, msg\);/,
+    /if \(target\.machineId\) return sendToMachine\(target\.machineId, msg, \{/,
     "explicit start should target the agent's machine rather than every daemon in the workspace",
   );
   assert.match(
     coreSrc,
-    /if \(!a\.machineId\) \{[\s\S]*?if \(daemonCount\(serverId\) === 0\) return \{ ok: false, reason: "no daemon online" \};[\s\S]*?return \{ ok: true, machineId: null, cfg \};[\s\S]*?\}/,
+    /async function agentStartPreflight[\s\S]*?if \(!a\.machineId\) \{[\s\S]*?if \(daemonCount\(serverId\) === 0\) return \{ ok: false, reason: "no daemon online" \};[\s\S]*?return \{ ok: true, machineId: null, projectPath: null, status: a\.status \};[\s\S]*?\}/,
     "legacy unbound agents should keep their broadcast fallback instead of being marked machine-offline",
   );
+  assert.match(coreSrc, /async function agentStartTarget[\s\S]*?const cfg = await agentConfig\(agentId\);/,
+    "only the actual start path should mint the agent config after preflight");
   assert.match(
     coreSrc,
     /broadcastToDaemons\(serverId, msg\);[\s\S]*?return true;/,
