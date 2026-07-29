@@ -162,8 +162,10 @@ test("message hover uses a subtle border instead of a filled background", () => 
   assert.match(col, /min-width\s*:\s*0\b/, `message body column should be allowed to shrink around long Markdown: ${col}`);
   assert.match(col, /padding\s*:\s*0\b/, `message body column should not carry a nested card skin: ${col}`);
   assert.doesNotMatch(css, /\.msg:hover \.msg-col\s*\{/, "message hover skin should stay on the full outer message card");
-  assert.match(ruleBody(".msg .md"), /max-width\s*:\s*100%(?:;|$)/, "message Markdown should follow the responsive content column instead of leaving half the card empty");
-  assert.doesNotMatch(ruleBody(".msg .md"), /var\(--read-measure\)/, "document reading measure must not constrain operational chat messages");
+  // the .md base is geometry-free (see test/sysMsgLayout.unit.test.ts), so message Markdown
+  // fills the responsive content column with no per-container width opt-out
+  assert.doesNotMatch(ruleBody(".md"), /max-width|var\(--read-measure\)/, "document reading measure must not constrain operational chat messages");
+  assert.doesNotMatch(css, /\.msg \.md\s*\{/, "no .msg-level width opt-out should exist once the .md base stops self-constraining");
 });
 
 test("pre-reply activity uses a compact run row rather than a message card", () => {
@@ -179,8 +181,7 @@ test("pre-reply activity uses a compact run row rather than a message card", () 
 });
 
 test("thread message Markdown uses the full content column", () => {
-  const body = ruleBody(".thread-panel .msg .md");
-  assert.match(body, /max-width\s*:\s*100%(?:;|$)/, `thread messages have no hover toolbar, so their Markdown should not reserve the main-chat toolbar width: ${body}`);
+  assert.doesNotMatch(css, /\.thread-panel \.msg \.md\s*\{/, "thread messages need no width opt-out — the .md base no longer self-constrains");
   const head = ruleBody(".thread-panel .msg-head");
   assert.match(head, /grid-template-columns\s*:\s*minmax\(0,1fr\) auto/, `thread headers should keep name and status on the first line: ${head}`);
   assert.match(ruleBody(".thread-parent"), /background\s*:\s*transparent/, "the thread parent should not wrap a message card inside another card");
