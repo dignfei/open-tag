@@ -138,6 +138,19 @@ gap: task *ownership* (§6 C5).
 
 `POST /api/servers/:id/machines/:id/reconnect` was already correctly gated (`manageMachines` + online-guard).
 
+**Project directory binding + browser (#196)** — the machine-filesystem surface (independently re-reviewed post-merge, 2026-07-29):
+
+| Endpoint | Gate |
+|---|---|
+| `GET /api/servers/:id/machines/:mid/project-directories` + `POST …/project-directories/query` | `manageAgents` **and** `manageMachines` (deliberate double gate — redundant while both caps track owner/admin 1:1; consolidate or keep in sync if a future role ever gets one without the other) + machine `serverId`-scoped (404 cross-tenant) + query strings rejected with 400 so curated paths never land in access logs. Daemon responses are field-whitelisted, length-capped, and the underlying RPC is bound to the source daemon socket + expected response types (a sibling daemon can't spoof another machine's listing). |
+| `POST /api/agents` / `PATCH /api/agents/:id` (with `projectPath`) | `manageAgents`; PATCH only while `status="inactive"` via a CAS update (409 on a racing start). Path validation is length/type-only server-side **by design** — canonicalization (absolute path, symlink-escape, hidden/sensitive-dir rejection) is delegated to the daemon's `project:resolve` and re-run by the daemon on **every** `agent:start`. |
+| `GET /api/agents/:id` | response field-whitelisted; `projectPath` visible only with `manageAgents` — plain members get a `projectBound` boolean, never the path. |
+| `GET /api/agents/:id/skills` | for a project-bound agent requires `manageAgents`; the `projectPath` forwarded to the daemon comes from the **agent's DB row** (`agents.ts`), never from request input. |
+| `DELETE /api/agents/:id` | a project-bound (or non-inactive) agent 503s until its daemon confirms the stop — no orphaned runtime left running inside an operator's repo. |
+
+Reachable from the human plane only — `/agent-api/*` has no route to the directory RPCs, and old daemons without
+the `project-browser-v1` / `project-directory-v2` capabilities get a synchronous, clean error (no hang).
+
 Verified live (two separate tenants): same-tenant reads still work; a foreign tenant reading another's
 `#all` messages returns `0`, and enumerating another's channel members returns `404`.
 
