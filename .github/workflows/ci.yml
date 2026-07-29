@@ -43,7 +43,7 @@ jobs:
           JWT_SECRET: ci-test-secret
           DAEMON_BOOTSTRAP_KEY: ci-test-bootstrap-key
         shell: bash
-        run: npx tsx --test --test-force-exit test/*.unit.test.ts src/daemon/*.test.ts
+        run: npx tsx --test --test-force-exit test/*.unit.test.ts src/daemon/*.test.ts web/src/views/*.test.ts
 
       - name: Security audit (root + web + docs, high+)
         run: |
