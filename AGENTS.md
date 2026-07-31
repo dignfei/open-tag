@@ -130,18 +130,17 @@ may not have yet — once a merged-but-unmigrated partial unique index made agen
 normal deploy migrates the DB before the new code serves. **Don't hand-restart the prod server and
 skip it.** (`db:push` is additive-safe and prompts before any destructive change.)
 
-## Dependency updates (Dependabot) — keep the PR list clean, don't make the human triage
+## Dependency updates — deliberate and manual
 
-Dependabot is tuned in `.github/dependabot.yml` to open **grouped, patch/minor-only** PRs
-(npm **majors are ignored**; `open-pull-requests-limit: 5`). Handle them yourself so they never pile up:
+Automated Dependabot version-update PRs are disabled. Do not add `.github/dependabot.yml`
+without an explicit maintainer decision. Dependabot vulnerability alerts may remain enabled as
+a read-only security signal; they do not authorize an automatic upgrade or merge.
 
-- **Patch/minor groups with green CI → merge them.** This is the safe steady state; merge once
-  CI passes. Don't leave a wall of dependency PRs for the human to deal with.
-- **Major upgrades are deliberate, never auto-merged.** A green CI (typecheck/build/unit) does
-  **not** prove a major lib bump is runtime-safe (e.g. `react-router` 6→7, `zod` 3→4, `vite` 5→8).
-  Do majors in a dedicated, tested PR, or **close** the Dependabot PR with a one-line reason.
-- **One pass, list clean:** merge the safe green ones and close/defer the rest in the same sweep —
-  never blind-merge a major just because CI is green.
+- Update dependencies only for an explicit maintenance task or an actionable security alert.
+- Keep each change scoped to one ecosystem and a reviewable dependency group; regenerate the
+  matching lockfile from current `main`, then run the repository's full applicable checks.
+- Treat major upgrades as product changes. Read the release notes and verify real runtime paths;
+  green typecheck/build/unit checks alone do not prove compatibility.
 
 ## Code quality (load-bearing — full text in `docs/code-quality.md`)
 
