@@ -52,8 +52,8 @@ interface Store {
   agentPanelReq: string | null;                                   // pending open-agent-panel request (agent id); null when none
   clearAgentPanelReq: () => void;                                 // clear the pending request after the Chat view has consumed it
   savedIds: Set<string>;                                          // saved message ids known in this session (bookmark state + Saved count source)
-  saveMsg: (messageId: string) => Promise<void>;
-  unsaveMsg: (messageId: string) => Promise<void>;
+  saveMsg: (messageId: string) => Promise<boolean>;
+  unsaveMsg: (messageId: string) => Promise<boolean>;
   listSaved: (limit?: number, offset?: number) => Promise<{ saved: any[]; hasMore: boolean }>;
 }
 const Ctx = createContext<Store>(null as any);
@@ -193,9 +193,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const openThread = async (parentChannelId: string, parentMessageId: string) => { const r = await api("POST", `/api/channels/${parentChannelId}/threads`, { parentMessageId }); return r?.threadChannelId ?? null; };
   const openAgentPanel = (agentId: string) => setAgentPanelReq(agentId); // LiveAgentBar → Chat: open the agent profile panel (Activity tab); Chat consumes & clears
   const clearAgentPanelReq = () => setAgentPanelReq(null);
-  // Saved messages: private bookmarks, optimistically update savedIds.
-  const saveMsg = async (messageId: string) => { setSavedIds((s) => new Set(s).add(messageId)); await api("POST", "/api/channels/saved", { messageId }); };
-  const unsaveMsg = async (messageId: string) => { setSavedIds((s) => { const n = new Set(s); n.delete(messageId); return n; }); await api("DELETE", `/api/channels/saved/${messageId}`); };
+  // Saved messages: update local bookmark state only after the server confirms the mutation.
+  const saveMsg = async (messageId: string) => {
+    try {
+      const r = await api("POST", "/api/channels/saved", { messageId });
+      if (r?.error) return false;
+      setSavedIds((s) => new Set(s).add(messageId));
+      return true;
+    } catch { return false; }
+  };
+  const unsaveMsg = async (messageId: string) => {
+    try {
+      const r = await api("DELETE", `/api/channels/saved/${messageId}`);
+      if (r?.error) return false;
+      setSavedIds((s) => { const n = new Set(s); n.delete(messageId); return n; });
+      return true;
+    } catch { return false; }
+  };
   const listSaved = async (limit = 20, offset = 0) => { const r = await api("GET", `/api/channels/saved?limit=${limit}&offset=${offset}`); return { saved: r?.saved ?? [], hasMore: !!r?.hasMore }; };
 
   // ── Auth bootstrap (runs once): resolve a session token + the user's workspace list, then pick the initial workspace

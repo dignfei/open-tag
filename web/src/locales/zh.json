@@ -627,6 +627,7 @@
     "reasoning": "推理",
     "membersCount": "{{count}} 个成员",
     "dismiss": "关闭",
+    "savedUpdateFailed": "更新收藏失败",
     "describeSelfPlaceholder": "介绍一下你自己,给这个工作区里的其他人和 agent 看"
   },
   "md": {
