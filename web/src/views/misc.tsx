@@ -13,6 +13,7 @@ import { useConfirm, useEscClose } from "../ConfirmModal.tsx";
 import { useTranslation } from "react-i18next";
 import { daemonUpdateCommandTemplate, isDaemonUpdateAvailable } from "../machineUi.ts";
 import { copyText } from "../lib/clipboard.ts";
+import { useToast } from "../toast.tsx";
 
 export function Tasks() {
   const { channels, slug } = useStore();
@@ -477,10 +478,12 @@ export function Saved() {
   const { slug, listSaved, unsaveMsg } = useStore();
   const nav = useNavigate();
   const { t } = useTranslation();
+  const toast = useToast();
   const PAGE = 20;
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
+  const unsaving = useRef(new Set<string>());
   // Paginate by DB-row offset, NOT items.length: listSaved now filters out saved rows whose channel the
   // caller can't currently read (IDOR-B5 read-time gate), so the visible count is ≤ the rows the server
   // consumed. Deriving the next offset from items.length would re-request overlapping windows (duplicate
@@ -493,7 +496,16 @@ export function Saved() {
   }).finally(() => setLoading(false));
   useEffect(() => { load(0); /* eslint-disable-next-line */ }, []);
   const open = (it: any) => nav(`/s/${slug}/channel/${it.channelId}?msg=${it.messageId}`);
-  const unsave = (e: React.MouseEvent, it: any) => { e.stopPropagation(); unsaveMsg(it.messageId); setItems((p) => p.filter((x) => x.messageId !== it.messageId)); setNextOffset((n) => Math.max(0, n - 1)); };
+  const unsave = async (e: React.MouseEvent, it: any) => {
+    e.stopPropagation();
+    if (unsaving.current.has(it.messageId)) return;
+    unsaving.current.add(it.messageId);
+    try {
+      if (!await unsaveMsg(it.messageId)) { toast.error(t("common.savedUpdateFailed")); return; }
+      setItems((p) => p.filter((x) => x.messageId !== it.messageId));
+      setNextOffset((n) => Math.max(0, n - 1));
+    } finally { unsaving.current.delete(it.messageId); }
+  };
   const source = (it: any) => it.channelType === "thread"
     ? <><MessageCircle size={12} /> {t("misc.savedThread")}{it.parentChannelType === "dm" ? "@" : "#"}{it.parentChannelName ?? "?"}</>
     : it.channelType === "private"

@@ -14,6 +14,7 @@
     "count": "{{count}} item(s)",
     "view": "View",
     "dismiss": "Dismiss",
+    "savedUpdateFailed": "Could not update saved messages",
     "daemonOutdatedTitle": "Outdated daemon",
     "daemonOutdatedBody": "{{names}} — open Computers for update steps. The browser can't update a running local daemon for you.",
     "machineOfflineTitle": "{{name}} is offline",
