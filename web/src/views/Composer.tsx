@@ -4,23 +4,11 @@ import { useTranslation } from "react-i18next";
 import { useStore, type Agent } from "../store.tsx";
 import { Avatar, resolveAvatar } from "../Avatar.tsx";
 import { IconFile } from "../icons.tsx";
-import { useToast } from "../toast.tsx";
 
 const isImage = (m?: string) => !!m && m.startsWith("image/");
 
 export function canSendComposerDraft(text: string, pendingAtts: { status?: string }[]): boolean {
   return pendingAtts.every((a) => a.status === "done") && (!!text.trim() || pendingAtts.length > 0);
-}
-
-const mentionNameKey = (name: string) => name.normalize("NFC").toLowerCase();
-export function mentionedAgents(text: string, agents: Agent[]): Agent[] {
-  const targets = new Map<string, Agent>();
-  for (const m of text.matchAll(/@([\p{L}\p{N}_-]+)/gu)) {
-    const key = mentionNameKey(m[1]!);
-    const agent = agents.find((a) => mentionNameKey(a.name) === key);
-    if (agent) targets.set(agent.id, agent);
-  }
-  return [...targets.values()];
 }
 
 // Shared message composer for channels, DMs, and threads. Owns text, attachment upload
@@ -36,7 +24,6 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   className?: string;        // extra class on the .composer root (threads pass "thread-composer")
 }) {
   const { t } = useTranslation();
-  const toast = useToast();
   const { api, visibleAgents: agents, humans, machines, uploadOne, attachmentUrl } = useStore(); // visibleAgents: only real agents are @-mention candidates / reachability targets (not showcase demo props)
   const avFor = (u?: string | null) => resolveAvatar(u, attachmentUrl);
   const [text, setText] = useState("");
@@ -45,8 +32,6 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   const [atSel, setAtSel] = useState(0); // highlighted candidate index for ↑/↓ keyboard nav
   const [pendingAtts, setPendingAtts] = useState<any[]>([]); // uploaded attachments queued to send with the next message
   const [uploading, setUploading] = useState(false);
-  const [sending, setSending] = useState(false);
-  const sendingRef = useRef(false);
   const atPosRef = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLInputElement>(null);
@@ -61,7 +46,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   const reach = useMemo<{ kind: "off" | "sleep" | "work" | "on"; names: string } | null>(() => {
     const targets = new Map<string, Agent>();
     if (dmAgent) targets.set(dmAgent.id, dmAgent);
-    for (const agent of mentionedAgents(text, agents)) targets.set(agent.id, agent);
+    for (const m of text.matchAll(/@([\p{L}\p{N}_-]+)/gu)) { const a = agents.find((x) => x.name === m[1]); if (a) targets.set(a.id, a); }
     const allTargets = [...targets.values()];
     const offline = allTargets.filter((a) => {
       if (!a.machineId) return true;
@@ -85,22 +70,14 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   ) : null;
   const reachStatusChip = reach?.kind === "off" ? t("chat.machineOfflineComposerPlaceholder", { names: reach.names }) : "";
   const effectivePlaceholder = reachPlaceholder ?? (allowAsTask && asTask ? t("chat.taskPlaceholder") : placeholder);
-  const canSend = !!channelId && !sending && canSendComposerDraft(text, pendingAtts);
+  const canSend = !!channelId && canSendComposerDraft(text, pendingAtts);
 
   const send = async (forceTask?: boolean) => {
-    const v = text.trim(); if (!canSend || sendingRef.current) return;
+    const v = text.trim(); if (!canSend) return;
     const asT = allowAsTask && (forceTask ?? asTask); // ⌘/Ctrl+Shift+Enter forces task; threads (allowAsTask=false) never send as task
-    const ids = pendingAtts.map((a) => a.id); // canSend guarantees the full queue is uploaded
-    sendingRef.current = true; setSending(true);
-    try {
-      const result = await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
-      if (result?.error) { toast.error(t("chat.sendFailed", { error: result.error })); return; }
-      setText(""); setAtQuery(null); setAsTask(false); setPendingAtts([]);
-    } catch (e: any) {
-      toast.error(t("chat.sendFailed", { error: String(e?.message || e) }));
-    } finally {
-      sendingRef.current = false; setSending(false);
-    }
+    setText(""); setAtQuery(null); setAsTask(false);
+    const ids = pendingAtts.map((a) => a.id); setPendingAtts([]); // canSend guarantees the full queue is uploaded
+    await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
   };
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>) => { if (e.target.files?.length) addFiles(Array.from(e.target.files)); e.target.value = ""; };
   // Each file → placeholder (images get a localUrl preview + "uploading") → uploadOne streams progress → replaced with the real attachment on success, "error" on failure. Paste: images only; drag-drop: any type.
@@ -164,14 +141,14 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
           {a.status === "uploading" && <span className="patt-prog" style={{ ["--pct" as string]: (a.progress || 0) + "%" } as CSSProperties}>{a.progress || 0}%</span>}
           {a.status === "done" && <span className="patt-ok"><CheckCircle2 size={13} /></span>}
           {a.status === "error" && <span className="patt-err">!</span>}
-          <button disabled={sending} onClick={() => setPendingAtts((p) => p.filter((x) => x.id !== a.id))}>×</button>
+          <button onClick={() => setPendingAtts((p) => p.filter((x) => x.id !== a.id))}>×</button>
         </span>;
       })}</div>}
       <input type="file" ref={imgRef} accept="image/*" multiple style={{ display: "none" }} onChange={onPickFiles} />
       <input type="file" ref={fileRef} multiple style={{ display: "none" }} onChange={onPickFiles} />
       <div className="composer-box" onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
         {reachStatusChip && <div className="composer-status-chip" role="status">{reachStatusChip}</div>}
-        <textarea className="composer-input" ref={inputRef} rows={1} value={text} onChange={onInput} onPaste={onPaste} readOnly={sending}
+        <textarea className="composer-input" ref={inputRef} rows={1} value={text} onChange={onInput} onPaste={onPaste}
           placeholder={effectivePlaceholder}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return; // IME composition (CJK input): Enter selects a candidate, not send
@@ -189,11 +166,11 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
           }} />
         <div className="composer-bar">
           <div className="cb-left">
-            <button className="cb-icon im" title={t("chat.uploadImage")} disabled={uploading || sending} onClick={() => imgRef.current?.click()}><ImagePlus size={16} className="im-pop" /></button>
-            <button className="cb-icon im" title={t("chat.uploadFile")} disabled={uploading || sending} onClick={() => fileRef.current?.click()}><Paperclip size={16} className="im-tilt" /></button>
+            <button className="cb-icon im" title={t("chat.uploadImage")} disabled={uploading} onClick={() => imgRef.current?.click()}><ImagePlus size={16} className="im-pop" /></button>
+            <button className="cb-icon im" title={t("chat.uploadFile")} disabled={uploading} onClick={() => fileRef.current?.click()}><Paperclip size={16} className="im-tilt" /></button>
           </div>
           <div className="cb-right">
-            {allowAsTask && <label className={"astask" + (asTask ? " on" : "")} title={t("chat.sendAsTaskTitle")}><input type="checkbox" checked={asTask} disabled={sending} onChange={(e) => setAsTask(e.target.checked)} />{t("chat.asTask")}</label>}
+            {allowAsTask && <label className={"astask" + (asTask ? " on" : "")} title={t("chat.sendAsTaskTitle")}><input type="checkbox" checked={asTask} onChange={(e) => setAsTask(e.target.checked)} />{t("chat.asTask")}</label>}
             <button className="send-btn im" title={t("chat.sendTitle")} disabled={!canSend} onClick={() => send()}><Send size={15} className="im-nudge-up" /></button>
           </div>
         </div>
