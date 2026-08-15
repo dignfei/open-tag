@@ -563,9 +563,9 @@ export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () 
   }, [runtime, machineId]);
   const create = async () => {
     if (!machineId) { setErr(t("members.machineRequired")); return; } // Computer is required: an unbound agent only runs via the legacy broadcast-to-all-daemons fallback (tech-debt I77) — force an explicit pick.
-    const nm = name.trim();
+    const nm = name.trim().normalize("NFC");
     if (!nm) { setErr(t("members.nameRequired")); return; }
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(nm) || nm.length > 64) { setErr(t("members.nameInvalid")); return; } // @mention handle must be machine-safe; keep regex + length 64 in sync with core.ts AGENT_NAME_RE / MAX_AGENT_NAME
+    if (!/^\p{L}[\p{L}\p{N}_-]*$/u.test(nm) || [...nm].length > 64) { setErr(t("members.nameInvalid")); return; } // Unicode @handle grammar; keep regex + length 64 in sync with core.ts AGENT_NAME_RE / MAX_AGENT_NAME
     setBusy(true); setErr("");
     try {
       const r = await api("POST", "/api/agents", { machineId, name: nm, description: desc.trim() || null, projectPath: projectPath.trim() || null, runtime, model: model && model !== LOCAL_DEFAULT ? model : null, reasoning: thinkingLevels.length ? (reasoning || null) : null, fastMode: fast });
