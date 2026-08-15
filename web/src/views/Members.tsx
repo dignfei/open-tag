@@ -416,9 +416,9 @@ function DmsTab({ id, name }: { id: string; name: string }) {
 
 // Reminders tab (read-only; agents create reminders via CLI, humans can only view)
 const REM_STATUS: Record<string, string> = {
-  scheduled: i18n.t("members.remScheduled"),
-  fired: i18n.t("members.remFired"),
-  cancelled: i18n.t("members.remCancelled"),
+  scheduled: "members.remScheduled",
+  fired: "members.remFired",
+  cancelled: "members.remCancelled",
 };
 function RemindersTab({ id, name }: { id: string; name: string }) {
   const { t } = useTranslation();
@@ -431,7 +431,7 @@ function RemindersTab({ id, name }: { id: string; name: string }) {
       : rem.map((r) => (
         <div className="card" key={r.id}>
           <div className="who">{r.content}{r.recurrence ? <span className="meta"> · {t("members.recurrenceEvery", { seconds: r.recurrence })}</span> : null}</div>
-          <div className="meta"><span className={"rem-badge " + (r.status || "scheduled")}>{REM_STATUS[r.status] || r.status}</span> · {fmtDateTime(r.remindAt)}</div>
+          <div className="meta"><span className={"rem-badge " + (r.status || "scheduled")}>{REM_STATUS[r.status] ? t(REM_STATUS[r.status]) : r.status}</span> · {fmtDateTime(r.remindAt)}</div>
         </div>
       ))}</div>;
 }
