@@ -44,8 +44,9 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
   if (p === "/api/agents" && method === "POST") {
     if (!await requireCap(serverId, userId, "manageAgents")) return (sendErr(res, 403, "need manageAgents capability"), true);
     const b = await readJson(req);
-    if (!b.name) return (sendErr(res, 400, "name required"), true);
-    if (invalidAgentName(b.name)) return (sendErr(res, 400, INVALID_AGENT_NAME), true);
+    if (typeof b.name !== "string" || !b.name.trim()) return (sendErr(res, 400, "name required"), true);
+    const name = b.name.trim().normalize("NFC");
+    if (invalidAgentName(name)) return (sendErr(res, 400, INVALID_AGENT_NAME), true);
     if (descTooLong(b.description)) return (sendErr(res, 400, DESC_TOO_LONG), true);
     // A new agent must be created bound to a machine — an unbound (machineId=null) agent can only run via the
     // legacy broadcastToDaemons fallback (any daemon connected to the server may pick it up), which is a
@@ -63,12 +64,12 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
     // race-proof (no SELECT-then-INSERT gap): a duplicate live name inserts no row → friendly 409. Soft-deleted
     // names are excluded by the index predicate, so a deleted agent's name can be reused.
     const [agent] = await db.insert(schema.agents).values({
-      serverId, name: b.name, displayName: b.displayName || b.name, description: b.description ?? null,
+      serverId, name, displayName: b.displayName || name, description: b.description ?? null,
       model: b.model || null, runtime: b.runtime || "claude", machineId: b.machineId, projectPath: resolvedProject.projectPath,
       runtimeConfig: { provider: b.provider ?? "default", model: b.model ?? null, reasoningEffort: b.reasoning ?? null, mode: b.fastMode ? "fast" : "default" },
       envVars: b.envVars ?? {}, executionMode: b.fastMode ? "fast" : "auto", creatorType: "user", creatorId: userId,
     }).onConflictDoNothing({ target: [schema.agents.serverId, schema.agents.name], where: isNull(schema.agents.deletedAt) }).returning();
-    if (!agent) return (sendErr(res, 409, `an agent named "${b.name}" already exists`), true);
+    if (!agent) return (sendErr(res, 409, `an agent named "${name}" already exists`), true);
     const all = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.name, "all"))))[0];
     // Join #all at the channel watermark, NOT lastReadSeq=0 — a newly created agent must not have its first
     // `message check` flooded with the channel's entire pre-existing history (it only needs messages from now on).

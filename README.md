@@ -209,6 +209,7 @@ docker rm -f ot-minio   # cleanup
 
 - Channels, threads, DMs, reactions, attachments, and full-text message search
 - Agent lifecycle management with start, stop, reset, sleep, wake, and session resume
+- Unicode agent handles, including Chinese names, with consistent @mention and DM routing
 - Shared task board with claiming, assignment, status transitions, and task threads — per-channel and per-DM task numbering (DMs get their own board)
 - Persistent per-agent workspaces with file browsing and `MEMORY.md`
 - Collapsible per-message Agent Activity (thinking, status, and tool calls), with quiet handled/error receipts when a run sends no public message

@@ -38,9 +38,8 @@ export const DESC_TOO_LONG = `Description must be at most ${MAX_DESCRIPTION} cha
 export const descTooLong = (s: unknown): boolean => typeof s === "string" && s.length > MAX_DESCRIPTION;
 
 // Agent name is the @mention handle: used directly as @<name> (parseMentions re, CLI, web) and as the
-// dm:@<name> lookup key (resolveTarget). It must be a machine-safe identifier — spaces / punctuation /
-// emoji / leading digits break mention parsing and DM target resolution. Display-friendly text (Chinese,
-// spaces, emoji) belongs in displayName, which is unconstrained and drives all human-facing rendering.
+// dm:@<name> lookup key (resolveTarget). Unicode letters are valid, while spaces / punctuation / emoji
+// remain displayName-only because they would make mention tokenization ambiguous.
 // `agents.name` is an unbounded `text` column, so the length cap is enforced here, not by the DB.
 // Trailing / repeated hyphens (`bot--ok`, `my-agent-`) are intentionally allowed: they are harmless for
 // @mention / DM resolution since the mention charset itself includes `-`; GitHub-style "no trailing
@@ -48,9 +47,9 @@ export const descTooLong = (s: unknown): boolean => typeof s === "string" && s.l
 // inline mirror in web/src/views/Members.tsx (CreateAgentModal) — there is no shared module because the
 // web bundle must not import server code (it would pull in db/drizzle).
 export const MAX_AGENT_NAME = 64;
-export const AGENT_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
-export const INVALID_AGENT_NAME = `Agent name must be 1-${MAX_AGENT_NAME} characters, start with a letter, and contain only letters, numbers, hyphens, and underscores`;
-export const invalidAgentName = (s: unknown): boolean => typeof s !== "string" || s.length > MAX_AGENT_NAME || !AGENT_NAME_RE.test(s);
+export const AGENT_NAME_RE = /^\p{L}[\p{L}\p{N}_-]*$/u;
+export const INVALID_AGENT_NAME = `Agent name must be 1-${MAX_AGENT_NAME} characters, start with a letter, and contain only letters from any language, numbers, hyphens, and underscores`;
+export const invalidAgentName = (s: unknown): boolean => typeof s !== "string" || [...s].length > MAX_AGENT_NAME || !AGENT_NAME_RE.test(s);
 
 /** Create a workspace (server/community): create server + creator as owner + default #all channel + add owner to channel. Shared by dev-login / POST /api/servers / seed. */
 export async function createServer(name: string, slug: string, ownerId: string) {
@@ -105,11 +104,11 @@ export async function addChannelMembers(channelId: string, members: { type: "use
 
 export function parseMentions(content: string, members: Member[]) {
   const found = new Map<string, Member>();
-  const re = /@([A-Za-z0-9_\u4e00-\u9fa5-]+)/g;
+  const re = /@([\p{L}\p{N}_-]+)/gu;
   let m: RegExpExecArray | null;
   while ((m = re.exec(content))) {
-    const name = m[1]!;
-    const hit = members.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    const name = m[1]!.normalize("NFC").toLowerCase();
+    const hit = members.find((x) => x.name.normalize("NFC").toLowerCase() === name);
     if (hit) found.set(hit.id, hit);
   }
   return [...found.values()];
