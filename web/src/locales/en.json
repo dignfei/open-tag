@@ -458,6 +458,7 @@
     "uploadFile": "Upload file",
     "sendAsTaskTitle": "Send as task (⌘/Ctrl+Shift+Enter)",
     "sendTitle": "Send (Enter)",
+    "sendFailed": "Could not send message: {{error}}",
     "copyLink": "Copy link",
     "copyMarkdown": "Copy Markdown",
     "unsave": "Unsave",
