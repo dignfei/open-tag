@@ -92,7 +92,7 @@ Lets any machine join a server without cloning the repo: `npx @fancyboi999/open-
 ### Data / shared (`src/`)
 
 - `db/schema.ts` — **Data model** (Drizzle). Canonical field truth; change data structures here first.
-- `db/index.ts` / `db/seed.ts` — DB handle (drizzle + postgres) / seed data.
+- `db/index.ts` / `db/seed.ts` / `db/seed-dev.ts` / `db/qa-seed.ts` — DB handle (drizzle + postgres) / seed data; every standalone seed imports `env.ts` before `db/index.ts` so `ENV_FILE` selects the intended database.
 - `redis.ts` — `nextSeq` (INCR `seq:{server}`) / `nextTaskNumber(serverId, channel?)` (INCR a scope key from `taskNumberKey`: `tasknum:dm:{channelId}` for DMs, `tasknum:{server}` otherwise) / `reconcileCounters` (boot-time durability guard: advances seq + every task-number scope to the live Postgres max) / `publishEvent` (pub/sub real-time fan-out, SSE subscribes `events:{server}`) / `pokeAgent` (RPUSH `wake:{agentId}`, wakes agent's BLPOP long-poll).
 - `env.ts` — Loads root `.env` (**must be the first import** in any module that reads `process.env`; does not override variables already set in the shell environment).
 - `log.ts` — Unified logger writing JSONL to `~/.open-tag/logs/` and human-readable console lines to stdout/stderr: non-error server/daemon logs go to stdout so platform loggers do not classify debug/info as errors, true errors go to stderr, and CLI logs stay on stderr so agent-readable command stdout remains clean.
