@@ -12,6 +12,17 @@ export function canSendComposerDraft(text: string, pendingAtts: { status?: strin
   return pendingAtts.every((a) => a.status === "done") && (!!text.trim() || pendingAtts.length > 0);
 }
 
+const mentionNameKey = (name: string) => name.normalize("NFC").toLowerCase();
+export function mentionedAgents(text: string, agents: Agent[]): Agent[] {
+  const targets = new Map<string, Agent>();
+  for (const m of text.matchAll(/@([\p{L}\p{N}_-]+)/gu)) {
+    const key = mentionNameKey(m[1]!);
+    const agent = agents.find((a) => mentionNameKey(a.name) === key);
+    if (agent) targets.set(agent.id, agent);
+  }
+  return [...targets.values()];
+}
+
 // Shared message composer for channels, DMs, and threads. Owns text, attachment upload
 // (button / paste / drag-drop, with per-file progress), @mention autocomplete, and send.
 // The only per-context difference is "As Task" (channels/DMs only), gated by `allowAsTask` —
@@ -50,7 +61,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   const reach = useMemo<{ kind: "off" | "sleep" | "work" | "on"; names: string } | null>(() => {
     const targets = new Map<string, Agent>();
     if (dmAgent) targets.set(dmAgent.id, dmAgent);
-    for (const m of text.matchAll(/@([\p{L}\p{N}_-]+)/gu)) { const a = agents.find((x) => x.name === m[1]); if (a) targets.set(a.id, a); }
+    for (const agent of mentionedAgents(text, agents)) targets.set(agent.id, agent);
     const allTargets = [...targets.values()];
     const offline = allTargets.filter((a) => {
       if (!a.machineId) return true;
