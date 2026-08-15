@@ -7,6 +7,10 @@ import { IconFile } from "../icons.tsx";
 
 const isImage = (m?: string) => !!m && m.startsWith("image/");
 
+export function canSendComposerDraft(text: string, pendingAtts: { status?: string }[]): boolean {
+  return pendingAtts.every((a) => a.status === "done") && (!!text.trim() || pendingAtts.length > 0);
+}
+
 // Shared message composer for channels, DMs, and threads. Owns text, attachment upload
 // (button / paste / drag-drop, with per-file progress), @mention autocomplete, and send.
 // The only per-context difference is "As Task" (channels/DMs only), gated by `allowAsTask` —
@@ -66,12 +70,13 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   ) : null;
   const reachStatusChip = reach?.kind === "off" ? t("chat.machineOfflineComposerPlaceholder", { names: reach.names }) : "";
   const effectivePlaceholder = reachPlaceholder ?? (allowAsTask && asTask ? t("chat.taskPlaceholder") : placeholder);
+  const canSend = !!channelId && canSendComposerDraft(text, pendingAtts);
 
   const send = async (forceTask?: boolean) => {
-    const v = text.trim(); if ((!v && !pendingAtts.length) || !channelId) return;
+    const v = text.trim(); if (!canSend) return;
     const asT = allowAsTask && (forceTask ?? asTask); // ⌘/Ctrl+Shift+Enter forces task; threads (allowAsTask=false) never send as task
     setText(""); setAtQuery(null); setAsTask(false);
-    const ids = pendingAtts.filter((a) => a.status === "done" || !a.status).map((a) => a.id); setPendingAtts([]); // only fully-uploaded attachments
+    const ids = pendingAtts.map((a) => a.id); setPendingAtts([]); // canSend guarantees the full queue is uploaded
     await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
   };
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>) => { if (e.target.files?.length) addFiles(Array.from(e.target.files)); e.target.value = ""; };
@@ -166,7 +171,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
           </div>
           <div className="cb-right">
             {allowAsTask && <label className={"astask" + (asTask ? " on" : "")} title={t("chat.sendAsTaskTitle")}><input type="checkbox" checked={asTask} onChange={(e) => setAsTask(e.target.checked)} />{t("chat.asTask")}</label>}
-            <button className="send-btn im" title={t("chat.sendTitle")} disabled={!text.trim() && !pendingAtts.length} onClick={() => send()}><Send size={15} className="im-nudge-up" /></button>
+            <button className="send-btn im" title={t("chat.sendTitle")} disabled={!canSend} onClick={() => send()}><Send size={15} className="im-nudge-up" /></button>
           </div>
         </div>
       </div>
