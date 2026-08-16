@@ -479,6 +479,28 @@ export async function finalizeAgentActivityRun(serverId: string, agentId: string
     if (updated) await publish(serverId, { type: "message:updated", message: updated });
     return;
   }
+  if (state === "error") {
+    // Crash floods: a single unexpected termination can fail many buffered turns at once,
+    // each burning a visible "needs attention" receipt into the channel (live 2026-08-17).
+    // Coalesce: at most one error receipt per agent+channel per window; later failed runs
+    // merge into it, keeping single-failure visibility without the spam.
+    const WINDOW_MS = 10 * 60 * 1000;
+    const recent = (await db.select().from(schema.messages).where(and(
+      eq(schema.messages.serverId, serverId),
+      eq(schema.messages.channelId, channelId),
+      eq(schema.messages.senderId, agentId),
+      eq(schema.messages.messageType, "agent_activity_receipt"),
+      eq(schema.messages.agentActivityState, "error"),
+      gt(schema.messages.createdAt, new Date(Date.now() - WINDOW_MS)),
+    )).orderBy(desc(schema.messages.seq)).limit(1))[0];
+    if (recent) {
+      await db.update(schema.messages).set({ agentActivity: [...(recent.agentActivity ?? []), ...pending.items], updatedAt: new Date() }).where(eq(schema.messages.id, recent.id));
+      await assignActivityRows(pending.rows, recent.id);
+      const updated = await serializeMessageById(recent.id);
+      if (updated) await publish(serverId, { type: "message:updated", message: updated });
+      return;
+    }
+  }
   await createMessage({
     serverId, channelId, senderType: "agent", senderId: agentId, senderName: agentName,
     content: "", messageType: "agent_activity_receipt",
