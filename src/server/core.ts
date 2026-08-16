@@ -549,7 +549,10 @@ export async function resolveTarget(serverId: string, target: string, selfAgentI
     if (!peerId || !peerType) return null;
     baseChannelId = await getOrCreateDM(serverId, selfAgentId, "agent", peerId, peerType);
   } else {
-    const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.name, t.replace(/^#/, "")))))[0];
+    // Deleted channels must not be addressable: agents remembering a #name from their own
+    // history would otherwise keep posting into an invisible zombie channel (live 2026-08-16:
+    // #实验频道 posted into ~50min after soft-delete). Surface TARGET_FAILED so the agent adapts.
+    const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.name, t.replace(/^#/, "")), isNull(schema.channels.deletedAt))))[0];
     baseChannelId = ch?.id ?? null;
   }
   if (!baseChannelId) return null;
