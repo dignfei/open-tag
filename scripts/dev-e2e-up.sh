@@ -33,7 +33,9 @@ for i in $(seq 1 30); do curl -sf "http://localhost:$PORT/" >/dev/null 2>&1 && b
 curl -sf "http://localhost:$PORT/" >/dev/null 2>&1 || { echo "✗ server did not become healthy — see $RUN/logs/dev-e2e-server.log"; exit 1; }
 
 echo "→ starting daemon…"
-nohup npx tsx src/daemon/index.ts --api-key "$KEY" > "$RUN/logs/dev-e2e-daemon.log" 2>&1 & echo $! > "$RUN/dev-e2e-daemon.pid"
+# IS_SANDBOX=1: lets claude accept --dangerously-skip-permissions under root/sudo (the daemon
+# defaults it itself; declared here too so the E2E daemon's startup env carries it explicitly).
+nohup env IS_SANDBOX=1 npx tsx src/daemon/index.ts --api-key "$KEY" > "$RUN/logs/dev-e2e-daemon.log" 2>&1 & echo $! > "$RUN/dev-e2e-daemon.pid"
 for i in $(seq 1 30); do [ -s "$RUN/machine-id" ] && break; sleep 1; done
 
 echo "→ seeding dev-bot…"; npm run seed:dev || true

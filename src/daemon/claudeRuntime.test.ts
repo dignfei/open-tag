@@ -9,6 +9,8 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildClaudeArgs, claudeRuntime } from "./claudeRuntime.js";
+import { AgentManager, type AgentConfig } from "./agentManager.js";
+import { ResourceBudget } from "./resourceBudget.js";
 
 const PATH_KEY = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 
@@ -19,6 +21,15 @@ function has(args: string[], flag: string): boolean { return args.includes(flag)
 function valAfter(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined;
 }
+// Full-suite parallelism can delay spawning the fake claude well beyond one second.
+// This guards the test harness only; the production delivery ACK timeout is unchanged.
+const waitFor = async (predicate: () => boolean, timeoutMs = 5_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for runtime callback");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
 
 test("no model, no effort → CLI uses local default (neither --model nor --effort passed)", () => {
   const args = BASE();
@@ -93,6 +104,47 @@ test("stdin runtime rejects initial admission exactly once when Claude cannot sp
     assert.equal(admissions.length, 1);
   } finally {
     session?.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("daemon spawn passes IS_SANDBOX=1 and the permission-bypass flags to claude", async () => {
+  const root = fs.mkdtempSync(path.join(tmpdir(), "open-tag-claude-spawn-args-"));
+  const executable = path.join(root, "claude");
+  const dumpFile = path.join(root, "spawn-dump.json");
+  const agentId = "claude-spawn-args";
+  const config: AgentConfig = {
+    agentId,
+    name: "claude",
+    displayName: "Claude",
+    description: "test",
+    runtime: "claude",
+    serverUrl: "http://localhost:7777",
+    serverId: "server-1",
+    agentToken: "test-token",
+  };
+  const mgr = new AgentManager(() => {}, {
+    dataDir: root,
+    binDir: root,
+    deliverDebounceMs: 0,
+    budget: new ResourceBudget({ availableMemMB: () => 999999 }),
+    runtimeResolver: () => claudeRuntime,
+  });
+  try {
+    fs.writeFileSync(executable, `#!${process.execPath}\nconst fs = require("node:fs");\nfs.writeFileSync(process.env.SPAWN_DUMP, JSON.stringify({ argv: process.argv.slice(2), isSandbox: process.env.IS_SANDBOX ?? null }));\nconsole.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-spawn-args" }));\nconst readline = require("node:readline");\nconst rl = readline.createInterface({ input: process.stdin });\nrl.on("line", (line) => {\n  let request;\n  try { request = JSON.parse(line); } catch { return; }\n  if (request && request.type === "user") console.log(JSON.stringify({ type: "result", session_id: "claude-spawn-args", subtype: "success", is_error: false, duration_ms: 1, num_turns: 1, result: "ok" }));\n});\n`);
+    fs.chmodSync(executable, 0o755);
+    process.env.SPAWN_DUMP = dumpFile;
+    await mgr.start(agentId, config);
+    await waitFor(() => {
+      try { return fs.readFileSync(dumpFile, "utf8").length > 0; } catch { return false; }
+    });
+    const dump = JSON.parse(fs.readFileSync(dumpFile, "utf8"));
+    assert.ok(has(dump.argv, "--dangerously-skip-permissions"), "claude must start with --dangerously-skip-permissions");
+    assert.equal(valAfter(dump.argv, "--permission-mode"), "bypassPermissions", "claude must start with --permission-mode bypassPermissions");
+    assert.equal(dump.isSandbox, "1", "daemon-spawned claude must see IS_SANDBOX=1 (claude refuses the bypass flag under root without it)");
+  } finally {
+    delete process.env.SPAWN_DUMP;
+    mgr.stopAll();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
