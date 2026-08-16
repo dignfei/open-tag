@@ -542,7 +542,10 @@ export async function resolveTarget(serverId: string, target: string, selfAgentI
     // The peer user must belong to THIS server (the agent lookup below is already server-scoped); otherwise an
     // agent could open a cross-tenant DM to any global username. users.name is global, so gate on serverMembers.
     const u = uRow && (await db.select().from(schema.serverMembers).where(and(eq(schema.serverMembers.serverId, serverId), eq(schema.serverMembers.userId, uRow.id))))[0] ? uRow : undefined;
-    const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.name, peer), eq(schema.agents.serverId, serverId))))[0];
+    // Only non-deleted agents occupy workspace names (agents_name_uniq partial index): a
+    // soft-deleted same-named twin must never win dm:@ resolution, or messages land in the
+    // dead agent's DM and the live one never receives them (live 2026-08-16).
+    const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.name, peer), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt))))[0];
     const peerId = u?.id ?? a?.id; const peerType = u ? "user" : a ? "agent" : null;
     if (!peerId || !peerType) return null;
     baseChannelId = await getOrCreateDM(serverId, selfAgentId, "agent", peerId, peerType);
