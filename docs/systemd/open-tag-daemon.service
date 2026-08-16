@@ -58,6 +58,12 @@ Environment=OPEN_TAG_SERVER_URL=http://localhost:7777
 #   EnvironmentFile=/etc/open-tag/daemon.env
 Environment=OPEN_TAG_API_KEY=change-me
 
+# Agents run permission-free by design (claude --dangerously-skip-permissions, codex
+# approval_policy=never). The claude CLI refuses that flag under root/sudo unless the process
+# declares an external sandbox, so declare it for the daemon and every runtime it spawns.
+# (The daemon also defaults IS_SANDBOX=1 itself; this line keeps the requirement explicit.)
+Environment=IS_SANDBOX=1
+
 # OPEN_TAG_HOME: where agent workspaces, MEMORY.md files, logs, and uploads are stored.
 # Defaults to ~/.open-tag (i.e. /home/ubuntu/.open-tag for User=ubuntu).
 # Override here if you need a different path:

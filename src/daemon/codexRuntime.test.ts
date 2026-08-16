@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { codexRuntime } from "./codexRuntime.js";
+import { buildCodexArgs, codexRuntime } from "./codexRuntime.js";
 import { AgentManager, type AgentConfig } from "./agentManager.js";
 import { ResourceBudget } from "./resourceBudget.js";
 
@@ -129,6 +129,65 @@ test("running Codex turn/start rejection NACKs, clears the fence, and executes t
       try { return Number(readFileSync(turnCountFile, "utf8")) >= 3; } catch { return false; }
     });
   } finally {
+    mgr.stopAll();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("buildCodexArgs pins the validated app-server defaults", () => {
+  assert.deepEqual(buildCodexArgs(), [
+    "app-server", "--listen", "stdio://",
+    "-c", "web_search_mode=live",
+    "-c", "approval_policy=never",
+    "-c", "sandbox_mode=danger-full-access",
+    "-c", "model_reasoning_summary=detailed",
+  ]);
+});
+
+test("daemon spawn passes the default app-server args and IS_SANDBOX=1 to codex", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-codex-spawn-args-"));
+  const executable = path.join(root, "codex");
+  const dumpFile = path.join(root, "spawn-dump.json");
+  const agentId = "codex-spawn-args";
+  const config: AgentConfig = {
+    agentId,
+    name: "codex",
+    displayName: "Codex",
+    description: "test",
+    runtime: "codex",
+    model: "default",
+    serverUrl: "http://localhost:7777",
+    serverId: "server-1",
+    agentToken: "test-token",
+  };
+  const mgr = new AgentManager(() => {}, {
+    dataDir: root,
+    binDir: root,
+    deliverDebounceMs: 0,
+    budget: new ResourceBudget({ availableMemMB: () => 999999 }),
+    runtimeResolver: () => codexRuntime,
+  });
+  try {
+    writeFileSync(executable, `#!${process.execPath}\nconst fs = require("node:fs");\nfs.writeFileSync(process.env.SPAWN_DUMP, JSON.stringify({ argv: process.argv.slice(2), isSandbox: process.env.IS_SANDBOX ?? null }));\nconst readline = require("node:readline");\nconst rl = readline.createInterface({ input: process.stdin });\nrl.on("line", (line) => {\n  const request = JSON.parse(line);\n  if (request.id === undefined) return;\n  if (request.method === "initialize") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }));\n  else if (request.method === "thread/start") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { thread: { id: "thread-args" } } }));\n  else if (request.method === "turn/start") {\n    console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { turn: { id: "turn-args" } } }));\n    console.log(JSON.stringify({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-args", turn: { status: "completed" } } }));\n  }\n});\n`);
+    chmodSync(executable, 0o755);
+    process.env.SPAWN_DUMP = dumpFile;
+    await mgr.start(agentId, config);
+    await waitFor(() => {
+      try { return readFileSync(dumpFile, "utf8").length > 0; } catch { return false; }
+    });
+    const dump = JSON.parse(readFileSync(dumpFile, "utf8"));
+    for (const value of [
+      "web_search_mode=live",
+      "approval_policy=never",
+      "sandbox_mode=danger-full-access",
+      "model_reasoning_summary=detailed",
+    ]) {
+      const i = dump.argv.indexOf(value);
+      assert.ok(i > 0 && dump.argv[i - 1] === "-c", `expected spawn argv to contain -c ${value}`);
+    }
+    assert.equal(dump.isSandbox, "1", "daemon-spawned runtimes must see IS_SANDBOX=1 (claude root check)");
+  } finally {
+    delete process.env.SPAWN_DUMP;
     mgr.stopAll();
     rmSync(root, { recursive: true, force: true });
   }

@@ -379,6 +379,10 @@ export class AgentManager {
     });
     const env: NodeJS.ProcessEnv = {
       ...process.env, FORCE_COLOR: "0",
+      // The claude CLI refuses --dangerously-skip-permissions under root/sudo unless the process
+      // declares an external sandbox (IS_SANDBOX=1). Daemon agents run permission-free by design,
+      // so declare it here; root-hosted daemons would otherwise fail every claude agent at spawn.
+      IS_SANDBOX: "1",
       PATH: `${this.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       OPEN_TAG_SERVER_URL: config.serverUrl, OPEN_TAG_AGENT_ID: agentId, OPEN_TAG_AGENT_TOKEN: config.agentToken ?? "",
     };

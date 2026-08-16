@@ -8,7 +8,21 @@ import { initialTurnAdmission, protocolAdmission, type ProtocolAdmission, type R
 
 const MAX = 2000;
 const clip = (s: unknown) => String(s ?? "").slice(0, MAX);
-const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+
+// Default app-server argv (validated against codex 0.144): the interactive CLI flags --search and
+// --dangerously-bypass-approvals-and-sandbox are NOT accepted by `app-server` (clap rejects them
+// and the agent never starts), so these -c overrides are their app-server equivalents: live web
+// search, no approval prompts, no sandbox, and detailed reasoning summaries for the trajectory view.
+export function buildCodexArgs(): string[] {
+  return [
+    "app-server", "--listen", "stdio://",
+    "-c", "web_search_mode=live",
+    "-c", "approval_policy=never",
+    "-c", "sandbox_mode=danger-full-access",
+    "-c", "model_reasoning_summary=detailed",
+  ];
+}
 function extractThreadId(r: any): string {
   return (r && (r.threadId || r.thread?.id || r.thread_id || r.id)) || "";
 }
@@ -133,7 +147,7 @@ export const codexRuntime: Runtime = {
   start(opts: StartOpts, cb: RuntimeCallbacks): RuntimeSession {
     // Do not override CODEX_HOME: use the user's default ~/.codex (which contains subscription auth state).
     // Per-agent CODEX_HOME isolation + auth/MCP injection is a future improvement.
-    const proc = spawnSafe("codex", ["app-server", "--listen", "stdio://"], { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], env: opts.env });
+    const proc = spawnSafe("codex", buildCodexArgs(), { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], env: opts.env });
     const client = new CodexClient(proc, cb);
     const admission = initialTurnAdmission(cb);
     let ready = false;
