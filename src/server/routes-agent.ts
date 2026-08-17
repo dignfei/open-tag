@@ -223,8 +223,15 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const out: any[] = [];
     for (const cm of cms) {
       const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, cm.channelId)))[0];
-      if (!ch || ch.deletedAt) continue;
-      const unread = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, cm.channelId), ne(schema.messages.messageType, "agent_activity_receipt"), gt(schema.messages.seq, cm.lastReadSeq))).orderBy(asc(schema.messages.seq)).limit(100);
+      if (!ch) continue;
+      // Deleted channel: surface ONLY system messages (the deletion notice) so member agents
+      // learn the channel is gone; history stays invisible and sends stay TARGET_FAILED.
+      const unread = await db.select().from(schema.messages).where(and(
+        eq(schema.messages.channelId, cm.channelId),
+        ne(schema.messages.messageType, "agent_activity_receipt"),
+        gt(schema.messages.seq, cm.lastReadSeq),
+        ...(ch.deletedAt ? [eq(schema.messages.messageType, "system")] : []),
+      )).orderBy(asc(schema.messages.seq)).limit(100);
       const visibility = await classifyInboxVisibility({ agentId: agent.id, messages: unread, durableDeliveryBlock, purpose: "inbox" });
       capabilityPaused ||= visibility.capabilityPaused;
       topologyBlocked ||= visibility.topologyBlocked;
@@ -705,7 +712,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
   if (p === "/agent-api/profile/show" && method === "GET") {
     const who = (url.searchParams.get("handle") || "").replace(/^@/, "");
     const a = who
-      ? (await db.select().from(schema.agents).where(and(eq(schema.agents.serverId, serverId), eq(schema.agents.name, who))))[0]
+      ? (await db.select().from(schema.agents).where(and(eq(schema.agents.serverId, serverId), eq(schema.agents.name, who), isNull(schema.agents.deletedAt))))[0]
       : (await db.select().from(schema.agents).where(eq(schema.agents.id, agent.id)))[0];
     if (a) return (sendJson(res, 200, { type: "agent", name: a.name, displayName: a.displayName, description: a.description, runtime: a.runtime, model: a.model, status: a.status }), true);
     const u = who ? (await db.select().from(schema.users).where(eq(schema.users.name, who)))[0] : null;

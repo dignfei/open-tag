@@ -1,5 +1,7 @@
 // Message core: seq assignment, @mention parsing, DB write, SSE broadcast (human), wake delivery (agent), target resolution.
-import { and, eq, ne, desc, gt, inArray, like, sql, or, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, ne, desc, gt, lte, inArray, like, sql, or, isNull, isNotNull } from "drizzle-orm";
+import { releaseAgentDeliveryAdmission } from "./agentDeliveryAdmission.js";
+import { hasPendingAgentDelivery } from "./agentDeliveryAck.js";
 import { db, schema } from "../db/index.js";
 import { nextSeq, publish } from "./realtime.js";
 import { nextTaskNumber } from "../redis.js";
@@ -478,6 +480,28 @@ export async function finalizeAgentActivityRun(serverId: string, agentId: string
     if (updated) await publish(serverId, { type: "message:updated", message: updated });
     return;
   }
+  if (state === "error") {
+    // Crash floods: a single unexpected termination can fail many buffered turns at once,
+    // each burning a visible "needs attention" receipt into the channel (live 2026-08-17).
+    // Coalesce: at most one error receipt per agent+channel per window; later failed runs
+    // merge into it, keeping single-failure visibility without the spam.
+    const WINDOW_MS = 10 * 60 * 1000;
+    const recent = (await db.select().from(schema.messages).where(and(
+      eq(schema.messages.serverId, serverId),
+      eq(schema.messages.channelId, channelId),
+      eq(schema.messages.senderId, agentId),
+      eq(schema.messages.messageType, "agent_activity_receipt"),
+      eq(schema.messages.agentActivityState, "error"),
+      gt(schema.messages.createdAt, new Date(Date.now() - WINDOW_MS)),
+    )).orderBy(desc(schema.messages.seq)).limit(1))[0];
+    if (recent) {
+      await db.update(schema.messages).set({ agentActivity: [...(recent.agentActivity ?? []), ...pending.items], updatedAt: new Date() }).where(eq(schema.messages.id, recent.id));
+      await assignActivityRows(pending.rows, recent.id);
+      const updated = await serializeMessageById(recent.id);
+      if (updated) await publish(serverId, { type: "message:updated", message: updated });
+      return;
+    }
+  }
   await createMessage({
     serverId, channelId, senderType: "agent", senderId: agentId, senderName: agentName,
     content: "", messageType: "agent_activity_receipt",
@@ -541,12 +565,18 @@ export async function resolveTarget(serverId: string, target: string, selfAgentI
     // The peer user must belong to THIS server (the agent lookup below is already server-scoped); otherwise an
     // agent could open a cross-tenant DM to any global username. users.name is global, so gate on serverMembers.
     const u = uRow && (await db.select().from(schema.serverMembers).where(and(eq(schema.serverMembers.serverId, serverId), eq(schema.serverMembers.userId, uRow.id))))[0] ? uRow : undefined;
-    const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.name, peer), eq(schema.agents.serverId, serverId))))[0];
+    // Only non-deleted agents occupy workspace names (agents_name_uniq partial index): a
+    // soft-deleted same-named twin must never win dm:@ resolution, or messages land in the
+    // dead agent's DM and the live one never receives them (live 2026-08-16).
+    const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.name, peer), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt))))[0];
     const peerId = u?.id ?? a?.id; const peerType = u ? "user" : a ? "agent" : null;
     if (!peerId || !peerType) return null;
     baseChannelId = await getOrCreateDM(serverId, selfAgentId, "agent", peerId, peerType);
   } else {
-    const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.name, t.replace(/^#/, "")))))[0];
+    // Deleted channels must not be addressable: agents remembering a #name from their own
+    // history would otherwise keep posting into an invisible zombie channel (live 2026-08-16:
+    // #实验频道 posted into ~50min after soft-delete). Surface TARGET_FAILED so the agent adapts.
+    const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.name, t.replace(/^#/, "")), isNull(schema.channels.deletedAt))))[0];
     baseChannelId = ch?.id ?? null;
   }
   if (!baseChannelId) return null;
@@ -636,6 +666,75 @@ async function sysTaskMsg(serverId: string, channelId: string, content: string, 
   await publish(serverId, { type: "message", channelId, message: { ...serializeMsg(m!, [], []), channelType: ch?.type ?? null } });
   await publishThreadUpdated(serverId, ch, actor?.id ?? null, "system");
   return m!;
+}
+
+/** Channel-deletion notice for member agents: a system message inside the (just deleted)
+ *  channel plus assigned attention per agent, so each member is woken and sees it via
+ *  message check — the agent plane surfaces ONLY post-deletion system messages for deleted
+ *  channels (routes-agent check), so members learn the channel is gone without regaining
+ *  history visibility, and sends stay rejected by resolveTarget (live 2026-08-16 #实验频道). */
+export async function notifyChannelDeleted(serverId: string, channelId: string, channelName: string, agentIds: string[]): Promise<void> {
+  if (!agentIds.length) return;
+  const m = await sysTaskMsg(serverId, channelId, `频道 #${channelName} 已被删除 / channel #${channelName} has been deleted`);
+  await ensureReplyRecipients({ serverId, channelId, messageId: m.id, recipients: agentIds.map((agentId) => ({ agentId, attention: "assigned" as const })) });
+}
+
+/** Watchdog sweeper: recover deliveries orphaned by a server restart. The admitted row
+ *  survives in DB while no live process awaits the agent's reply, so every later dispatch
+ *  short-circuits "delivered" (conversationTurnDispatch) and the turn never actually reaches
+ *  the agent (live 2026-08-16 18:20 stall). Release the admission + re-ready the turn; the
+ *  scheduler redelivers on its next tick, and a system notice keeps the recovery visible. */
+const ORPHAN_DELIVERY_GRACE_MS = 60_000;
+export async function sweepOrphanedAgentDeliveries(at = new Date()): Promise<number> {
+  const cutoff = new Date(at.getTime() - ORPHAN_DELIVERY_GRACE_MS);
+  const rows = await db.select({
+    messageId: schema.agentMessageDecisions.messageId,
+    agentId: schema.agentMessageDecisions.agentId,
+    turnId: schema.conversationTurns.id,
+    channelId: schema.conversationTurns.channelId,
+    serverId: schema.conversationTurns.serverId,
+  }).from(schema.agentMessageDecisions)
+    .innerJoin(schema.conversationTurns, eq(schema.conversationTurns.triggerMessageId, schema.agentMessageDecisions.messageId))
+    .where(and(
+      isNotNull(schema.agentMessageDecisions.deliveryAdmittedAt),
+      lte(schema.agentMessageDecisions.deliveryAdmittedAt, cutoff),
+      isNull(schema.agentMessageDecisions.replyMessageId),
+      inArray(schema.conversationTurns.state, ["dispatching", "active", "dispatched"]),
+    ));
+  let recovered = 0;
+  for (const r of rows) {
+    const deliveryId = `${r.turnId}:${r.agentId}`;
+    if (hasPendingAgentDelivery(deliveryId)) continue; // a live process still owns this delivery
+    const short = r.turnId.slice(0, 8);
+    // At most ONE auto-recovery per turn: a prior 🛠/⛔ notice for this turn means we already
+    // recovered it and it stalled AGAIN (delivered but the agent never answered — a slow or
+    // wedged agent, not a lost delivery). Re-releasing would loop forever and flood the
+    // channel (live 2026-08-17: 482 notices for one turn). Escalate to a human instead.
+    const prior = await db.select({ id: schema.messages.id }).from(schema.messages)
+      .where(and(eq(schema.messages.channelId, r.channelId), eq(schema.messages.messageType, "system"), like(schema.messages.content, `%turn ${short}%`))).limit(1);
+    if (prior.length) {
+      const esc = await db.update(schema.conversationTurns).set({ state: "blocked", dispatchLeaseUntil: null, updatedAt: at })
+        .where(and(eq(schema.conversationTurns.id, r.turnId), inArray(schema.conversationTurns.state, ["ready", "dispatching", "active", "dispatched"])))
+        .returning({ id: schema.conversationTurns.id });
+      if (esc.length) await sysTaskMsg(r.serverId, r.channelId, `⛔ 监工:turn ${short} 恢复后仍无活动,已停止自动恢复,需人工处理(supervisor: repeated delivery stall escalated to human)`);
+      recovered++;
+      continue;
+    }
+    await releaseAgentDeliveryAdmission({ deliveryId, messageId: r.messageId, agentId: r.agentId, seq: 0 });
+    await db.update(schema.conversationTurns).set({ state: "ready", dispatchAfter: at, dispatchLeaseUntil: null, updatedAt: at })
+      .where(and(eq(schema.conversationTurns.id, r.turnId), inArray(schema.conversationTurns.state, ["dispatching", "active", "dispatched"])));
+    await sysTaskMsg(r.serverId, r.channelId, `🛠 监工:投递许可超时已自动恢复(supervisor: orphaned delivery admission released, turn ${short})`);
+    recovered++;
+  }
+  return recovered;
+}
+
+export function startStuckTurnSweeper(): void {
+  const tick = () => sweepOrphanedAgentDeliveries()
+    .then((n) => { if (n > 0) log.info("stuck-turn sweeper recovered orphaned deliveries", { n }); })
+    .catch((e) => log.warn("stuck-turn sweeper failed (continuing)", { detail: String((e as Error)?.message ?? e) }));
+  setInterval(tick, 60_000);
+  void tick();
 }
 
 export async function convertMessageToTask(serverId: string, messageId: string, by?: { type: "user" | "agent"; id: string }) {

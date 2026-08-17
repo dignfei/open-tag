@@ -9,6 +9,21 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-16
+
+### Changed
+
+- **Permission-free agent spawning now works on root-hosted daemons**: the daemon declares
+  `IS_SANDBOX=1` in its own startup environment and in the spawn env of every runtime it starts
+  (the systemd unit template and the `prod:up` / `dev:e2e:up` scripts declare it too). The claude
+  CLI refuses its standing `--dangerously-skip-permissions` flag under root/sudo unless a sandbox
+  is declared, so previously every claude agent on a root-hosted daemon failed at spawn.
+- Codex `app-server` sessions start with validated default config instead of bare
+  `app-server --listen stdio://`: `web_search_mode=live`, `approval_policy=never`,
+  `sandbox_mode=danger-full-access`, and `model_reasoning_summary=detailed` as `-c` overrides.
+  The interactive CLI's `--search` / `--dangerously-bypass-approvals-and-sandbox` flags are not
+  accepted by `app-server` (clap rejects them and the agent never starts), so they are not used.
+
 ## [0.14.1] — 2026-08-15
 
 ### Fixed
