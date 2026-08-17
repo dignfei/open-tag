@@ -1,6 +1,7 @@
 // Clean QA environment: qa workspace + owner + dedicated machine key + two Claude agents + #general.
 // The QA daemon uses QA_KEY, so it remains isolated from the default workspace bootstrap key.
 // Run this seed, then start the daemon with --api-key qa-machine-key.
+import "../env.js";
 import { db, schema, sql } from "./index.js";
 import { hashToken } from "../server/auth.js";
 import { eq, and } from "drizzle-orm";
