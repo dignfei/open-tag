@@ -2,6 +2,7 @@
 import { and, eq, ne, desc, gt, lte, inArray, like, sql, or, isNull, isNotNull } from "drizzle-orm";
 import { releaseAgentDeliveryAdmission } from "./agentDeliveryAdmission.js";
 import { hasPendingAgentDelivery } from "./agentDeliveryAck.js";
+import { senderAllowedByPolicy } from "./triggerPolicy.js";
 import { db, schema } from "../db/index.js";
 import { nextSeq, publish } from "./realtime.js";
 import { nextTaskNumber } from "../redis.js";
@@ -394,7 +395,14 @@ export async function createMessage(opts: {
   // A resolvable mention is an active work edge for human and agent senders. The reach pool still preserves
   // the channel boundary: public spaces may pull in workspace peers; private/DM spaces never pull outsiders.
   if (ch && canAutoJoinMentionedMembers(opts.senderType) && opts.content.includes("@")) {
-    const joined = await autoJoinMentioned(opts.serverId, opts.channelId, opts.content, members, await mentionAutoJoinPool(opts.serverId, ch), seq - 1);
+    let joined = await autoJoinMentioned(opts.serverId, opts.channelId, opts.content, members, await mentionAutoJoinPool(opts.serverId, ch), seq - 1);
+    // Trigger-source policy: an agent's @ must not drag a protected (sealed/sanitized) agent
+    // into the channel as a command target; humans always may.
+    if (opts.senderType === "agent" && joined.length) {
+      const rows = await db.select({ id: schema.agents.id, incomingMode: schema.agents.incomingMode, commandWhitelist: schema.agents.commandWhitelist })
+        .from(schema.agents).where(inArray(schema.agents.id, joined.map((m) => m.id)));
+      joined = joined.filter((m) => { const r = rows.find((x) => x.id === m.id); return !r || senderAllowedByPolicy(r, "agent", opts.senderId ?? ""); });
+    }
     if (joined.length) members = [...members, ...joined];
   }
   const mentions = parseMentions(opts.content, members);
