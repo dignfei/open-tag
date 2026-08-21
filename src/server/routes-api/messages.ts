@@ -3,11 +3,12 @@ import type { ServerCtx } from "./ctx.js";
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, lt } from "drizzle-orm";
 import { db, schema } from "../../db/index.js";
 import { addReaction, checkSaved, createMessage, listSaved, removeReaction, saveMessage, unsaveMessage } from "../core.js";
+import { requireCap } from "../capabilities.js";
 import { parseMsgPageParams } from "../messagePage.js";
 import { publish } from "../realtime.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
 import { attachMentions, userChannels } from "./shared.js";
-import { canUserReadChannel, canUserWriteChannel } from "../channelAccess.js";
+import { canUserReadChannel, canUserWriteChannel, isAgentDmAuditChannel } from "../channelAccess.js";
 
 export async function handleMessages(ctx: ServerCtx): Promise<boolean> {
   const { req, res, url, method, p, userId, serverId } = ctx;
@@ -160,6 +161,11 @@ export async function handleMessages(ctx: ServerCtx): Promise<boolean> {
   if (p === "/api/messages/sync" && method === "GET") {
     const since = Number(url.searchParams.get("since") ?? 0);
     const { chs, joined } = await userChannels(serverId, userId);
+    if (await requireCap(serverId, userId, "manageAgents")) {
+      for (const channel of chs) {
+        if (!joined.has(channel.id) && await isAgentDmAuditChannel(serverId, channel.id)) joined.add(channel.id);
+      }
+    }
     const chIds = chs.filter((c) => joined.has(c.id)).map((c) => c.id);
     if (!chIds.length) return (sendJson(res, 200, { messages: [], maxSeq: since }), true);
     const msgs = await db.select().from(schema.messages).where(and(eq(schema.messages.serverId, serverId), gt(schema.messages.seq, since), inArray(schema.messages.channelId, chIds))).orderBy(asc(schema.messages.seq)).limit(500);
