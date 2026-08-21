@@ -69,6 +69,7 @@ async function finish(channelId: string, stream: string, state: "handled" | "err
     detail: stream,
   }, { channelId, streamId, runSeq: 1 });
   await finalizeAgentActivityRun(serverId, actorId, channelId, streamId, actorId === agentId ? "Error Agent" : "Other Agent", state);
+  return streamId;
 }
 
 function receipts(channelId: string, actorId: string, state?: "handled" | "error") {
@@ -104,13 +105,14 @@ async function main() {
   errors = await receipts(primaryChannelId, agentId, "error");
   check("repeated receipt finalization does not duplicate activity", errors.length === 1 && errors[0]?.agentActivity.length === 3);
 
-  await finish(primaryChannelId, "grouped-error", "error");
+  const groupedStreamId = await finish(primaryChannelId, "grouped-error", "error");
   errors = await receipts(primaryChannelId, agentId, "error");
   activityRows = await db.select().from(schema.agentActivityLog).where(and(
     eq(schema.agentActivityLog.serverId, serverId),
     eq(schema.agentActivityLog.agentId, agentId),
     eq(schema.agentActivityLog.channelId, primaryChannelId),
   ));
+  check("grouped receipt follows the latest stream", errors[0]?.agentActivityStreamId === groupedStreamId);
   check("grouped source activity stays bound to the receipt", errors[0]?.agentActivity.length === 4 && activityRows.length === 4 && activityRows.every((row) => row.messageId === errors[0]?.id));
 
   await finish(primaryChannelId, "handled", "handled");
