@@ -3,11 +3,12 @@ import type { ServerCtx } from "./ctx.js";
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, lt } from "drizzle-orm";
 import { db, schema } from "../../db/index.js";
 import { addReaction, checkSaved, createMessage, listSaved, removeReaction, saveMessage, unsaveMessage } from "../core.js";
+import { requireCap } from "../capabilities.js";
 import { parseMsgPageParams } from "../messagePage.js";
 import { publish } from "../realtime.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
 import { attachMentions, userChannels } from "./shared.js";
-import { canUserReadChannel } from "../channelAccess.js";
+import { canUserReadChannel, canUserWriteChannel, isAgentDmAuditChannel } from "../channelAccess.js";
 
 export async function handleMessages(ctx: ServerCtx): Promise<boolean> {
   const { req, res, url, method, p, userId, serverId } = ctx;
@@ -119,7 +120,7 @@ export async function handleMessages(ctx: ServerCtx): Promise<boolean> {
     const b = await readJson(req);
     const hasAtt = Array.isArray(b.attachmentIds) && b.attachmentIds.length > 0;
     if (!b.channelId || (!b.content && !hasAtt)) return (sendErr(res, 400, "channelId + content (or attachmentIds) required"), true);
-    if (!(await canUserReadChannel(serverId, b.channelId, userId))) return (sendErr(res, 403, "forbidden"), true); // invariant 3: non-members must not write to private/DM channels
+    if (!(await canUserWriteChannel(serverId, b.channelId, userId))) return (sendErr(res, 403, "forbidden"), true); // invariant 3: non-members must not write to private/DM channels
     const u = (await db.select().from(schema.users).where(eq(schema.users.id, userId)))[0];
     const msg = await createMessage({ serverId, channelId: b.channelId, senderType: "user", senderId: userId, senderName: u!.name, content: b.content || "", asTask: !!b.asTask, attachmentIds: hasAtt ? b.attachmentIds : undefined });
     return (sendJson(res, 200, { ok: true, id: msg.id, seq: msg.seq }), true);
@@ -134,7 +135,7 @@ export async function handleMessages(ctx: ServerCtx): Promise<boolean> {
     const m = (await db.select().from(schema.messages).where(and(eq(schema.messages.id, react[1]!), eq(schema.messages.serverId, serverId))))[0];
     if (!m) return (sendErr(res, 404, "message not found"), true);
     // invariant 3: non-members must not react to messages in private/DM channels (IDOR-B2)
-    if (!(await canUserReadChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "message not found"), true);
+    if (!(await canUserWriteChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "message not found"), true);
     const out = method === "POST" ? await addReaction(serverId, react[1]!, "user", userId, emoji) : await removeReaction(serverId, react[1]!, "user", userId, emoji);
     return (sendJson(res, 200, out), true);
   }
@@ -146,7 +147,7 @@ export async function handleMessages(ctx: ServerCtx): Promise<boolean> {
     if (!isUuid(amark[1]!)) return (sendErr(res, 404, "action not found"), true);
     const m = (await db.select().from(schema.messages).where(and(eq(schema.messages.id, amark[1]!), eq(schema.messages.serverId, serverId))))[0];
     if (!m) return (sendErr(res, 404, "action not found"), true);
-    if (!(await canUserReadChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "action not found"), true); // invariant 3 (IDOR-B4): non-members of a private/DM channel can't mark its action cards (404 hides existence, matches reactions B2)
+    if (!(await canUserWriteChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "action not found"), true); // invariant 3 (IDOR-B4): non-members of a private/DM channel can't mark its action cards (404 hides existence, matches reactions B2)
     const meta = m.actionMetadata as any;
     if (!meta || meta.kind !== "action-card") return (sendErr(res, 400, "not an action card"), true);
     if (meta.state === "executed") return (sendJson(res, 200, { ok: true, already: true }), true); // idempotent
@@ -160,6 +161,11 @@ export async function handleMessages(ctx: ServerCtx): Promise<boolean> {
   if (p === "/api/messages/sync" && method === "GET") {
     const since = Number(url.searchParams.get("since") ?? 0);
     const { chs, joined } = await userChannels(serverId, userId);
+    if (await requireCap(serverId, userId, "manageAgents")) {
+      for (const channel of chs) {
+        if (!joined.has(channel.id) && await isAgentDmAuditChannel(serverId, channel.id)) joined.add(channel.id);
+      }
+    }
     const chIds = chs.filter((c) => joined.has(c.id)).map((c) => c.id);
     if (!chIds.length) return (sendJson(res, 200, { messages: [], maxSeq: since }), true);
     const msgs = await db.select().from(schema.messages).where(and(eq(schema.messages.serverId, serverId), gt(schema.messages.seq, since), inArray(schema.messages.channelId, chIds))).orderBy(asc(schema.messages.seq)).limit(500);

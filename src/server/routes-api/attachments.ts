@@ -5,8 +5,8 @@ import { db, schema } from "../../db/index.js";
 import { parseUpload } from "../attachments.js";
 import { verifyUser } from "../auth.js";
 import { can, requireCap } from "../capabilities.js";
-import { canUserReadChannel } from "../channelAccess.js";
-import { readObject } from "../storage.js";
+import { canUserReadChannel, canUserWriteChannel } from "../channelAccess.js";
+import { deleteObject, readObject } from "../storage.js";
 import { bearer, isUuid, sendErr, sendJson } from "../util.js";
 
 /**
@@ -127,9 +127,17 @@ export async function handleAttachments(ctx: ServerCtx): Promise<boolean> {
   const { req, res, method, p, userId, serverId } = ctx;
   if (p === "/api/attachments/upload" && method === "POST") {
     const { fields, files } = await parseUpload(req);
+    const channelId = fields.channelId?.trim() || null;
+    if (channelId && !(await canUserWriteChannel(serverId, channelId, userId))) {
+      const cleanup = await Promise.allSettled(files.map((file) => deleteObject(file.storageKey)));
+      if (cleanup.some((result) => result.status === "rejected")) {
+        return (sendErr(res, 500, "upload cleanup failed"), true);
+      }
+      return (sendErr(res, 403, "forbidden"), true);
+    }
     const out: any[] = [];
     for (const f of files) {
-      const [a] = await db.insert(schema.attachments).values({ serverId, channelId: fields.channelId || null, uploaderType: "user", uploaderId: userId, filename: f.filename, mimeType: f.mimeType, sizeBytes: f.size, storageKey: f.storageKey }).returning();
+      const [a] = await db.insert(schema.attachments).values({ serverId, channelId, uploaderType: "user", uploaderId: userId, filename: f.filename, mimeType: f.mimeType, sizeBytes: f.size, storageKey: f.storageKey }).returning();
       out.push({ attachmentId: a!.id, id: a!.id, filename: a!.filename, mimeType: a!.mimeType, sizeBytes: a!.sizeBytes });
     }
     return (sendJson(res, 200, { attachments: out, attachmentId: out[0]?.attachmentId }), true);

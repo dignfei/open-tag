@@ -108,7 +108,7 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
       else if (msg.type === "agent:session" && msg.agentId) { await db.update(schema.agents).set({ sessionId: msg.sessionId }).where(eq(schema.agents.id, msg.agentId)); await publish(serverId!, { type: "agent:session", agentId: msg.agentId, sessionId: msg.sessionId }); } // forward to the frontend
       else if (msg.type === "agent:trajectory" && msg.agentId) {
         const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
-        await publish(serverId!, { type: "trajectory", agentId: msg.agentId, name: a?.name, entries: msg.entries ?? [] });
+        await publish(serverId!, { type: "trajectory", agentId: msg.agentId, channelId: msg.channelId, name: a?.name, entries: msg.entries ?? [] });
         const entries = [];
         for (const e of msg.entries ?? []) {
           const item = await logActivity(serverId!, msg.agentId, e, { channelId: msg.channelId, streamId: msg.streamId, runSeq: e.runSeq });
@@ -211,7 +211,7 @@ async function onAgentUpdate(serverId: string, msg: any): Promise<void> {
   if (msg.type === "agent:activity") patch.activity = msg.activity;
   await db.update(schema.agents).set(patch).where(eq(schema.agents.id, msg.agentId));
   const a = (await db.select().from(schema.agents).where(eq(schema.agents.id, msg.agentId)))[0];
-  if (a) await publish(serverId, { type: "agent", id: a.id, name: a.name, status: a.status, activity: a.activity, detail: msg.detail ?? "" });
+  if (a) await publish(serverId, { type: "agent", id: a.id, name: a.name, status: a.status, activity: a.activity, channelId: msg.channelId, detail: msg.detail ?? "" });
   if (msg.type === "agent:activity") {
     const item = await logActivity(serverId, msg.agentId, { kind: "status", activity: msg.activity, detail: msg.detail, runSeq: msg.runSeq }, { channelId: msg.channelId, streamId: msg.streamId, runSeq: msg.runSeq });
     if (item && msg.channelId && msg.streamId) await publish(serverId, { type: "agent:reply", agentId: msg.agentId, channelId: msg.channelId, streamId: msg.streamId, name: a?.displayName ?? a?.name, op: "activity", entries: [item] });

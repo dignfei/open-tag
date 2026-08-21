@@ -5,7 +5,7 @@ import { db, schema } from "../../db/index.js";
 import { TASK_STATUSES, claimTask, convertMessageToTask, createMessage, deleteTask, setTaskStatus, unclaimTask } from "../core.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
 import { attachMentions } from "./shared.js";
-import { canUserReadChannel } from "../channelAccess.js";
+import { canUserReadChannel, canUserWriteChannel } from "../channelAccess.js";
 
 export async function handleTasks(ctx: ServerCtx): Promise<boolean> {
   const { req, res, method, p, userId, serverId } = ctx;
@@ -19,7 +19,7 @@ export async function handleTasks(ctx: ServerCtx): Promise<boolean> {
     return (sendJson(res, 200, { tasks: await attachMentions(rows) }), true);
   }
   if (tch && method === "POST") { // New Task: bulk create tasks, body { tasks: [{ title }] }
-    if (!(await canUserReadChannel(serverId, tch[1]!, userId))) return (sendErr(res, 403, "forbidden"), true); // invariant 3: non-members must not create tasks in private/DM channels
+    if (!(await canUserWriteChannel(serverId, tch[1]!, userId))) return (sendErr(res, 403, "forbidden"), true); // invariant 3: non-members must not create tasks in private/DM channels
     const b = await readJson(req);
     const titles = (Array.isArray(b.tasks) ? b.tasks : []).map((t: any) => String(t?.title ?? "").trim()).filter(Boolean);
     if (!titles.length) return (sendErr(res, 400, "tasks[].title required"), true);
@@ -48,7 +48,7 @@ export async function handleTasks(ctx: ServerCtx): Promise<boolean> {
     if (!isUuid(String(b.messageId))) return (sendErr(res, 404, "message not found"), true); // non-uuid would throw casting into the uuid column → 500
     const m = (await db.select().from(schema.messages).where(and(eq(schema.messages.id, b.messageId), eq(schema.messages.serverId, serverId))))[0];
     if (!m) return (sendErr(res, 404, "message not found"), true);
-    if (!(await canUserReadChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "message not found"), true); // invariant 3 (IDOR-B4): non-members can't promote a private/DM channel's message
+    if (!(await canUserWriteChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "message not found"), true); // invariant 3 (IDOR-B4): non-members can't promote a private/DM channel's message
     const t = await convertMessageToTask(serverId, b.messageId, { type: "user", id: userId });
     return (t ? sendJson(res, 200, { ok: true, id: t.id, taskNumber: t.taskNumber }) : sendErr(res, 404, "message not found"), true);
   }
@@ -58,7 +58,7 @@ export async function handleTasks(ctx: ServerCtx): Promise<boolean> {
     if (!isUuid(taskId!)) return (sendErr(res, 404, "task not found"), true);
     const m = (await db.select().from(schema.messages).where(and(eq(schema.messages.id, taskId!), eq(schema.messages.serverId, serverId))))[0];
     if (!m) return (sendErr(res, 404, "task not found"), true);
-    if (!(await canUserReadChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "task not found"), true); // invariant 3 (IDOR-B4): non-members can't claim/unclaim/status a private/DM channel's task
+    if (!(await canUserWriteChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "task not found"), true); // invariant 3 (IDOR-B4): non-members can't claim/unclaim/status a private/DM channel's task
     let r;
     if (action === "claim") {
       r = await claimTask(serverId, taskId!, "user", userId);
@@ -73,7 +73,7 @@ export async function handleTasks(ctx: ServerCtx): Promise<boolean> {
     if (!isUuid(tdel[1]!)) return (sendErr(res, 404, "task not found"), true);
     const m = (await db.select().from(schema.messages).where(and(eq(schema.messages.id, tdel[1]!), eq(schema.messages.serverId, serverId))))[0];
     if (!m) return (sendErr(res, 404, "task not found"), true);
-    if (!(await canUserReadChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "task not found"), true); // invariant 3 (IDOR-B4): non-members can't delete a private/DM channel's task
+    if (!(await canUserWriteChannel(serverId, m.channelId, userId))) return (sendErr(res, 404, "task not found"), true); // invariant 3 (IDOR-B4): non-members can't delete a private/DM channel's task
     const r = await deleteTask(serverId, tdel[1]!);
     return (r ? sendJson(res, 200, { ok: true }) : sendErr(res, 404, "task not found"), true);
   }

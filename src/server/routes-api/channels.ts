@@ -6,7 +6,7 @@ import { requireCap } from "../capabilities.js";
 import { addChannelMembers, getOrCreateDM, getOrCreateThread } from "../core.js";
 import { publish } from "../realtime.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
-import { canUserReadChannel } from "../channelAccess.js";
+import { canonicalDmParticipantIds, canUserReadChannel, canUserWriteChannel, classifyAgentDm, isAgentDmAuditChannel } from "../channelAccess.js";
 import { userChannels } from "./shared.js";
 
 const notSentBy = (userId: string) => or(isNull(schema.messages.senderId), ne(schema.messages.senderId, userId));
@@ -68,18 +68,24 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
   // Thread follow/unfollow/done/undone. follow = join as member (channelMember); done = per-user mark as complete, removes from inbox.
   if (p === "/api/channels/threads/follow" && method === "POST") {
     const tid = (await readJson(req).catch(() => ({})))?.threadChannelId;
-    if (tid) await db.insert(schema.channelMembers).values({ channelId: String(tid), memberType: "user", memberId: userId }).onConflictDoNothing();
+    if (!isUuid(String(tid ?? ""))) return (sendErr(res, 404, "thread not found"), true);
+    if (!(await canUserWriteChannel(serverId, String(tid), userId))) return (sendErr(res, 403, "forbidden"), true);
+    await db.insert(schema.channelMembers).values({ channelId: String(tid), memberType: "user", memberId: userId }).onConflictDoNothing();
     return (sendJson(res, 200, { ok: true }), true);
   }
   if (p === "/api/channels/threads/unfollow" && method === "POST") {
     const tid = (await readJson(req).catch(() => ({})))?.threadChannelId;
-    if (tid) await db.delete(schema.channelMembers).where(and(eq(schema.channelMembers.channelId, String(tid)), eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
+    if (!isUuid(String(tid ?? ""))) return (sendErr(res, 404, "thread not found"), true);
+    if (!(await canUserWriteChannel(serverId, String(tid), userId))) return (sendErr(res, 403, "forbidden"), true);
+    await db.delete(schema.channelMembers).where(and(eq(schema.channelMembers.channelId, String(tid)), eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
     return (sendJson(res, 200, { ok: true }), true);
   }
   if ((p === "/api/channels/threads/done" || p === "/api/channels/threads/undone") && method === "POST") {
     const tid = (await readJson(req).catch(() => ({})))?.threadChannelId;
+    if (!isUuid(String(tid ?? ""))) return (sendErr(res, 404, "thread not found"), true);
+    if (!(await canUserWriteChannel(serverId, String(tid), userId))) return (sendErr(res, 403, "forbidden"), true);
     const doneAt = p.endsWith("/done") ? new Date() : null;
-    if (tid) await db.update(schema.channelMembers).set({ threadDoneAt: doneAt }).where(and(eq(schema.channelMembers.channelId, String(tid)), eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
+    await db.update(schema.channelMembers).set({ threadDoneAt: doneAt }).where(and(eq(schema.channelMembers.channelId, String(tid)), eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
     return (sendJson(res, 200, { ok: true }), true);
   }
   const cthreads = /^\/api\/channels\/([^/]+)\/threads$/.exec(p);
@@ -90,7 +96,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     const parent = (await db.select().from(schema.messages).where(and(eq(schema.messages.id, b.parentMessageId), eq(schema.messages.serverId, serverId))))[0];
     if (!parent) return (sendErr(res, 404, "parent message not found"), true);
     // Channel visibility gate — non-members must not create threads on private/DM channels (IDOR-B3)
-    if (!(await canUserReadChannel(serverId, parent.channelId, userId))) return (sendErr(res, 403, "forbidden"), true);
+    if (!(await canUserWriteChannel(serverId, parent.channelId, userId))) return (sendErr(res, 403, "forbidden"), true);
     const th = await getOrCreateThread(serverId, b.parentMessageId, { type: "user", id: userId });
     const replies = await db.select({ createdAt: schema.messages.createdAt }).from(schema.messages).where(eq(schema.messages.channelId, th.id));
     const parts = await db.select().from(schema.channelMembers).where(eq(schema.channelMembers.channelId, th.id));
@@ -99,7 +105,12 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
   if (cthreads && method === "GET") {
     // Channel visibility gate — non-members must not enumerate thread metadata on private/DM channels (IDOR-B3)
     if (!(await canUserReadChannel(serverId, cthreads[1]!, userId))) return (sendErr(res, 403, "forbidden"), true);
-    const pids = (url.searchParams.get("parentMessageIds") || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const requestedParentIds = (url.searchParams.get("parentMessageIds") || "").split(",").map((s) => s.trim()).filter(isUuid);
+    if (!requestedParentIds.length) return (sendJson(res, 200, {}), true);
+    const parents = await db.select({ id: schema.messages.id }).from(schema.messages).where(and(
+      eq(schema.messages.serverId, serverId), eq(schema.messages.channelId, cthreads[1]!), inArray(schema.messages.id, requestedParentIds),
+    ));
+    const pids = parents.map((parent) => parent.id);
     if (!pids.length) return (sendJson(res, 200, {}), true);
     const threads = await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.type, "thread"), inArray(schema.channels.parentMessageId, pids)));
     const map: Record<string, any> = {};
@@ -126,19 +137,44 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
   if (p === "/api/channels/dm" && method === "GET") {
     const myMems = await db.select().from(schema.channelMembers).where(and(eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
     const myIds = new Set(myMems.map((m) => m.channelId));
-    const dms = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.type, "dm")))).filter((c) => !c.deletedAt && myIds.has(c.id));
+    const allDms = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.type, "dm"))))
+      .filter((channel) => !channel.deletedAt && !channel.parentMessageId);
+    if (!allDms.length) return (sendJson(res, 200, []), true);
+    const dmMembers = await db.select().from(schema.channelMembers).where(inArray(schema.channelMembers.channelId, allDms.map((dm) => dm.id)));
+    const pairIds = [...new Set(allDms.flatMap((dm) => canonicalDmParticipantIds(dm.name) ?? []))];
+    const agentsAll = pairIds.length ? await db.select().from(schema.agents).where(inArray(schema.agents.id, pairIds)) : [];
+    const usersAll = pairIds.length ? await db.select().from(schema.users).where(inArray(schema.users.id, pairIds)) : [];
+    const canAudit = await requireCap(serverId, userId, "manageAgents");
+    const auditIds = new Set<string>();
+    const dms = [];
+    for (const dm of allDms) {
+      const members = dmMembers.filter((member) => member.channelId === dm.id);
+      const state = classifyAgentDm(serverId, dm.name, members, agentsAll, usersAll);
+      if (state === "valid" && canAudit) {
+        auditIds.add(dm.id);
+        dms.push(dm);
+      } else if (state === "regular" && myIds.has(dm.id) && await canUserReadChannel(serverId, dm.id, userId)) {
+        dms.push(dm);
+      }
+    }
     if (!dms.length) return (sendJson(res, 200, []), true);
-    const dmMembers = await db.select().from(schema.channelMembers).where(inArray(schema.channelMembers.channelId, dms.map((d) => d.id)));
-    const agentsAll = await db.select().from(schema.agents).where(eq(schema.agents.serverId, serverId));
-    const usersAll = await db.select().from(schema.users);
     const out = dms.map((c) => {
-      const peer = dmMembers.find((m) => m.channelId === c.id && !(m.memberType === "user" && m.memberId === userId));
-      const src = peer ? (peer.memberType === "agent" ? agentsAll.find((a) => a.id === peer.memberId) : usersAll.find((u) => u.id === peer.memberId)) : null;
+      const audit = auditIds.has(c.id);
+      const pair = canonicalDmParticipantIds(c.name)!;
+      const auditAgents = audit
+        ? pair.map((id) => agentsAll.find((agent) => agent.id === id)!).sort((a, b) => a.name.localeCompare(b.name))
+        : [];
+      const peerId = audit ? null : pair.find((id) => id !== userId) ?? null;
+      const peerAgent = peerId ? agentsAll.find((agent) => agent.id === peerId && agent.serverId === serverId && !agent.deletedAt) : null;
+      const peerUser = peerId ? usersAll.find((user) => user.id === peerId) : null;
+      const src = peerAgent ?? peerUser ?? null;
       return {
-        id: c.id, name: src?.name ?? c.name, type: "dm", description: c.description, createdAt: c.createdAt, lastMessageAt: c.lastMessageAt,
-        peerId: peer?.memberId ?? null, peerName: src?.name ?? null, peerDisplayName: src?.displayName ?? null, peerType: peer?.memberType ?? null, peerAvatarUrl: (src as any)?.avatarUrl ?? null,
+        id: c.id, name: audit ? auditAgents.map((agent) => agent.name).join(" ⇄ ") : (src?.name ?? c.name),
+        type: "dm", description: c.description, createdAt: c.createdAt, lastMessageAt: c.lastMessageAt, audit,
+        peerId, peerName: src?.name ?? null, peerDisplayName: src?.displayName ?? null,
+        peerType: peerAgent ? "agent" : peerUser ? "user" : null, peerAvatarUrl: (src as any)?.avatarUrl ?? null,
       };
-    }).filter((o) => o.peerId); // deleted agents leave DM (channelMembers removed) → no peer → exclude from list (do not show DMs with deleted agents, no more "unknown user")
+    }).filter((item) => item.audit || item.peerId);
     return (sendJson(res, 200, out), true);
   }
   if (p === "/api/channels/unread" && method === "GET") {
@@ -232,6 +268,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     if (!await requireCap(serverId, userId, "manageChannels")) return (sendErr(res, 403, "need manageChannels capability"), true); // members must not add anyone (incl. themselves) to a channel — this is the private-channel invite path
     const own = (await db.select({ id: schema.channels.id }).from(schema.channels).where(and(eq(schema.channels.id, cmem[1]!), eq(schema.channels.serverId, serverId))))[0];
     if (!own) return (sendErr(res, 404, "channel not found"), true); // and only this tenant's channels
+    if (await isAgentDmAuditChannel(serverId, cmem[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     const b = await readJson(req);
     const mt = b.userId ? "user" : "agent"; const mid = b.userId || b.agentId;
     if (!mid) return (sendErr(res, 400, "agentId or userId required"), true);
@@ -246,6 +283,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     if (!await requireCap(serverId, userId, "manageChannels")) return (sendErr(res, 403, "need manageChannels capability"), true);
     const own = (await db.select({ id: schema.channels.id }).from(schema.channels).where(and(eq(schema.channels.id, cmem[1]!), eq(schema.channels.serverId, serverId))))[0];
     if (!own) return (sendErr(res, 404, "channel not found"), true);
+    if (await isAgentDmAuditChannel(serverId, cmem[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     const b = await readJson(req).catch(() => ({}));
     const mt = b.userId ? "user" : "agent"; const mid = b.userId || b.agentId;
     if (mid && !isUuid(String(mid))) return (sendErr(res, 400, "invalid agentId or userId"), true); // channel_members.member_id is a uuid column
@@ -323,6 +361,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     const archTarget = (await db.select({ type: schema.channels.type }).from(schema.channels)
       .where(and(eq(schema.channels.id, cops[1]!), eq(schema.channels.serverId, serverId))))[0];
     if (archTarget?.type === "thread") return (sendErr(res, 403, "thread channels cannot be archived directly"), true);
+    if (await isAgentDmAuditChannel(serverId, cops[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     await db.update(schema.channels).set({ archivedAt: cops[2] === "archive" ? new Date() : null }).where(and(eq(schema.channels.id, cops[1]!), eq(schema.channels.serverId, serverId)));
     await publish(serverId, { type: "channel:updated", channelId: cops[1]! });
     return (sendJson(res, 200, { ok: true }), true);
@@ -336,6 +375,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     const targetCh = (await db.select({ type: schema.channels.type }).from(schema.channels)
       .where(and(eq(schema.channels.id, cone[1]!), eq(schema.channels.serverId, serverId))))[0];
     if (targetCh?.type === "thread") return (sendErr(res, 403, "thread channels cannot be modified directly"), true);
+    if (await isAgentDmAuditChannel(serverId, cone[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     if (method === "DELETE") {
       await db.update(schema.channels).set({ deletedAt: new Date() }).where(and(eq(schema.channels.id, cone[1]!), eq(schema.channels.serverId, serverId))); // soft delete
       await publish(serverId, { type: "channel:deleted", channelId: cone[1]! });
@@ -355,6 +395,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     if (!isUuid(chId!)) return (sendErr(res, 404, "channel not found"), true);
     const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.id, chId!), eq(schema.channels.serverId, serverId))))[0];
     if (!ch) return (sendErr(res, 404, "channel not found"), true);
+    if (action !== "read" && await isAgentDmAuditChannel(serverId, chId!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     if (action === "join") {
       if (ch.type === "private") return (sendErr(res, 403, "private channel is invite-only"), true); // private channels require owner/admin invitation (cmem POST); self-join is not allowed
       if (ch.type === "thread") return (sendErr(res, 403, "thread channels cannot be joined directly — use the thread follow API"), true);

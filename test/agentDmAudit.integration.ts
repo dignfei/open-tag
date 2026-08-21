@@ -1,0 +1,283 @@
+// Integration test: read-only manager oversight of agent-to-agent DMs.
+// Tests the shared human read/write channel boundary through message routes.
+//
+// EXPECTED BEHAVIOUR:
+//   - A manageAgents holder can read a canonical two-agent DM; a plain member cannot.
+//   - The manager cannot send into the conversation.
+//   - human↔agent DMs stay member-private: even the owner gets 403 when not a member.
+//   - The agent plane is unaffected (canAgentReadChannel has no exemption) — not covered here.
+//
+// Requires infra up: `npm run infra` (pg :5433, redis :6380).
+// Run: ENV_FILE=<env pointing at dev infra> npx tsx test/agentDmAudit.integration.ts
+import "../src/env.js"; // load env before any DB/auth import
+import { EventEmitter } from "node:events";
+import { readdir } from "node:fs/promises";
+import { Readable } from "node:stream";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { and, eq } from "drizzle-orm";
+import { db, schema } from "../src/db/index.ts";
+import { uploadsDir } from "../src/paths.ts";
+import { handleApi } from "../src/server/routes-api/index.ts";
+import { signUser } from "../src/server/auth.ts";
+import { deleteObject } from "../src/server/storage.ts";
+
+const ts = Date.now();
+let serverId = "";
+let ownerId = "", memberId = "";
+let agentDmId = "", humanAgentDmId = "";
+let agentThreadId = "", humanThreadId = "", agentParentId = "", humanParentId = "";
+let a1 = "", a2 = "";
+let ownerToken = "", memberToken = "";
+let failures = 0;
+
+const check = (label: string, cond: boolean) => {
+  console.log(`  ${cond ? "✔" : "✗ FAIL"} ${label}`);
+  if (!cond) failures++;
+};
+
+function makeReq(opts: { method: string; path: string; token: string; serverId: string; body?: object }): IncomingMessage {
+  const bodyStr = opts.body ? JSON.stringify(opts.body) : "";
+  const readable = Readable.from(bodyStr ? [Buffer.from(bodyStr)] : ([] as Buffer[]));
+  return Object.assign(readable, {
+    method: opts.method,
+    url: opts.path,
+    headers: {
+      authorization: `Bearer ${opts.token}`,
+      "x-server-id": opts.serverId,
+      "content-type": "application/json",
+    },
+  }) as unknown as IncomingMessage;
+}
+
+function makeRes(): { res: ServerResponse; getStatus: () => number; getBody: () => string } {
+  let status = 0;
+  let body = "";
+  const emitter = new EventEmitter();
+  const res = Object.assign(emitter, {
+    statusCode: 0,
+    headersSent: false,
+    setHeader(_n: string, _v: unknown) {},
+    writeHead(code: number) {
+      status = code;
+      this.statusCode = code;
+    },
+    end(d?: string | Buffer) {
+      body = d ? String(d) : "";
+      emitter.emit("finish");
+    },
+  }) as unknown as ServerResponse;
+  return { res, getStatus: () => status, getBody: () => body };
+}
+
+async function apiCall(opts: { method: string; path: string; token: string; serverId: string; body?: object }): Promise<{ status: number; body: unknown }> {
+  const PORT = Number(process.env.PORT ?? 7777);
+  const req = makeReq(opts);
+  const { res, getStatus, getBody } = makeRes();
+  const url = new URL(opts.path, `http://localhost:${PORT}`);
+  await handleApi(req, res, url, opts.method);
+  let parsed: unknown;
+  try { parsed = JSON.parse(getBody()); } catch { parsed = getBody(); }
+  return { status: getStatus(), body: parsed };
+}
+
+async function uploadCall(channelId: string): Promise<{ status: number; body: unknown }> {
+  const boundary = `open-tag-agent-dm-${ts}`;
+  const body = Buffer.from([
+    `--${boundary}\r\nContent-Disposition: form-data; name="channelId"\r\n\r\n${channelId}\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="blocked.txt"\r\nContent-Type: text/plain\r\n\r\n`,
+    "blocked upload",
+    `\r\n--${boundary}--\r\n`,
+  ].join(""));
+  const req = Object.assign(Readable.from([body]), {
+    method: "POST",
+    url: "/api/attachments/upload",
+    headers: {
+      authorization: `Bearer ${ownerToken}`,
+      "x-server-id": serverId,
+      "content-type": `multipart/form-data; boundary=${boundary}`,
+      "content-length": String(body.length),
+    },
+  }) as unknown as IncomingMessage;
+  const { res, getStatus, getBody } = makeRes();
+  await handleApi(req, res, new URL("/api/attachments/upload", "http://localhost"), "POST");
+  let parsed: unknown;
+  try { parsed = JSON.parse(getBody()); } catch { parsed = getBody(); }
+  return { status: getStatus(), body: parsed };
+}
+
+async function setup() {
+  const [u1] = await db.insert(schema.users).values({ name: `owner_${ts}`, displayName: "Owner", email: `o_${ts}@t.local` }).returning();
+  const [u2] = await db.insert(schema.users).values({ name: `member_${ts}`, displayName: "Member", email: `m_${ts}@t.local` }).returning();
+  ownerId = u1!.id; memberId = u2!.id;
+
+  const [srv] = await db.insert(schema.servers).values({ name: "T", slug: `t-${ts}`, ownerId }).returning();
+  serverId = srv!.id;
+  await db.insert(schema.serverMembers).values([
+    { serverId, userId: ownerId, role: "owner" },
+    { serverId, userId: memberId, role: "member" },
+  ]);
+
+  const [ag1] = await db.insert(schema.agents).values({ serverId, name: `auda_${ts}`, displayName: `auda_${ts}` }).returning();
+  const [ag2] = await db.insert(schema.agents).values({ serverId, name: `audb_${ts}`, displayName: `audb_${ts}` }).returning();
+  a1 = ag1!.id; a2 = ag2!.id;
+
+  // agent↔agent DM (no human members) — auditable by manageAgents holders
+  const [adm] = await db.insert(schema.channels).values({ serverId, name: `dm:${[a1, a2].sort().join(":")}`, type: "dm" }).returning();
+  agentDmId = adm!.id;
+  await db.insert(schema.channelMembers).values([
+    { channelId: agentDmId, memberType: "agent", memberId: a1 },
+    { channelId: agentDmId, memberType: "agent", memberId: a2 },
+  ]);
+  const [agentParent] = await db.insert(schema.messages).values({ serverId, channelId: agentDmId, senderType: "agent", senderId: a1, senderName: `auda_${ts}`, content: "agent-audit-secret-content", seq: 1 }).returning();
+  agentParentId = agentParent!.id;
+  const [agentThread] = await db.insert(schema.channels).values({ serverId, name: `thread-${agentParentId}`, type: "thread", parentMessageId: agentParentId }).returning();
+  agentThreadId = agentThread!.id;
+  await db.insert(schema.channelMembers).values([
+    { channelId: agentThreadId, memberType: "agent", memberId: a1 },
+    { channelId: agentThreadId, memberType: "agent", memberId: a2 },
+  ]);
+  await db.insert(schema.messages).values({ serverId, channelId: agentThreadId, senderType: "agent", senderId: a2, senderName: `audb_${ts}`, content: "agent-thread-secret-content", seq: 2 });
+
+  // human↔agent DM (member user + agent) — stays member-private even from the owner
+  const [hdm] = await db.insert(schema.channels).values({ serverId, name: `dm:${[memberId, a1].sort().join(":")}`, type: "dm" }).returning();
+  humanAgentDmId = hdm!.id;
+  await db.insert(schema.channelMembers).values([
+    { channelId: humanAgentDmId, memberType: "user", memberId: memberId },
+    { channelId: humanAgentDmId, memberType: "agent", memberId: a1 },
+  ]);
+  const [humanParent] = await db.insert(schema.messages).values({ serverId, channelId: humanAgentDmId, senderType: "user", senderId: memberId, senderName: `member_${ts}`, content: "human-dm-private-content", seq: 3 }).returning();
+  humanParentId = humanParent!.id;
+  const [humanThread] = await db.insert(schema.channels).values({ serverId, name: `thread-${humanParentId}`, type: "thread", parentMessageId: humanParentId }).returning();
+  humanThreadId = humanThread!.id;
+  await db.insert(schema.channelMembers).values([
+    { channelId: humanThreadId, memberType: "user", memberId },
+    { channelId: humanThreadId, memberType: "agent", memberId: a1 },
+  ]);
+  await db.insert(schema.messages).values({ serverId, channelId: humanThreadId, senderType: "user", senderId: memberId, senderName: `member_${ts}`, content: "human-thread-private-content", seq: 4 });
+
+  ownerToken = signUser(ownerId);
+  memberToken = signUser(memberId);
+}
+
+async function cleanup() {
+  const attachments = await db.select({ storageKey: schema.attachments.storageKey }).from(schema.attachments).where(eq(schema.attachments.serverId, serverId));
+  await Promise.allSettled(attachments.map((attachment) => deleteObject(attachment.storageKey)));
+  await db.delete(schema.attachments).where(eq(schema.attachments.serverId, serverId));
+  const chans = await db.select({ id: schema.channels.id }).from(schema.channels).where(eq(schema.channels.serverId, serverId));
+  const msgs = await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.serverId, serverId));
+  for (const m of msgs) await db.delete(schema.messageMentions).where(eq(schema.messageMentions.messageId, m.id));
+  await db.delete(schema.messages).where(eq(schema.messages.serverId, serverId));
+  for (const c of chans) await db.delete(schema.channelMembers).where(eq(schema.channelMembers.channelId, c.id));
+  await db.delete(schema.channels).where(eq(schema.channels.serverId, serverId));
+  for (const id of [a1, a2]) await db.delete(schema.agents).where(eq(schema.agents.id, id));
+  await db.delete(schema.serverMembers).where(eq(schema.serverMembers.serverId, serverId));
+  await db.delete(schema.servers).where(eq(schema.servers.id, serverId));
+  await db.delete(schema.users).where(and(eq(schema.users.id, ownerId)));
+  await db.delete(schema.users).where(and(eq(schema.users.id, memberId)));
+}
+
+async function main() {
+  await setup();
+
+  const r1 = await apiCall({ method: "GET", path: `/api/messages/channel/${agentDmId}`, token: ownerToken, serverId });
+  check("owner can read agent↔agent DM (audit)", r1.status === 200 && JSON.stringify(r1.body).includes("agent-audit-secret-content"));
+
+  const r2 = await apiCall({ method: "GET", path: `/api/messages/channel/${agentDmId}`, token: memberToken, serverId });
+  check("plain member cannot read agent↔agent DM", r2.status === 403);
+
+  const sync = await apiCall({ method: "GET", path: "/api/messages/sync?since=0", token: ownerToken, serverId });
+  check("manager reconnect sync includes audited conversation updates", sync.status === 200 && JSON.stringify(sync.body).includes("agent-audit-secret-content") && JSON.stringify(sync.body).includes("agent-thread-secret-content"));
+
+  const threadRead = await apiCall({ method: "GET", path: `/api/messages/channel/${agentThreadId}`, token: ownerToken, serverId });
+  check("manager can read an existing audited thread", threadRead.status === 200 && JSON.stringify(threadRead.body).includes("agent-thread-secret-content"));
+
+  const threadWrite = await apiCall({ method: "POST", path: "/api/messages", token: ownerToken, serverId, body: { channelId: agentThreadId, content: "manager thread write" } });
+  check("manager cannot reply in an audited thread", threadWrite.status === 403);
+
+  const threadFollow = await apiCall({ method: "POST", path: "/api/channels/threads/follow", token: ownerToken, serverId, body: { threadChannelId: agentThreadId } });
+  check("manager cannot follow an audited thread", threadFollow.status === 403);
+
+  const threadMap = await apiCall({ method: "GET", path: `/api/channels/${agentDmId}/threads?parentMessageIds=${agentParentId},${humanParentId}`, token: ownerToken, serverId });
+  check("thread metadata is limited to the requested conversation", threadMap.status === 200 && JSON.stringify(threadMap.body).includes(agentThreadId) && !JSON.stringify(threadMap.body).includes(humanThreadId));
+
+  const r3 = await apiCall({ method: "POST", path: "/api/messages", token: ownerToken, serverId, body: { channelId: agentDmId, content: "manager must not write" } });
+  check("manager cannot send to an audited DM", r3.status === 403);
+
+  const memberWrite = await apiCall({ method: "POST", path: `/api/channels/${agentDmId}/members`, token: ownerToken, serverId, body: { userId: ownerId } });
+  check("manager cannot add a human participant to an audited DM", memberWrite.status === 403);
+
+  const channelWrite = await apiCall({ method: "PATCH", path: `/api/channels/${agentDmId}`, token: ownerToken, serverId, body: { name: "renamed" } });
+  check("manager cannot rename an audited DM", channelWrite.status === 403);
+
+  const joinWrite = await apiCall({ method: "POST", path: `/api/channels/${agentDmId}/join`, token: ownerToken, serverId });
+  check("manager cannot join an audited DM", joinWrite.status === 403);
+
+  const attachmentsBefore = await db.select({ id: schema.attachments.id }).from(schema.attachments).where(and(
+    eq(schema.attachments.serverId, serverId), eq(schema.attachments.channelId, agentDmId),
+  ));
+  const objectsBefore = new Set(await readdir(uploadsDir()).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }));
+  const upload = await uploadCall(agentDmId);
+  const attachmentsAfter = await db.select({ id: schema.attachments.id }).from(schema.attachments).where(and(
+    eq(schema.attachments.serverId, serverId), eq(schema.attachments.channelId, agentDmId),
+  ));
+  const objectsAfter = new Set(await readdir(uploadsDir()).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }));
+  check("manager cannot upload to an audited DM", upload.status === 403);
+  check("denied upload creates no attachment row", attachmentsAfter.length === attachmentsBefore.length);
+  check("denied upload leaves no stored object", objectsAfter.size === objectsBefore.size && [...objectsAfter].every((key) => objectsBefore.has(key)));
+
+  const agentDmMessages = await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.channelId, agentDmId));
+  check("denied send leaves the conversation unchanged", agentDmMessages.length === 1);
+  const agentDmMembers = await db.select().from(schema.channelMembers).where(eq(schema.channelMembers.channelId, agentDmId));
+  check("denied management leaves the agent pair unchanged", agentDmMembers.length === 2 && agentDmMembers.every((member) => member.memberType === "agent"));
+
+  const r4 = await apiCall({ method: "GET", path: "/api/channels/dm", token: ownerToken, serverId });
+  const auditEntry = Array.isArray(r4.body) ? r4.body.find((item: any) => item.id === agentDmId) : null;
+  check("manager DM list labels the audited pair", r4.status === 200 && auditEntry?.name === `auda_${ts} ⇄ audb_${ts}`);
+  check("audited pair has no misleading single-peer identity", auditEntry?.audit === true && auditEntry.peerId === null && auditEntry.peerType === null && auditEntry.peerAvatarUrl === null);
+
+  const r5 = await apiCall({ method: "GET", path: "/api/channels/dm", token: memberToken, serverId });
+  check("plain member DM list omits the agent conversation", r5.status === 200 && !JSON.stringify(r5.body).includes(agentDmId));
+
+  const r6 = await apiCall({ method: "GET", path: `/api/agents/${a1}/agent-dms`, token: ownerToken, serverId });
+  check("manager can inspect valid conversations from an agent profile", r6.status === 200 && JSON.stringify(r6.body).includes(agentDmId));
+
+  const r7 = await apiCall({ method: "GET", path: `/api/agents/${a1}/agent-dms`, token: memberToken, serverId });
+  check("plain member cannot inspect agent conversation history", r7.status === 403);
+
+  const r8 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: ownerToken, serverId });
+  check("manager cannot read a human-agent DM they have not joined", r8.status === 403);
+
+  const privateThread = await apiCall({ method: "GET", path: `/api/messages/channel/${humanThreadId}`, token: ownerToken, serverId });
+  check("manager cannot read a human-agent DM thread", privateThread.status === 403);
+
+  const r9 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: memberToken, serverId });
+  check("human member reads their own human-agent DM", r9.status === 200 && JSON.stringify(r9.body).includes("human-dm-private-content"));
+
+  const deleted = await apiCall({ method: "DELETE", path: `/api/agents/${a2}`, token: ownerToken, serverId });
+  check("agent deletion succeeds through the public route", deleted.status === 200);
+
+  const revokedRoot = await apiCall({ method: "GET", path: `/api/messages/channel/${agentDmId}`, token: ownerToken, serverId });
+  const revokedThread = await apiCall({ method: "GET", path: `/api/messages/channel/${agentThreadId}`, token: ownerToken, serverId });
+  check("agent deletion revokes root and thread oversight", revokedRoot.status === 403 && revokedThread.status === 403);
+
+  const revokedList = await apiCall({ method: "GET", path: "/api/channels/dm", token: ownerToken, serverId });
+  check("agent deletion removes the conversation from the manager list", revokedList.status === 200 && !JSON.stringify(revokedList.body).includes(agentDmId));
+}
+
+main()
+  .then(cleanup)
+  .then(() => {
+    if (failures > 0) {
+      console.log(`\n${failures} CHECK(S) FAILED ❌`);
+    } else {
+      console.log("\nALL PASS ✅");
+    }
+    process.exit(failures === 0 ? 0 : 1);
+  })
+  .catch(async (e) => { console.error("ERROR:", e); try { await cleanup(); } catch { /**/ } process.exit(1); });

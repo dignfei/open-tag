@@ -89,7 +89,7 @@ function AttCard({ a, url }: { a: Att; url: string }) {
 
 // Message emoji reactions: chip shows emoji×count (highlighted if the current user reacted), click to toggle; hovering the add button reveals a quick picker
 const QUICK_EMOJIS = ["👍", "✅", "❤️", "😂", "🎉", "👀", "🚀", "🙏"];
-function Reactions({ m, mine, onReact }: { m: Msg; mine: string; onReact: (emoji: string, remove: boolean) => void }) {
+function Reactions({ m, mine, onReact, readOnly = false }: { m: Msg; mine: string; onReact: (emoji: string, remove: boolean) => void; readOnly?: boolean }) {
   const [pick, setPick] = useState(false);
   const rs = m.reactions || [];
   return (
@@ -97,12 +97,12 @@ function Reactions({ m, mine, onReact }: { m: Msg; mine: string; onReact: (emoji
       {rs.map((r) => {
         const did = !!mine && r.reactorIds?.includes(mine);
         const names = (r.reactorNames || []).filter(Boolean).join(", "); // who reacted — shown in a custom hover tooltip (native title is slow/unstyled/missing on touch)
-        return <button key={r.emoji} className={"rx-chip" + (did ? " on" : "")} onClick={() => onReact(r.emoji, !!did)}>{r.emoji} {r.count}{names ? <span className="rx-tip" role="tooltip">{names}</span> : null}</button>;
+        return <button key={r.emoji} className={"rx-chip" + (did ? " on" : "")} disabled={readOnly} onClick={() => { if (!readOnly) onReact(r.emoji, !!did); }}>{r.emoji} {r.count}{names ? <span className="rx-tip" role="tooltip">{names}</span> : null}</button>;
       })}
-      <span className="rx-add-wrap">
+      {!readOnly && <span className="rx-add-wrap">
         <button className="rx-add im" title={i18n.t("chat.addReaction")} onMouseDown={(e) => { e.preventDefault(); setPick((v) => !v); }}><Smile size={17} className="im-pulse" /></button>
         {pick && <span className="rx-pop" onMouseLeave={() => setPick(false)}>{QUICK_EMOJIS.map((e) => <button key={e} onMouseDown={(ev) => { ev.preventDefault(); onReact(e, false); setPick(false); }}>{e}</button>)}</span>}
-      </span>
+      </span>}
     </div>
   );
 }
@@ -120,7 +120,7 @@ function SysMsg({ m, channels, nav, pill }: { m: Msg; channels: NameItem[]; nav:
   );
 }
 
-function ActionCardMsg({ m }: { m: Msg }) {
+function ActionCardMsg({ m, readOnly = false }: { m: Msg; readOnly?: boolean }) {
   const { t } = useTranslation();
   const { createChannel, markActionExecuted, slug, agents, attachmentUrl } = useStore();
   const toast = useToast();
@@ -143,7 +143,7 @@ function ActionCardMsg({ m }: { m: Msg }) {
           {a.description ? <div className="ac-detail"><span className="ac-k">{t("chat.description")}</span> {a.description}</div> : null}
           {executed
             ? <div className="ac-done"><CheckCircle2 size={13} /> {t("chat.executedBy", { name: meta.executedByUserName || t("chat.someone") })}</div>
-            : <button className="ac-btn" onClick={() => setOpen(true)}>{isChan ? t("chat.createChannel") : t("chat.createAgentBtn")}</button>}
+            : !readOnly && <button className="ac-btn" onClick={() => setOpen(true)}>{isChan ? t("chat.createChannel") : t("chat.createAgentBtn")}</button>}
         </div>
         <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} />
       </div>
@@ -217,9 +217,10 @@ export function Chat() {
   curIdRef.current = cur?.id; // latest channel id for async guards: a loadOlder that resolves after a channel switch must drop its stale-channel result (no cross-channel prepend / hasMore clobber)
   const isDm = !!dms.find((d) => d.id === cur?.id);
   const dmPeer = dms.find((d) => d.id === cur?.id);
-  const dmAgent = dmPeer?.peerType === "agent" ? agents.find((a) => a.id === dmPeer.peerId) : undefined; // DM peer agent → used for the live status indicator in the header
+  const isAuditDm = dmPeer?.audit === true;
+  const dmAgent = !isAuditDm && dmPeer?.peerType === "agent" ? agents.find((a) => a.id === dmPeer.peerId) : undefined; // ordinary agent DM peer → used for the live status indicator in the header
   const [sp, setSp] = useSearchParams();
-  const chatTab = sp.get("chatTab") || "chat"; // active tab: chat | tasks (| files in channels). DMs get chat + tasks (per-DM task board); files/members stay channel-only.
+  const chatTab = isAuditDm ? "chat" : sp.get("chatTab") || "chat"; // audited DMs expose only the read-only conversation view
   const msgParam = sp.get("msg"); // when present, scroll to and highlight the specified message id
   const threadParam = sp.get("thread"); // auto-open a thread panel (from inbox, in-message thread link, or cross-page link); value is the parent message id (full or 8-char short) or channelId:shortid
 
@@ -256,8 +257,10 @@ export function Chat() {
       markRead(chId);
       const ids = ms.map((m) => m.id);
       if (ids.length) {
-        try { setThreadMeta(await api("GET", `/api/channels/${chId}/threads?parentMessageIds=${ids.join(",")}`) || {}); }
-        catch { setThreadMeta({}); }
+        try {
+          const meta = await api("GET", `/api/channels/${chId}/threads?parentMessageIds=${ids.join(",")}`);
+          if (curIdRef.current === chId) setThreadMeta(meta || {});
+        } catch { if (curIdRef.current === chId) setThreadMeta({}); }
       } else setThreadMeta({});
     } catch {
       if (curIdRef.current !== chId) return;
@@ -340,7 +343,14 @@ export function Chat() {
       const d = await api("GET", `/api/messages/channel/${chId}?limit=${PAGE_SIZE}&before=${msgs[0]!.seq}`);
       if (curIdRef.current !== chId) return; // channel switched mid-fetch → drop the stale result (finally still clears the in-flight flag)
       const older: Msg[] = d.messages || [];
-      if (older.length) { const el = scrollRef.current; prependRestoreRef.current = el ? el.scrollHeight : null; setMsgs((m) => [...older, ...m]); } // capture height right before prepend; layout effect restores after
+      if (older.length) {
+        try {
+          const meta = await api("GET", `/api/channels/${chId}/threads?parentMessageIds=${older.map((message) => message.id).join(",")}`);
+          if (curIdRef.current === chId) setThreadMeta((current) => ({ ...(meta || {}), ...current }));
+        } catch { /* messages remain readable when optional thread metadata fails */ }
+        if (curIdRef.current !== chId) return; // metadata added a second await; recheck before mutating the new channel's state
+        const el = scrollRef.current; prependRestoreRef.current = el ? el.scrollHeight : null; setMsgs((m) => [...older, ...m]);
+      } // capture height right before prepend; layout effect restores after
       setHasMore(!!d.hasMore);
     } catch { /* transient — the next scroll-to-top retries */ } finally { loadingOlderRef.current = false; }
   };
@@ -362,16 +372,19 @@ export function Chat() {
     if (thread) return; // panel already open, do not re-open
     const short = threadParam.includes(":") ? threadParam.split(":").pop()! : threadParam;
     const m = msgs.find((x) => x.id === threadParam || x.id.startsWith(short));
-    if (m) startThread(m);
+    if (m) {
+      if (isAuditDm && !threadMeta[m.id]) return; // wait for metadata; oversight must never create a thread
+      void startThread(m);
+    }
     else if (hasMore && !loadingOlderRef.current) void loadOlder(); // parent outside the loaded window → page older history until it appears or the channel start is reached
     // eslint-disable-next-line
-  }, [threadParam, msgs, hasMore]);
+  }, [threadParam, msgs, hasMore, threadMeta, isAuditDm]);
 
   const setTab = (t: string) => { const n = new URLSearchParams(sp); if (t === "chat") n.delete("chatTab"); else n.set("chatTab", t); setSp(n, { replace: true }); };
   const doDM = async (agentId: string) => { const id = await openDM("agent", agentId); if (id) nav(`/s/${slug}/channel/${id}`); }; // used by AgentProfile onMessage callback
   const doDMHuman = async (uid: string) => { const id = await openDM("user", uid); if (id) nav(`/s/${slug}/channel/${id}`); }; // used by HumanProfile onMessage callback
   // Opening a thread is an explicit "show me this thread" action → it becomes the right-column base layer and clears any profile overlay on top of it (otherwise the just-opened thread would stay hidden behind a stale profile).
-  const startThread = async (m: Msg) => { if (!cur) return; const tid = threadMeta[m.id]?.threadChannelId || await openThread(cur.id, m.id); if (tid) { setProfile(null); setThread({ channelId: tid, parent: m }); setThreadMeta((tm) => (tm[m.id] ? { ...tm, [m.id]: { ...tm[m.id]!, unreadCount: 0 } } : tm)); markRead(tid); } }; // opening a thread clears the unread count optimistically and marks the thread channel as read
+  const startThread = async (m: Msg) => { if (!cur) return; const tid = threadMeta[m.id]?.threadChannelId || (isAuditDm ? null : await openThread(cur.id, m.id)); if (tid) { setProfile(null); setThread({ channelId: tid, parent: m }); setThreadMeta((tm) => (tm[m.id] ? { ...tm, [m.id]: { ...tm[m.id]!, unreadCount: 0 } } : tm)); markRead(tid); } }; // audit mode opens existing threads but never creates one
   // "Jump to unread thread" bar: open a thread whose parent message may not be in the loaded page — fetch the parent
   // by id (it isn't on screen to pass through startThread), open the panel, mark it read, and drop it from the bar.
   const openUnreadThread = async (item: { threadChannelId: string; parentMessageId: string }) => {
@@ -444,7 +457,7 @@ export function Chat() {
           {dmAgent
             ? <span className="head-status"><span className={"dot " + (agentLiveState(dmAgent) || "offline")} />{agentStateLabel(dmAgent)}</span>
             : <small>{sub || cur?.description || ""}</small>}
-          {cur && <div className="chtabs">{(isDm ? ["chat", "tasks"] : ["chat", "tasks", "files"]).map((tt) => <button key={tt} className={chatTab === tt ? "on" : ""} onClick={() => setTab(tt)}>{tt === "chat" ? t("nav.channel") : tt === "tasks" ? t("nav.tasks") : t("common.files")}</button>)}</div>}
+          {cur && <div className="chtabs">{(isAuditDm ? ["chat"] : isDm ? ["chat", "tasks"] : ["chat", "tasks", "files"]).map((tt) => <button key={tt} className={chatTab === tt ? "on" : ""} onClick={() => setTab(tt)}>{tt === "chat" ? t("nav.channel") : tt === "tasks" ? t("nav.tasks") : t("common.files")}</button>)}</div>}
           {!isDm && cur && cur.type !== "showcase" && (
             <div className="chat-head-actions">
               <button className="joinbtn" title={t("chat.channelMembers")} onClick={() => setShowMembers(true)}><Users size={16} /><span className="joinbtn-label">{t("chat.members")}</span></button>
@@ -481,7 +494,7 @@ export function Chat() {
                   ? <div className="date-divider"><span className="date-divider-label">{fmtDateDivider(m.createdAt, i18n.language, t("chat.dateToday"), t("chat.dateYesterday"))}</span></div>
                   : null;
                 // action card (agent proposal card) → rendered by dedicated ActionCardMsg component
-                if (m.messageType === "action" && m.actionMetadata?.kind === "action-card") return <Fragment key={m.id}>{dateDivider}<ActionCardMsg m={m} /></Fragment>;
+                if (m.messageType === "action" && m.actionMetadata?.kind === "action-card") return <Fragment key={m.id}>{dateDivider}<ActionCardMsg m={m} readOnly={isAuditDm} /></Fragment>;
                 // system messages (task lifecycle events, etc.) → centered grey bar (no avatar, no full message block)
                 // If the system message has thread replies (e.g. showcase case anchors), render a thread-pill below the bar so it's clickable.
                 if (m.senderType === "system") return (
@@ -552,15 +565,15 @@ export function Chat() {
                     <div className="msg-meta">
                         {m.taskStatus && (() => {
                           const TI = TASK_ICON[m.taskStatus] || Circle;
-                          const isShowcase = cur?.type === "showcase";
-                          const claimable = !isShowcase && !m.taskAssigneeId && m.taskStatus === "todo";
+                          const taskReadOnly = cur?.type === "showcase" || isAuditDm;
+                          const claimable = !taskReadOnly && !m.taskAssigneeId && m.taskStatus === "todo";
                           const claimedByMe = m.taskAssigneeType === "user" && m.taskAssigneeId === me?.id;
                           const opts = ynOptions(m.taskStatus, manageServer, claimedByMe);
-                          const open = !isShowcase && taskMenu === m.id;
+                          const open = !taskReadOnly && taskMenu === m.id;
                           return (
                             <span className="task-pill-wrap">
                               {/* clicking the badge changes status; in showcase channels the pill is a read-only label */}
-                              <button className={"task-pill st-" + m.taskStatus} onClick={(e) => { e.stopPropagation(); if (!isShowcase) setTaskMenu(open ? null : m.id); }} title={isShowcase ? undefined : t("chat.taskChangeStatus", { number: m.taskNumber })} style={isShowcase ? { cursor: "default" } : undefined}><TI size={11} /> #{m.taskNumber} {t(ST_LABEL[m.taskStatus] ?? m.taskStatus)}{taskAssignee(m)}</button>
+                              <button className={"task-pill st-" + m.taskStatus} onClick={(e) => { e.stopPropagation(); if (!taskReadOnly) setTaskMenu(open ? null : m.id); }} title={taskReadOnly ? undefined : t("chat.taskChangeStatus", { number: m.taskNumber })} style={taskReadOnly ? { cursor: "default" } : undefined}><TI size={11} /> #{m.taskNumber} {t(ST_LABEL[m.taskStatus] ?? m.taskStatus)}{taskAssignee(m)}</button>
                               {open && <div className="st-menu" onMouseLeave={() => setTaskMenu(null)}>
                                 {claimable && <button onClick={() => { setTaskMenu(null); doTask(m, "claim"); }}>{t("chat.claim")}</button>}
                                 {opts.map((s) => <button key={s} className={s === m.taskStatus ? "on" : ""} onClick={() => { setTaskMenu(null); if (s !== m.taskStatus) doTask(m, "status", { status: s }); }}><span className={"st-dot st-" + s} />{t(ST_LABEL[s])}</button>)}
@@ -569,7 +582,7 @@ export function Chat() {
                           );
                         })()}
                         {tm?.replyCount ? <button className="thread-pill" onClick={() => startThread(m)}><MessageCircle size={12} /> {t("chat.replyCount", { count: tm.replyCount })}{tm.unreadCount ? <span className="thread-new"> · {t("chat.threadNew", { count: tm.unreadCount })}</span> : ""}</button> : null}
-                        {!isAgentReplyPreview && <Reactions m={m} mine={me?.id ?? ""} onReact={(emoji, remove) => react(m.id, emoji, remove)} />}
+                        {!isAgentReplyPreview && <Reactions m={m} mine={me?.id ?? ""} onReact={(emoji, remove) => react(m.id, emoji, remove)} readOnly={isAuditDm} />}
                     </div>
                   </div>
                   </div>
@@ -578,8 +591,8 @@ export function Chat() {
               })}
             </div>
             {showJump && <button className="jump-bottom" onClick={toBottom}><ArrowDown size={14} /> {t("chat.backToBottom")}</button>}
-            {cur?.type === "showcase"
-              ? <div className="showcase-readonly"><Eye size={14} />{t("chat.showcaseReadOnly")}</div>
+            {cur?.type === "showcase" || isAuditDm
+              ? <div className="showcase-readonly"><Eye size={14} />{t(isAuditDm ? "chat.agentDmReadOnly" : "chat.showcaseReadOnly")}</div>
               : <Composer
                   channelId={cur?.id ?? ""}
                   placeholder={isDm ? t("chat.dmPlaceholder", { name: cur?.name }) : t("chat.channelPlaceholder")}
@@ -596,7 +609,7 @@ export function Chat() {
               : <HumanProfile uid={profile.id} onClose={() => setProfile(null)} onMessage={() => { const id = profile.id; setProfile(null); doDMHuman(id); }} />}
           </aside>
         : thread
-        ? <ThreadPanel channelId={thread.channelId} parent={thread.parent} onClose={() => setThread(null)} onOpenProfile={(type, id) => setProfile({ type, id })} />
+        ? <ThreadPanel channelId={thread.channelId} parent={thread.parent} readOnly={isAuditDm} onClose={() => setThread(null)} onOpenProfile={(type, id) => setProfile({ type, id })} />
         : null}
       <ConnectComputerWizard mode="onboard" />
       {showMembers && cur && <ChannelMembersModal channelId={cur.id} channelName={cur.name} onClose={() => setShowMembers(false)} />}
@@ -609,12 +622,12 @@ export function Chat() {
         return (
           <div className="ctx-backdrop" onClick={close} onContextMenu={(e) => { e.preventDefault(); close(); }}>
             <div className="ctx-menu" style={{ left: Math.min(ctxMenu.x, window.innerWidth - 230), top: Math.min(ctxMenu.y, window.innerHeight - 320) }} onClick={(e) => e.stopPropagation()}>
-              <div className="ctx-rx">{QUICK_EMOJIS.slice(0, 6).map((e) => <button key={e} title={e} onClick={() => { react(m.id, e, false); close(); }}>{e}</button>)}</div>
+              {!isAuditDm && <div className="ctx-rx">{QUICK_EMOJIS.slice(0, 6).map((e) => <button key={e} title={e} onClick={() => { react(m.id, e, false); close(); }}>{e}</button>)}</div>}
               <button className="ctx-item" onClick={() => copy(m.content, t("chat.copyMarkdown"))}><Clipboard size={14} /> {t("chat.copyMarkdown")}</button>
               <button className="ctx-item" onClick={() => copy(link, t("chat.copyLink"))}><Link2 size={14} /> {t("chat.copyLink")}</button>
-              <button className="ctx-item" onClick={() => { startThread(m); close(); }}><MessageCircle size={14} /> {t("chat.openThread")}</button>
+              {(!isAuditDm || threadMeta[m.id]?.threadChannelId) && <button className="ctx-item" onClick={() => { startThread(m); close(); }}><MessageCircle size={14} /> {t("chat.openThread")}</button>}
               <button className="ctx-item" onClick={() => { void updateSaved(m.id, savedIds.has(m.id)); close(); }}><Bookmark size={14} fill={savedIds.has(m.id) ? "currentColor" : "none"} /> {savedIds.has(m.id) ? t("chat.unsave") : t("chat.saveMessage")}</button>
-              <button className="ctx-item" onClick={async () => { close(); await api("POST", "/api/tasks/convert-message", { messageId: m.id }); }}><CheckSquare size={14} /> {t("chat.convertToTask")}</button>
+              {!isAuditDm && <button className="ctx-item" onClick={async () => { close(); await api("POST", "/api/tasks/convert-message", { messageId: m.id }); }}><CheckSquare size={14} /> {t("chat.convertToTask")}</button>}
             </div>
           </div>
         );
@@ -700,7 +713,7 @@ function EditChannelModal({ channel, onClose, onDone, onDeleted }: { channel: an
 }
 
 // Thread panel: right-side overlay showing the parent message, its replies, and a reply composer.
-function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId: string; parent: Msg; onClose: () => void; onOpenProfile: (type: "agent" | "human", id: string) => void }) {
+function ThreadPanel({ channelId, parent, readOnly = false, onClose, onOpenProfile }: { channelId: string; parent: Msg; readOnly?: boolean; onClose: () => void; onOpenProfile: (type: "agent" | "human", id: string) => void }) {
   const { t } = useTranslation();
   const { api, onEvent, subscribeChannel, attachmentUrl, me, react, agents, humans, channels, slug } = useStore();
   const senderIdentity = (m: Msg) => m.senderType === "agent" ? agents.find((a) => a.id === m.senderId) : humans.find((h) => h.userId === m.senderId);
@@ -778,7 +791,7 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
         <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} />
         {!!m.attachments?.length && <div className="msg-atts">{m.attachments.map((a) => <AttCard key={a.id} a={a} url={attachmentUrl(a.id)} />)}</div>}
         {/* same guard as the channel feed: the preview's synthetic id must never be POSTed to /reactions */}
-        <Reactions m={m} mine={me?.id ?? ""} onReact={(emoji, remove) => react(m.id, emoji, remove)} />
+        <Reactions m={m} mine={me?.id ?? ""} onReact={(emoji, remove) => react(m.id, emoji, remove)} readOnly={readOnly} />
       </div>
       </div>
     </Fragment>
@@ -787,8 +800,8 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
   return (
     <aside className="thread-panel">
       <div className="thread-head"><span className="grow">{t("chat.thread")}</span>
-        <button className="tp-link" title={t("chat.markDone")} onClick={async () => { await api("POST", "/api/channels/threads/done", { threadChannelId: channelId }); onClose(); }}><CheckCircle2 size={14} /></button>
-        <button className="tp-link" title={t("chat.unfollowThread")} onClick={async () => { await api("POST", "/api/channels/threads/unfollow", { threadChannelId: channelId }); onClose(); }}><BellOff size={14} /></button>
+        {!readOnly && <button className="tp-link" title={t("chat.markDone")} onClick={async () => { await api("POST", "/api/channels/threads/done", { threadChannelId: channelId }); onClose(); }}><CheckCircle2 size={14} /></button>}
+        {!readOnly && <button className="tp-link" title={t("chat.unfollowThread")} onClick={async () => { await api("POST", "/api/channels/threads/unfollow", { threadChannelId: channelId }); onClose(); }}><BellOff size={14} /></button>}
         <button className="tp-link" onClick={() => nav(`/s/${slug}/channel/${parent.channelId}?msg=${parent.id}`)} title={t("chat.viewInChannel")}><ExternalLink size={14} /></button>
         <button className="tp-close" onClick={onClose} title={t("chat.close")}><X size={15} /></button></div>
       <div className="scroll" ref={scrollRef}>
@@ -802,8 +815,8 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
           return row(m, dateDivider);
         })}
       </div>
-      {channels.find((c) => c.id === parent.channelId)?.type === "showcase"
-        ? <div className="showcase-readonly"><Eye size={14} />{t("chat.showcaseReadOnly")}</div>
+      {channels.find((c) => c.id === parent.channelId)?.type === "showcase" || readOnly
+        ? <div className="showcase-readonly"><Eye size={14} />{t(readOnly ? "chat.agentDmReadOnly" : "chat.showcaseReadOnly")}</div>
         : <Composer channelId={channelId} placeholder={t("chat.threadReplyPlaceholder")} className="thread-composer" />}
     </aside>
   );

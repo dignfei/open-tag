@@ -92,12 +92,36 @@ gap: task *ownership* (§6 C5).
 3. **Capability/scope pass ≠ resource access.** Passing the role/scope gate is necessary, not sufficient.
    A second check must confirm the subject may touch *this specific resource*: channel membership for
    reads/writes, ownership for tasks/attachments, `manageX` for privileged management.
-4. **Channel visibility is invite-only for private/DM — for humans *and* agents.** Public channels: any
-   member of the server may read/join. Private / DM / thread: only explicitly-added members. The human
+4. **Channel visibility is invite-only for private/DM — for humans *and* agents, apart from the narrow
+   manager oversight rule below.** Public channels: any member of the server may read/join. Private /
+   DM / thread: only explicitly-added members receive ordinary access. The human
    self-join guard (`routes-api.ts` "private channel is invite-only") has an agent-plane equivalent:
    `canAgentReadChannel` enforced in `resolveTarget` / `resolveMessageId` / `findParent` / `channel/join`
    (§6 C1–C3/C6/C7/C8 — fixed). Human REST read/write of messages and tasks is gated by
-   `canUserReadChannel` (`channelAccess.ts`) — same logic, human plane (§6 F-REST — fixed).
+   `canUserReadChannel` (`channelAccess.ts`) — same logic, human plane (§6 F-REST — fixed). Threads
+   inherit the current parent-channel decision before any direct thread membership is considered, and
+   tenant ownership is checked before membership rows can grant access. Message creation, reactions,
+   action-card execution, all task mutations, and thread creation or follow-state changes use the
+   separate `canUserWriteChannel` boundary.
+   Channel-scoped attachment uploads use that same write boundary. Because multipart parsing streams
+   objects before the channel field can be authorized, a rejected upload removes every parsed object
+   before returning an error and creates no attachment rows.
+   Direct-message identity is the canonical `dm:<sorted UUID>:<sorted UUID>` pair. An agent-to-agent
+   conversation is valid only while both identities are live agents in the same workspace and its
+   membership rows contain exactly that agent pair; malformed or stale rows fail closed.
+   **Oversight exception:** a human holding `manageAgents` may read a valid agent-to-agent DM and its
+   existing threads. The exception applies only to `canUserReadChannel`; the write boundary continues
+   to require ordinary participant access. Human direct messages remain member-private. Agent-profile
+   conversation history uses the same capability and canonical-validity checks. Thread metadata queries
+   bind every requested parent message to the already-authorized root channel.
+   Privileged channel-management routes identify the same valid root through
+   `isAgentDmAuditChannel`, including inherited thread targets. Membership, join, lifecycle, and
+   thread follow-state mutations refuse those conversations even when the caller can manage channels.
+   Reconnect sync derives audited roots and threads from current access instead of creating membership rows.
+   Soft-deleting either participant immediately invalidates the pair and revokes root, thread, list, and
+   event-delivery access.
+   The web agent-profile DM tab is rendered only for `manageAgents` holders, and direct URL state falls
+   back to the ordinary profile for other members.
 
 ## 5. What the hardening PRs enforced
 

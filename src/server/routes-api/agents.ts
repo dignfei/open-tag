@@ -1,8 +1,9 @@
 // Auto-extracted from the former routes-api.ts monolith — bodies are verbatim.
 import type { ServerCtx } from "./ctx.js";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "../../db/index.js";
 import { requireCap } from "../capabilities.js";
+import { canonicalDmParticipantIds, classifyAgentDm } from "../channelAccess.js";
 import { DESC_TOO_LONG, INVALID_AGENT_NAME, addChannelMembers, descTooLong, invalidAgentName, normalizeAgentHandle, dequeueAgent, resetAgent, startAgent, stopAgent, syncAgentProfile } from "../core.js";
 import { PROJECT_DIRECTORY_CAPABILITY, projectDirectoryBlockReason, requestDaemon, requestDaemonByMachine } from "../daemonHub.js";
 import { publish } from "../realtime.js";
@@ -292,22 +293,27 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
   const adms = /^\/api\/agents\/([^/]+)\/agent-dms$/.exec(p);
   if (adms && !isUuid(adms[1]!)) return (sendErr(res, 404, "agent not found"), true);
   if (adms && method === "GET") {
+    if (!await requireCap(serverId, userId, "manageAgents")) return (sendErr(res, 403, "need manageAgents capability"), true);
     const agId = adms[1]!;
     // serverId scope: confirm the agent belongs to this tenant before fanning out over its memberships
     // (the inner channel query already filters by serverId, but pre-checking 404s a foreign agent id and
     // avoids a cross-tenant channel_members scan). Mirrors the workspace-files / scopes ownership pre-check.
-    const own = (await db.select({ id: schema.agents.id }).from(schema.agents).where(and(eq(schema.agents.id, agId), eq(schema.agents.serverId, serverId))))[0];
+    const own = (await db.select({ id: schema.agents.id }).from(schema.agents).where(and(eq(schema.agents.id, agId), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt))))[0];
     if (!own) return (sendErr(res, 404, "agent not found"), true);
     const mine = await db.select().from(schema.channelMembers).where(and(eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agId)));
     const out: any[] = [];
     for (const cm of mine) {
-      const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.id, cm.channelId), eq(schema.channels.type, "dm"), eq(schema.channels.serverId, serverId))))[0]; // serverId scope: don't surface another tenant's DM channels for this agent id
-      if (!ch) continue;
-      const peers = (await db.select().from(schema.channelMembers).where(eq(schema.channelMembers.channelId, ch.id))).filter((m) => !(m.memberType === "agent" && m.memberId === agId));
-      const peer = peers.find((m) => m.memberType === "agent"); // only include agent↔agent DMs
-      if (!peer) continue;
-      const pa = (await db.select().from(schema.agents).where(eq(schema.agents.id, peer.memberId)))[0];
-      out.push({ id: ch.id, name: pa?.name ?? "agent", peerId: peer.memberId, peerType: "agent", lastMessageAt: ch.lastMessageAt });
+      const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.id, cm.channelId), eq(schema.channels.serverId, serverId))))[0];
+      if (!ch || ch.deletedAt || ch.type !== "dm" || ch.parentMessageId) continue;
+      const pair = canonicalDmParticipantIds(ch.name);
+      if (!pair || !pair.includes(agId)) continue;
+      const members = await db.select().from(schema.channelMembers).where(eq(schema.channelMembers.channelId, ch.id));
+      const agents = await db.select().from(schema.agents).where(inArray(schema.agents.id, pair));
+      const users = await db.select({ id: schema.users.id }).from(schema.users).where(inArray(schema.users.id, pair));
+      if (classifyAgentDm(serverId, ch.name, members, agents, users) !== "valid") continue;
+      const peerId = pair.find((id) => id !== agId)!;
+      const peer = agents.find((agent) => agent.id === peerId)!;
+      out.push({ id: ch.id, name: peer.name, peerId, peerType: "agent", lastMessageAt: ch.lastMessageAt });
     }
     return (sendJson(res, 200, out), true);
   }
