@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useStore, type Agent } from "../store.tsx";
 import { Avatar, resolveAvatar } from "../Avatar.tsx";
 import { IconFile } from "../icons.tsx";
+import { useToast } from "../toast.tsx";
 
 const isImage = (m?: string) => !!m && m.startsWith("image/");
 const handleKey = (s: string) => s.normalize("NFC").toLowerCase();
@@ -25,6 +26,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   className?: string;        // extra class on the .composer root (threads pass "thread-composer")
 }) {
   const { t } = useTranslation();
+  const toast = useToast();
   const { api, visibleAgents: agents, humans, machines, uploadOne, attachmentUrl } = useStore(); // visibleAgents: only real agents are @-mention candidates / reachability targets (not showcase demo props)
   const avFor = (u?: string | null) => resolveAvatar(u, attachmentUrl);
   const [text, setText] = useState("");
@@ -74,6 +76,10 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   const reachStatusChip = reach?.kind === "off" ? t("chat.machineOfflineComposerPlaceholder", { names: reach.names }) : "";
   const effectivePlaceholder = reachPlaceholder ?? (allowAsTask && asTask ? t("chat.taskPlaceholder") : placeholder);
   const canSend = !!channelId && !sending && canSendComposerDraft(text, pendingAtts);
+  const reportSendFailure = (error?: unknown) => {
+    const reason = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+    toast.error(reason ? t("chat.sendFailedReason", { error: reason }) : t("chat.sendFailed"));
+  };
 
   const send = async (forceTask?: boolean) => {
     const v = text.trim(); if (!canSend || sendingRef.current) return;
@@ -83,9 +89,10 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
     setText(""); setAtQuery(null); setAsTask(false);
     setPendingAtts([]);
     try {
-      await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
+      const result = await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
+      if (result?.ok !== true) { reportSendFailure(result?.error); return; }
     } catch (error) {
-      console.error("Message send failed", error);
+      reportSendFailure(error);
     } finally {
       sendingRef.current = false; setSending(false);
     }
