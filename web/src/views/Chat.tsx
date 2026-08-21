@@ -257,8 +257,10 @@ export function Chat() {
       markRead(chId);
       const ids = ms.map((m) => m.id);
       if (ids.length) {
-        try { setThreadMeta(await api("GET", `/api/channels/${chId}/threads?parentMessageIds=${ids.join(",")}`) || {}); }
-        catch { setThreadMeta({}); }
+        try {
+          const meta = await api("GET", `/api/channels/${chId}/threads?parentMessageIds=${ids.join(",")}`);
+          if (curIdRef.current === chId) setThreadMeta(meta || {});
+        } catch { if (curIdRef.current === chId) setThreadMeta({}); }
       } else setThreadMeta({});
     } catch {
       if (curIdRef.current !== chId) return;
