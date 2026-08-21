@@ -4,6 +4,7 @@
 // All three follow the same logic: channel member OR public channel OR thread of a readable parent.
 import { and, eq, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
+import { requireCap } from "./capabilities.js";
 import { isUuid } from "./util.js";
 
 /** Participant identity encoded by getOrCreateDM; null for malformed names. */
@@ -65,11 +66,11 @@ async function agentDmState(
   return classifyAgentDm(serverId, channelName, members, agents, users);
 }
 
-/** Human read boundary for a channel and any inherited thread. */
-export async function canUserReadChannel(
+async function canUserAccessChannel(
   serverId: string,
   channelId: string,
   userId: string,
+  allowAgentDmAudit: boolean,
   visited = new Set<string>(),
 ): Promise<boolean> {
   if (!isUuid(channelId) || visited.has(channelId)) return false;
@@ -87,7 +88,7 @@ export async function canUserReadChannel(
     const parent = (await db.select({ channelId: schema.messages.channelId }).from(schema.messages).where(and(
       eq(schema.messages.id, ch.parentMessageId), eq(schema.messages.serverId, serverId),
     )))[0];
-    return parent ? canUserReadChannel(serverId, parent.channelId, userId, new Set(visited).add(channelId)) : false;
+    return parent ? canUserAccessChannel(serverId, parent.channelId, userId, allowAgentDmAudit, new Set(visited).add(channelId)) : false;
   }
   if (ch.parentMessageId) return false;
 
@@ -98,7 +99,8 @@ export async function canUserReadChannel(
     members = await db.select({ memberType: schema.channelMembers.memberType, memberId: schema.channelMembers.memberId })
       .from(schema.channelMembers).where(eq(schema.channelMembers.channelId, channelId));
     const state = await agentDmState(serverId, ch.name, members);
-    if (state !== "regular") return false;
+    if (state === "valid") return allowAgentDmAudit && await requireCap(serverId, userId, "manageAgents");
+    if (state === "invalid") return false;
     return !!canonicalPair?.includes(userId)
       && members.some((member) => member.memberType === "user" && member.memberId === userId);
   }
@@ -114,7 +116,12 @@ export async function canUserReadChannel(
   return false;
 }
 
+/** Read access includes oversight of valid agent-to-agent DMs for manageAgents holders. */
+export function canUserReadChannel(serverId: string, channelId: string, userId: string): Promise<boolean> {
+  return canUserAccessChannel(serverId, channelId, userId, true);
+}
+
 /** Human channel-content writes use an explicit boundary, separate from read policy. */
 export function canUserWriteChannel(serverId: string, channelId: string, userId: string): Promise<boolean> {
-  return canUserReadChannel(serverId, channelId, userId);
+  return canUserAccessChannel(serverId, channelId, userId, false);
 }

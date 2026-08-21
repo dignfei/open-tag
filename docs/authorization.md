@@ -105,6 +105,9 @@ gap: task *ownership* (§6 C5).
    Direct-message identity is the canonical `dm:<sorted UUID>:<sorted UUID>` pair. An agent-to-agent
    conversation is valid only while both identities are live agents in the same workspace and its
    membership rows contain exactly that agent pair; malformed or stale rows fail closed.
+   **Oversight exception:** a human holding `manageAgents` may read a valid agent-to-agent DM and its
+   existing threads. The exception applies only to `canUserReadChannel`; the write boundary continues
+   to require ordinary participant access. Human direct messages remain member-private.
 
 ## 5. What the hardening PRs enforced
 
