@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useStore, type Agent } from "../store.tsx";
 import { Avatar, resolveAvatar } from "../Avatar.tsx";
+import { AgentStopButton } from "../AgentStopButton.tsx";
 
 // Live agent activity bar pinned to the bottom of the sidebar: an at-a-glance, workspace-wide
 // pulse of which agents are doing something right now (working / thinking). Complements — does
@@ -67,6 +68,7 @@ export function LiveAgentBar() {
           <span className="live-bar__detail">{labelOf(primary)}</span>
         </span>
       </button>
+      <AgentStopButton key={primary.id} agentId={primary.id} className="live-bar__stop" />
       {extra > 0 && (
         <button
           type="button"
