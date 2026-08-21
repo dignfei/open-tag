@@ -168,6 +168,20 @@ test("a public message update can recover a missing create event", () => {
   assert.equal((merged[0] as any).clientRenderKey, agentReplyPreviewId("agent-1", "stream-2"));
 });
 
+test("a current receipt update can recover a missing create event", () => {
+  const current = realMessage("msg-20", "Current page");
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const withPreview = applyAgentReplyPreview([current], secondStart);
+  const updated = realMessage("receipt-21", "", "agent_activity_receipt");
+  updated.agentActivityStreamId = "stream-2";
+  updated.agentActivityState = "error";
+
+  const merged = mergePersistedAgentMessageUpdate(withPreview, updated);
+
+  assert.deepEqual(merged.map((m) => m.id), ["msg-20", "receipt-21"]);
+  assert.equal((merged[1] as any).clientRenderKey, agentReplyPreviewId("agent-1", "stream-2"));
+});
+
 test("a late terminal event cannot restore an absorbed grouped preview", () => {
   const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
   receipt.agentActivityState = "error";
