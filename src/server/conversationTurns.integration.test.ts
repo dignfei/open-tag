@@ -775,10 +775,27 @@ test("delivery commit is bound to the authenticated current machine and persists
     });
     assert.deepEqual(pendingReplacement, { ok: false, error: "delivery recipient is no longer admissible" });
     if (committed.ok) await releaseAgentDeliveryAdmission(committed.delivery);
-    const [released] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
+    const replacement = await commitAgentDeliveryAdmission({
+      ws: replacementWs, serverId: f.server.id, machineId: ownerMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.equal(replacement.ok, true);
+    assert.notEqual(replacement.ok && replacement.delivery.admissionToken, committed.ok && committed.delivery.admissionToken, "a replacement admission receives a new owner token");
+    if (committed.ok) await releaseAgentDeliveryAdmission(committed.delivery);
+    const [stillOwned] = await db.select({
+      admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt,
+      token: schema.agentMessageDecisions.deliveryAdmissionToken,
+    }).from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
+    ));
+    assert.ok(stillOwned?.admittedAt, "stale cleanup cannot release a replacement admission");
+    assert.equal(stillOwned?.token, replacement.ok ? replacement.delivery.admissionToken : null);
+    if (replacement.ok) await releaseAgentDeliveryAdmission(replacement.delivery);
+    const [released] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt, token: schema.agentMessageDecisions.deliveryAdmissionToken }).from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
     ));
     assert.equal(released?.admittedAt, null, "a failed in-flight delivery can be retried after release");
+    assert.equal(released?.token, null);
   } finally {
     for (const socket of sockets) { unregisterMachineConn(socket); unregisterDaemon(socket); }
     await db.update(schema.agents).set({ machineId: null }).where(eq(schema.agents.serverId, f.server.id));
