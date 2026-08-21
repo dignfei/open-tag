@@ -6,7 +6,7 @@ import { requireCap } from "../capabilities.js";
 import { addChannelMembers, getOrCreateDM, getOrCreateThread } from "../core.js";
 import { publish } from "../realtime.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
-import { canUserReadChannel, canUserWriteChannel } from "../channelAccess.js";
+import { canonicalDmParticipantIds, canUserReadChannel, canUserWriteChannel, classifyAgentDm } from "../channelAccess.js";
 import { userChannels } from "./shared.js";
 
 const notSentBy = (userId: string) => or(isNull(schema.messages.senderId), ne(schema.messages.senderId, userId));
@@ -132,19 +132,44 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
   if (p === "/api/channels/dm" && method === "GET") {
     const myMems = await db.select().from(schema.channelMembers).where(and(eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
     const myIds = new Set(myMems.map((m) => m.channelId));
-    const dms = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.type, "dm")))).filter((c) => !c.deletedAt && myIds.has(c.id));
+    const allDms = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.type, "dm"))))
+      .filter((channel) => !channel.deletedAt && !channel.parentMessageId);
+    if (!allDms.length) return (sendJson(res, 200, []), true);
+    const dmMembers = await db.select().from(schema.channelMembers).where(inArray(schema.channelMembers.channelId, allDms.map((dm) => dm.id)));
+    const pairIds = [...new Set(allDms.flatMap((dm) => canonicalDmParticipantIds(dm.name) ?? []))];
+    const agentsAll = pairIds.length ? await db.select().from(schema.agents).where(inArray(schema.agents.id, pairIds)) : [];
+    const usersAll = pairIds.length ? await db.select().from(schema.users).where(inArray(schema.users.id, pairIds)) : [];
+    const canAudit = await requireCap(serverId, userId, "manageAgents");
+    const auditIds = new Set<string>();
+    const dms = [];
+    for (const dm of allDms) {
+      const members = dmMembers.filter((member) => member.channelId === dm.id);
+      const state = classifyAgentDm(serverId, dm.name, members, agentsAll, usersAll);
+      if (state === "valid" && canAudit) {
+        auditIds.add(dm.id);
+        dms.push(dm);
+      } else if (state === "regular" && myIds.has(dm.id) && await canUserReadChannel(serverId, dm.id, userId)) {
+        dms.push(dm);
+      }
+    }
     if (!dms.length) return (sendJson(res, 200, []), true);
-    const dmMembers = await db.select().from(schema.channelMembers).where(inArray(schema.channelMembers.channelId, dms.map((d) => d.id)));
-    const agentsAll = await db.select().from(schema.agents).where(eq(schema.agents.serverId, serverId));
-    const usersAll = await db.select().from(schema.users);
     const out = dms.map((c) => {
-      const peer = dmMembers.find((m) => m.channelId === c.id && !(m.memberType === "user" && m.memberId === userId));
-      const src = peer ? (peer.memberType === "agent" ? agentsAll.find((a) => a.id === peer.memberId) : usersAll.find((u) => u.id === peer.memberId)) : null;
+      const audit = auditIds.has(c.id);
+      const pair = canonicalDmParticipantIds(c.name)!;
+      const auditAgents = audit
+        ? pair.map((id) => agentsAll.find((agent) => agent.id === id)!).sort((a, b) => a.name.localeCompare(b.name))
+        : [];
+      const peerId = audit ? null : pair.find((id) => id !== userId) ?? null;
+      const peerAgent = peerId ? agentsAll.find((agent) => agent.id === peerId && agent.serverId === serverId && !agent.deletedAt) : null;
+      const peerUser = peerId ? usersAll.find((user) => user.id === peerId) : null;
+      const src = peerAgent ?? peerUser ?? null;
       return {
-        id: c.id, name: src?.name ?? c.name, type: "dm", description: c.description, createdAt: c.createdAt, lastMessageAt: c.lastMessageAt,
-        peerId: peer?.memberId ?? null, peerName: src?.name ?? null, peerDisplayName: src?.displayName ?? null, peerType: peer?.memberType ?? null, peerAvatarUrl: (src as any)?.avatarUrl ?? null,
+        id: c.id, name: audit ? auditAgents.map((agent) => agent.name).join(" ⇄ ") : (src?.name ?? c.name),
+        type: "dm", description: c.description, createdAt: c.createdAt, lastMessageAt: c.lastMessageAt, audit,
+        peerId, peerName: src?.name ?? null, peerDisplayName: src?.displayName ?? null,
+        peerType: peerAgent ? "agent" : peerUser ? "user" : null, peerAvatarUrl: (src as any)?.avatarUrl ?? null,
       };
-    }).filter((o) => o.peerId); // deleted agents leave DM (channelMembers removed) → no peer → exclude from list (do not show DMs with deleted agents, no more "unknown user")
+    }).filter((item) => item.audit || item.peerId);
     return (sendJson(res, 200, out), true);
   }
   if (p === "/api/channels/unread" && method === "GET") {
