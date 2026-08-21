@@ -802,13 +802,19 @@ test("delivery commit is bound to the authenticated current machine and persists
       deliveryId, agentId: agent.id, seq: message.seq,
     });
     assert.equal(accepted.ok, true);
+    await db.update(schema.conversationTurns).set({
+      state: "blocked", responsibilityState: "blocked", dispatchLeaseUntil: new Date(Date.now() + 60_000),
+    }).where(eq(schema.conversationTurns.id, attached.turn.id));
     const acknowledged = accepted.ok ? await acknowledgeAgentDeliveryAdmission(accepted.delivery) : null;
-    assert.deepEqual(acknowledged, { accepted: true, resumeTurnId: null });
+    assert.deepEqual(acknowledged, { accepted: true, resumeTurnId: attached.turn.id });
     const [acceptedRow] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt, token: schema.agentMessageDecisions.deliveryAdmissionToken }).from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
     ));
     assert.ok(acceptedRow?.admittedAt, "a final ACK preserves the durable delivered fence");
     assert.equal(acceptedRow?.token, null, "a final ACK clears only its pending owner token");
+    const [resumed] = await db.select({ state: schema.conversationTurns.state, responsibilityState: schema.conversationTurns.responsibilityState, lease: schema.conversationTurns.dispatchLeaseUntil })
+      .from(schema.conversationTurns).where(eq(schema.conversationTurns.id, attached.turn.id));
+    assert.deepEqual([resumed?.state, resumed?.responsibilityState, resumed?.lease], ["active", "active", null], "a late ACK reopens an unfinished blocked Turn for scheduler settlement");
     if (accepted.ok) await releaseAgentDeliveryAdmission(accepted.delivery);
     const [afterStaleRelease] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
