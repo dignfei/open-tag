@@ -542,7 +542,11 @@ export async function resolveTarget(serverId: string, target: string, selfAgentI
     // The peer user must belong to THIS server (the agent lookup below is already server-scoped); otherwise an
     // agent could open a cross-tenant DM to any global username. users.name is global, so gate on serverMembers.
     const u = uRow && (await db.select().from(schema.serverMembers).where(and(eq(schema.serverMembers.serverId, serverId), eq(schema.serverMembers.userId, uRow.id))))[0] ? uRow : undefined;
-    const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.name, normalizeAgentHandle(peer)), eq(schema.agents.serverId, serverId))))[0];
+    const a = (await db.select().from(schema.agents).where(and(
+      eq(schema.agents.name, normalizeAgentHandle(peer)),
+      eq(schema.agents.serverId, serverId),
+      isNull(schema.agents.deletedAt),
+    )))[0];
     const peerId = u?.id ?? a?.id; const peerType = u ? "user" : a ? "agent" : null;
     if (!peerId || !peerType) return null;
     baseChannelId = await getOrCreateDM(serverId, selfAgentId, "agent", peerId, peerType);
