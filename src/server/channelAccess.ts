@@ -66,6 +66,30 @@ async function agentDmState(
   return classifyAgentDm(serverId, channelName, members, agents, users);
 }
 
+/** Does this channel inherit from a currently valid agent-to-agent DM? */
+export async function isAgentDmAuditChannel(
+  serverId: string,
+  channelId: string,
+  visited = new Set<string>(),
+): Promise<boolean> {
+  if (!isUuid(channelId) || visited.has(channelId)) return false;
+  const channel = (await db.select().from(schema.channels).where(and(
+    eq(schema.channels.id, channelId), eq(schema.channels.serverId, serverId),
+  )))[0];
+  if (!channel || channel.deletedAt) return false;
+  if (channel.type === "thread") {
+    if (!channel.parentMessageId) return false;
+    const parent = (await db.select({ channelId: schema.messages.channelId }).from(schema.messages).where(and(
+      eq(schema.messages.id, channel.parentMessageId), eq(schema.messages.serverId, serverId),
+    )))[0];
+    return parent ? isAgentDmAuditChannel(serverId, parent.channelId, new Set(visited).add(channelId)) : false;
+  }
+  if (channel.type !== "dm" || channel.parentMessageId) return false;
+  const members = await db.select({ memberType: schema.channelMembers.memberType, memberId: schema.channelMembers.memberId })
+    .from(schema.channelMembers).where(eq(schema.channelMembers.channelId, channelId));
+  return await agentDmState(serverId, channel.name, members) === "valid";
+}
+
 async function canUserAccessChannel(
   serverId: string,
   channelId: string,
