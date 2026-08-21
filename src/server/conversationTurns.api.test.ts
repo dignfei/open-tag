@@ -203,6 +203,7 @@ test("real API: sender-scoped turns debounce once without merging different huma
     assert.deepEqual(decisions.map((row) => [row.attention, row.grantSlot, row.grantStatus]), [
       ["assigned", "primary", "active"], ["assigned", "primary", "active"],
     ]);
+    assert.ok(decisions.every((row) => row.deliveryAdmittedAt && row.deliveryAdmissionToken === null), "final daemon ACKs are durable before their Turns settle");
 
     const owner = agents.find((agent) => agent.id === aliceTurn.ownerAgentId)!;
     const ownerIndex = agents.findIndex((agent) => agent.id === owner.id);
