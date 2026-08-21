@@ -341,7 +341,13 @@ export function Chat() {
       const d = await api("GET", `/api/messages/channel/${chId}?limit=${PAGE_SIZE}&before=${msgs[0]!.seq}`);
       if (curIdRef.current !== chId) return; // channel switched mid-fetch → drop the stale result (finally still clears the in-flight flag)
       const older: Msg[] = d.messages || [];
-      if (older.length) { const el = scrollRef.current; prependRestoreRef.current = el ? el.scrollHeight : null; setMsgs((m) => [...older, ...m]); } // capture height right before prepend; layout effect restores after
+      if (older.length) {
+        try {
+          const meta = await api("GET", `/api/channels/${chId}/threads?parentMessageIds=${older.map((message) => message.id).join(",")}`);
+          if (curIdRef.current === chId) setThreadMeta((current) => ({ ...(meta || {}), ...current }));
+        } catch { /* messages remain readable when optional thread metadata fails */ }
+        const el = scrollRef.current; prependRestoreRef.current = el ? el.scrollHeight : null; setMsgs((m) => [...older, ...m]);
+      } // capture height right before prepend; layout effect restores after
       setHasMore(!!d.hasMore);
     } catch { /* transient — the next scroll-to-top retries */ } finally { loadingOlderRef.current = false; }
   };
@@ -363,10 +369,13 @@ export function Chat() {
     if (thread) return; // panel already open, do not re-open
     const short = threadParam.includes(":") ? threadParam.split(":").pop()! : threadParam;
     const m = msgs.find((x) => x.id === threadParam || x.id.startsWith(short));
-    if (m) startThread(m);
+    if (m) {
+      if (isAuditDm && !threadMeta[m.id]) return; // wait for metadata; oversight must never create a thread
+      void startThread(m);
+    }
     else if (hasMore && !loadingOlderRef.current) void loadOlder(); // parent outside the loaded window → page older history until it appears or the channel start is reached
     // eslint-disable-next-line
-  }, [threadParam, msgs, hasMore]);
+  }, [threadParam, msgs, hasMore, threadMeta, isAuditDm]);
 
   const setTab = (t: string) => { const n = new URLSearchParams(sp); if (t === "chat") n.delete("chatTab"); else n.set("chatTab", t); setSp(n, { replace: true }); };
   const doDM = async (agentId: string) => { const id = await openDM("agent", agentId); if (id) nav(`/s/${slug}/channel/${id}`); }; // used by AgentProfile onMessage callback
