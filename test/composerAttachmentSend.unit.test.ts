@@ -57,6 +57,16 @@ test("composer preserves content until the message request succeeds", () => {
   assert.ok(clearText > failed && clearAttachments > failed, "composer content must clear only after confirmed success");
 });
 
+test("composer retains shortcut-forced task mode after failure", () => {
+  const src = fs.readFileSync(new URL("../web/src/views/Composer.tsx", import.meta.url), "utf8");
+  const forcedTask = src.indexOf("if (asT && !asTask) setAsTask(true);");
+  const request = src.indexOf('const result = await api("POST", "/api/messages"');
+  const confirmed = src.indexOf("if (result?.ok !== true)");
+  const clearTask = src.indexOf("setAsTask(false)");
+  assert.ok(forcedTask >= 0 && forcedTask < request, "a shortcut-forced task must be recorded before the request");
+  assert.ok(clearTask > confirmed, "submitted task mode must clear only after confirmed success");
+});
+
 test("composer send failures have generic and detailed localized feedback", () => {
   const src = fs.readFileSync(new URL("../web/src/views/Composer.tsx", import.meta.url), "utf8");
   const en = JSON.parse(fs.readFileSync(new URL("../web/src/locales/en.json", import.meta.url), "utf8"));
