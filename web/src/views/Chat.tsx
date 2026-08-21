@@ -346,6 +346,7 @@ export function Chat() {
           const meta = await api("GET", `/api/channels/${chId}/threads?parentMessageIds=${older.map((message) => message.id).join(",")}`);
           if (curIdRef.current === chId) setThreadMeta((current) => ({ ...(meta || {}), ...current }));
         } catch { /* messages remain readable when optional thread metadata fails */ }
+        if (curIdRef.current !== chId) return; // metadata added a second await; recheck before mutating the new channel's state
         const el = scrollRef.current; prependRestoreRef.current = el ? el.scrollHeight : null; setMsgs((m) => [...older, ...m]);
       } // capture height right before prepend; layout effect restores after
       setHasMore(!!d.hasMore);
