@@ -116,6 +116,8 @@ gap: task *ownership* (§6 C5).
    Reconnect sync derives audited roots and threads from current access instead of creating membership rows.
    Soft-deleting either participant immediately invalidates the pair and revokes root, thread, list, and
    event-delivery access.
+   The web agent-profile DM tab is rendered only for `manageAgents` holders, and direct URL state falls
+   back to the ordinary profile for other members.
 
 ## 5. What the hardening PRs enforced
 

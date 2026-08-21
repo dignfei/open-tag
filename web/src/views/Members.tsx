@@ -157,7 +157,8 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
   const toast = useToast();
   const nav = useNavigate();
   const [sp, setSp] = useSearchParams();
-  const tab = sp.get("agentTab") || "profile";
+  const requestedTab = sp.get("agentTab") || "profile";
+  const tab = requestedTab === "dms" && !capabilities.manageAgents ? "profile" : requestedTab;
   const [a, setA] = useState<any>(null);
   const [edit, setEdit] = useState(false); const [dn, setDn] = useState(""); const [ds, setDs] = useState(""); const [projectPath, setProjectPath] = useState(""); // profile edit state
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
@@ -238,7 +239,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
           ["workspace", t("members.tabWorkspace")],
           ["integrations", t("members.tabIntegrations")],
           ["activity", t("members.tabActivity")],
-        ] as [string, string][]).map(([k, label]) => (
+        ] as [string, string][]).filter(([k]) => k !== "dms" || capabilities.manageAgents).map(([k, label]) => (
           <button key={k} className={tab === k ? "on" : ""} onClick={() => setSp((prev) => { const n = new URLSearchParams(prev); n.set("agentTab", k); return n; })}>{label}</button>
         ))}
       </div>
