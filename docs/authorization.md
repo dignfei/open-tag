@@ -98,6 +98,9 @@ gap: task *ownership* (§6 C5).
    `canAgentReadChannel` enforced in `resolveTarget` / `resolveMessageId` / `findParent` / `channel/join`
    (§6 C1–C3/C6/C7/C8 — fixed). Human REST read/write of messages and tasks is gated by
    `canUserReadChannel` (`channelAccess.ts`) — same logic, human plane (§6 F-REST — fixed).
+   Direct-message identity is the canonical `dm:<sorted UUID>:<sorted UUID>` pair. An agent-to-agent
+   conversation is valid only while both identities are live agents in the same workspace and its
+   membership rows contain exactly that agent pair; malformed or stale rows fail closed.
 
 ## 5. What the hardening PRs enforced
 

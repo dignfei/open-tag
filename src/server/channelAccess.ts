@@ -6,6 +6,52 @@ import { and, eq } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { isUuid } from "./util.js";
 
+/** Participant identity encoded by getOrCreateDM; null for malformed names. */
+export function canonicalDmParticipantIds(name: string): [string, string] | null {
+  const parts = name.split(":");
+  if (parts.length !== 3 || parts[0] !== "dm" || !isUuid(parts[1]!) || !isUuid(parts[2]!) || parts[1] === parts[2]) return null;
+  const ids = [parts[1]!, parts[2]!].sort() as [string, string];
+  return name === `dm:${ids[0]}:${ids[1]}` ? ids : null;
+}
+
+/** Classify a canonical DM using current identities and membership rows. */
+export function classifyAgentDm(
+  serverId: string,
+  channelName: string,
+  members: Array<{ memberType: string; memberId: string }>,
+  agents: Array<{ id: string; serverId: string; deletedAt: Date | null }>,
+  users: Array<{ id: string }> = [],
+): "regular" | "invalid" | "valid" {
+  const pair = canonicalDmParticipantIds(channelName);
+  if (!pair) return "invalid";
+
+  const pairAgents = agents.filter((agent) => pair.includes(agent.id));
+  const liveAgentIds = new Set(pairAgents
+    .filter((agent) => agent.serverId === serverId && !agent.deletedAt)
+    .map((agent) => agent.id));
+  const userIds = new Set(users.filter((user) => pair.includes(user.id)).map((user) => user.id));
+
+  if (pair.some((id) => (liveAgentIds.has(id) && userIds.has(id))
+    || pairAgents.some((agent) => agent.id === id && !liveAgentIds.has(id)))) return "invalid";
+
+  if (pair.every((id) => liveAgentIds.has(id))) {
+    const exactMembers = members.length === 2
+      && members.every((member) => member.memberType === "agent" && pair.includes(member.memberId))
+      && pair.every((id) => members.some((member) => member.memberType === "agent" && member.memberId === id));
+    return exactMembers ? "valid" : "invalid";
+  }
+
+  const roles = pair.map((id) => liveAgentIds.has(id) ? "agent" as const : userIds.has(id) ? "user" as const : null);
+  if (roles.some((role) => role == null) || !roles.includes("user")) return "invalid";
+  for (let i = 0; i < pair.length; i++) {
+    const role = roles[i]!;
+    const otherRole = role === "agent" ? "user" : "agent";
+    if ((role === "agent" && !members.some((member) => member.memberType === role && member.memberId === pair[i]))
+      || members.some((member) => member.memberType === otherRole && member.memberId === pair[i])) return "invalid";
+  }
+  return "regular";
+}
+
 /**
  * May this human user read (and write to) this channel?
  *
