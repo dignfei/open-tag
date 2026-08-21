@@ -587,8 +587,8 @@ export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () 
   ];
   const modelLoadingOpts = [{ value: "", label: t("members.modelDetecting") }];
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-bg">
+      <div className="modal">
         <h3>{t("members.createAgentTitle")}</h3>
         <label>{t("members.computerLabel")}<span className="req-mark">*</span></label>
         <Select ariaLabel={t("members.computerAriaLabel")} value={machineId} options={machineOpts} onChange={(nextMachineId) => { setMachineId(nextMachineId); setProjectPath(""); setProjectPickerOpen(false); }} placeholder={t("members.noMachineOnline")} />
