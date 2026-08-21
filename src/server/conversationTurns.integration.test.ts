@@ -769,6 +769,11 @@ test("delivery commit is bound to the authenticated current machine and persists
     });
     assert.deepEqual(stale, { ok: false, error: "stale or unidentified machine connection" });
 
+    const pendingReplacement = await commitAgentDeliveryAdmission({
+      ws: replacementWs, serverId: f.server.id, machineId: ownerMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.deepEqual(pendingReplacement, { ok: false, error: "delivery recipient is no longer admissible" });
     if (committed.ok) await releaseAgentDeliveryAdmission(committed.delivery);
     const [released] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
