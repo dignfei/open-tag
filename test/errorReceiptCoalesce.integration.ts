@@ -104,6 +104,7 @@ async function main() {
   await finalizeAgentActivityRun(serverId, agentId, primaryChannelId, createdStreamId, "Error Agent", "error");
   errors = await receipts(primaryChannelId, agentId, "error");
   check("repeated receipt finalization does not duplicate activity", errors.length === 1 && errors[0]?.agentActivity.length === 3);
+  const receiptPosition = { id: errors[0]!.id, seq: errors[0]!.seq, createdAt: errors[0]!.createdAt.getTime() };
 
   const groupedStreamId = await finish(primaryChannelId, "grouped-error", "error");
   errors = await receipts(primaryChannelId, agentId, "error");
@@ -113,6 +114,7 @@ async function main() {
     eq(schema.agentActivityLog.channelId, primaryChannelId),
   ));
   check("grouped receipt follows the latest stream", errors[0]?.agentActivityStreamId === groupedStreamId);
+  check("grouping preserves the receipt timeline position", errors[0]?.id === receiptPosition.id && errors[0]?.seq === receiptPosition.seq && errors[0]?.createdAt.getTime() === receiptPosition.createdAt);
   check("grouped source activity stays bound to the receipt", errors[0]?.agentActivity.length === 4 && activityRows.length === 4 && activityRows.every((row) => row.messageId === errors[0]?.id));
 
   await finish(primaryChannelId, "handled", "handled");
