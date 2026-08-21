@@ -750,10 +750,14 @@ test("delivery commit is bound to the authenticated current machine and persists
       deliveryId, agentId: agent.id, seq: message.seq,
     });
     assert.equal(committed.ok, true);
-    const [decision] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
+    const [decision] = await db.select({
+      admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt,
+      token: schema.agentMessageDecisions.deliveryAdmissionToken,
+    }).from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
     ));
     assert.ok(decision?.admittedAt, "commit returns only after durable recipient admission is visible");
+    assert.equal(decision?.token, committed.ok ? committed.delivery.admissionToken : null, "commit returns its durable admission owner token");
 
     const replacementWs = fakeWs();
     sockets.push(replacementWs);
