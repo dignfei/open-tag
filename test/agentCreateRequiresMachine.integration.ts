@@ -6,6 +6,8 @@
 //       consistent with this repo's other ownership pre-checks — see docs/authorization.md)
 //   [4] bogus/nonexistent machineId → 404 "machine not found"
 //   [5] valid, same-tenant machineId → 200, agent row persists with that machineId
+//   [6] decomposed Unicode handle → 200, trimmed NFC name persists and NFD dm:@ resolves to that exact agent
+//   [7] canonically equivalent Unicode handle → 409, no second row
 // Requires infra up (npm run infra) + worktree .env. Run: npx tsx test/agentCreateRequiresMachine.integration.ts
 import "../src/env.js";
 import { EventEmitter } from "node:events";
@@ -14,6 +16,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { eq } from "drizzle-orm";
 import { db, schema } from "../src/db/index.ts";
 import { signUser, hashToken, newKey } from "../src/server/auth.ts";
+import { resolveTarget } from "../src/server/core.ts";
 import { handleApi } from "../src/server/routes-api/index.ts";
 
 const ts = Date.now();
@@ -115,9 +118,32 @@ async function main() {
     check("DB row has machineId set", row?.machineId === ownMachineId, `machineId=${row?.machineId}`);
   }
 
+  console.log("\n[6] decomposed Unicode handle → 200, trimmed NFC name persists and routes");
+  const decomposedName = `E\u0301diteur-${ts}`;
+  const normalizedName = `Éditeur-${ts}`;
+  const r6 = await apiCall({ method: "POST", path: "/api/agents", token: ownerToken, serverId, body: { name: `  ${decomposedName}  `, machineId: ownMachineId } });
+  console.log(`     → status=${r6.status} body=${JSON.stringify(r6.body)}`);
+  check("200 returned", r6.status === 200);
+  if (r6.body?.id) {
+    createdAgentIds.push(r6.body.id);
+    const row = (await db.select().from(schema.agents).where(eq(schema.agents.id, r6.body.id)))[0];
+    check("Unicode name persists as trimmed NFC", row?.name === normalizedName, `name=${row?.name}`);
+    if (r5.body?.id) {
+      const target = await resolveTarget(serverId, `dm:@${decomposedName}`, r5.body.id);
+      check("NFD dm:@name resolves", !!target);
+      const dmMembers = target ? await db.select().from(schema.channelMembers).where(eq(schema.channelMembers.channelId, target.channelId)) : [];
+      check("DM peer is the newly created Unicode agent", dmMembers.some((m) => m.memberType === "agent" && m.memberId === r6.body.id));
+    }
+  }
+
+  console.log("\n[7] canonically equivalent Unicode handle → 409");
+  const r7 = await apiCall({ method: "POST", path: "/api/agents", token: ownerToken, serverId, body: { name: normalizedName, machineId: ownMachineId } });
+  console.log(`     → status=${r7.status} body=${JSON.stringify(r7.body)}`);
+  check("409 returned", r7.status === 409);
+
   // Confirm none of the rejected attempts [1]-[4] actually created a row (no name collision leakage either).
   const leaked = await db.select().from(schema.agents).where(eq(schema.agents.serverId, serverId));
-  check("only the [5] agent exists for this server", leaked.length === 1, `count=${leaked.length}`);
+  check("only the [5]-[6] agents exist for this server", leaked.length === 2, `count=${leaked.length}`);
 }
 
 main()

@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 process.env.JWT_SECRET ??= "test-secret";
 process.env.DAEMON_BOOTSTRAP_KEY ??= "test-bootstrap-key";
-const { parseMentions, membersToAutoJoin } = await import("../src/server/core.ts");
+const { invalidAgentName, normalizeAgentHandle, parseMentions, membersToAutoJoin } = await import("../src/server/core.ts");
 // Re-declare the Member type locally (avoids a static type-import from core.ts which would be hoisted).
 type Member = { type: "agent" | "user"; id: string; name: string; displayName: string };
 
@@ -22,6 +22,34 @@ const carol = human("carol");
 const workspace = [ghost, alice, bob, carol];
 
 const names = (ms: Member[]) => ms.map((m) => m.name).sort();
+
+test("agent handles accept Unicode letters while preserving addressable token boundaries", () => {
+  assert.equal(invalidAgentName("擅长写论文的员工"), false);
+  assert.equal(invalidAgentName("Éditeur-2"), false);
+  assert.equal(invalidAgentName("E\u0301diteur-2"), false);
+  assert.equal(invalidAgentName("कर्मचारी"), false);
+  assert.equal(invalidAgentName("𐐀".repeat(64)), false);
+  assert.equal(invalidAgentName("1writer"), true);
+  assert.equal(invalidAgentName("\u0301writer"), true);
+  assert.equal(invalidAgentName("论文 员工"), true);
+  assert.equal(invalidAgentName("论文😀"), true);
+  assert.equal(invalidAgentName("𐐀".repeat(65)), true);
+  assert.equal(invalidAgentName("员".repeat(65)), true);
+});
+
+test("normalizes agent handles to trimmed NFC", () => {
+  assert.equal(normalizeAgentHandle("  E\u0301diteur-2  "), "Éditeur-2");
+});
+
+test("parses canonically equivalent and combining-mark mentions", () => {
+  const writer = agent("擅长写论文的员工");
+  const editor = agent("Éditeur-2");
+  const devanagari = agent("कर्मचारी");
+  assert.deepEqual(
+    names(parseMentions("@擅长写论文的员工 请检查，@E\u0301diteur-2 @कर्मचारी @E\u0301diteur-2", [writer, editor, devanagari])),
+    names([writer, editor, devanagari]),
+  );
+});
 
 test("auto-joins referenced workspace members who aren't channel members yet", () => {
   // channel currently has only alice; message @s ghost (agent) and bob (human), both non-members
