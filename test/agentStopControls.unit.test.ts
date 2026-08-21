@@ -17,3 +17,12 @@ test("concurrent stop requests for one agent share one API call", async () => {
   release();
   await Promise.all([first, second]);
 });
+
+test("API failures are reported and permit a later retry", async () => {
+  let calls = 0;
+  const api = async () => (++calls === 1 ? { error: "daemon offline" } : { ok: true });
+
+  await assert.rejects(requestAgentStop(api, "agent-response-failure"), /daemon offline/);
+  await requestAgentStop(api, "agent-response-failure");
+  assert.equal(calls, 2);
+});
