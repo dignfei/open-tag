@@ -85,8 +85,8 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
     const v = text.trim(); if (!canSend || sendingRef.current) return;
     const asT = allowAsTask && (forceTask ?? asTask); // ⌘/Ctrl+Shift+Enter forces task; threads (allowAsTask=false) never send as task
     const ids = pendingAtts.map((a) => a.id); // canSend guarantees the full queue is uploaded
-    sendingRef.current = true; setSending(true);
-    setText(""); setAtQuery(null); setAsTask(false);
+    sendingRef.current = true; setSending(true); setAtQuery(null);
+    setText(""); setAsTask(false);
     setPendingAtts([]);
     try {
       const result = await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
@@ -131,6 +131,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
     ...humans.map((h) => ({ name: h.name, label: h.displayName || h.name, kind: "human", avatarUrl: h.avatarUrl })),
   ].filter((c) => c.name && handleKey(c.name).includes(handleKey(atQuery || ""))).slice(0, 8);
   const pick = (c: { name: string }) => {
+    if (sendingRef.current) return;
     const start = atPosRef.current;
     const after = text.slice(start + 1 + (atQuery?.length ?? 0));
     setText(text.slice(0, start) + "@" + c.name + " " + after);
@@ -142,7 +143,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
       {atQuery !== null && cands.length > 0 && (
         <div className="mention-menu">
           {cands.map((c, i) => (
-            <button key={c.kind + c.name} className={"mention-opt" + (i === atSel ? " sel" : "")} aria-selected={i === atSel}
+            <button key={c.kind + c.name} className={"mention-opt" + (i === atSel ? " sel" : "")} aria-selected={i === atSel} disabled={sending}
               onMouseEnter={() => setAtSel(i)} onMouseDown={(e) => { e.preventDefault(); pick(c); }}>
               <Avatar seed={c.name} url={avFor(c.avatarUrl)} size={22} />
               <span className="grow">{c.label} <span className="mk-name">@{c.name}</span></span>

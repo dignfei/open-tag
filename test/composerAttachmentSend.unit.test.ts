@@ -32,6 +32,9 @@ test("composer wires the readiness decision before clearing its draft", () => {
 test("composer locks draft changes while a send is in flight", () => {
   const src = fs.readFileSync(new URL("../web/src/views/Composer.tsx", import.meta.url), "utf8");
   assert.match(src, /if \(!arr\.length \|\| !channelId \|\| sendingRef\.current\) return;/, "new uploads must be rejected while sending");
+  assert.match(src, /setSending\(true\); setAtQuery\(null\);/, "starting a send must close the mention menu");
+  assert.match(src, /const pick = \(c: \{ name: string \}\) => \{\s*if \(sendingRef\.current\) return;/, "mention picks must not mutate an in-flight draft");
+  assert.match(src, /aria-selected=\{i === atSel\} disabled=\{sending\}/, "mention choices must be disabled while sending");
   assert.match(src, /onPaste=\{onPaste\} readOnly=\{sending\}/, "the text draft must be read-only while sending");
   assert.equal(src.match(/disabled=\{uploading \|\| sending\}/g)?.length, 2, "both upload controls must be disabled while sending");
   assert.match(src, /checked=\{asTask\} disabled=\{sending\}/, "task mode must be disabled while sending");
