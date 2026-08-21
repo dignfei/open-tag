@@ -114,6 +114,8 @@ gap: task *ownership* (§6 C5).
    `isAgentDmAuditChannel`, including inherited thread targets. Membership, join, lifecycle, and
    thread follow-state mutations refuse those conversations even when the caller can manage channels.
    Reconnect sync derives audited roots and threads from current access instead of creating membership rows.
+   Soft-deleting either participant immediately invalidates the pair and revokes root, thread, list, and
+   event-delivery access.
 
 ## 5. What the hardening PRs enforced
 

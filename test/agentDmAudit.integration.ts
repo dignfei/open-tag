@@ -208,6 +208,16 @@ async function main() {
 
   const r9 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: memberToken, serverId });
   check("human member reads their own human-agent DM", r9.status === 200 && JSON.stringify(r9.body).includes("human-dm-private-content"));
+
+  const deleted = await apiCall({ method: "DELETE", path: `/api/agents/${a2}`, token: ownerToken, serverId });
+  check("agent deletion succeeds through the public route", deleted.status === 200);
+
+  const revokedRoot = await apiCall({ method: "GET", path: `/api/messages/channel/${agentDmId}`, token: ownerToken, serverId });
+  const revokedThread = await apiCall({ method: "GET", path: `/api/messages/channel/${agentThreadId}`, token: ownerToken, serverId });
+  check("agent deletion revokes root and thread oversight", revokedRoot.status === 403 && revokedThread.status === 403);
+
+  const revokedList = await apiCall({ method: "GET", path: "/api/channels/dm", token: ownerToken, serverId });
+  check("agent deletion removes the conversation from the manager list", revokedList.status === 200 && !JSON.stringify(revokedList.body).includes(agentDmId));
 }
 
 main()
