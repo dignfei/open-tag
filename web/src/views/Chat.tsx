@@ -145,7 +145,7 @@ function ActionCardMsg({ m, readOnly = false }: { m: Msg; readOnly?: boolean }) 
             ? <div className="ac-done"><CheckCircle2 size={13} /> {t("chat.executedBy", { name: meta.executedByUserName || t("chat.someone") })}</div>
             : !readOnly && <button className="ac-btn" onClick={() => setOpen(true)}>{isChan ? t("chat.createChannel") : t("chat.createAgentBtn")}</button>}
         </div>
-        <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} />
+        <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} agentId={m.senderType === "agent" ? m.senderId : undefined} />
       </div>
       {open && isChan && (
         <CreateChannelModal
@@ -520,7 +520,7 @@ export function Chat() {
                         </div>
                         {isAgentReplyPreview
                           ? <AgentReplyPreviewBody m={m} />
-                          : <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} receipt />}
+                          : <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} receipt agentId={m.senderType === "agent" ? m.senderId : undefined} />}
                       </div>
                     </div>
                   </Fragment>
@@ -559,7 +559,7 @@ export function Chat() {
                     </div> : null}
                     {isMember ? <div className="msg-subhead"><span className="member-badge">{t("chat.memberBadge")}</span></div> : null}
                     {!!m.content && <div className="mbody"><MessageContent content={m.content} mentions={m.mentions || []} channels={channels} nav={navToken} /></div>}
-                    <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} />
+                    <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} agentId={m.senderType === "agent" ? m.senderId : undefined} />
                     {!!m.attachments?.length && <div className="msg-atts">{m.attachments.map((a) => <AttCard key={a.id} a={a} url={attachmentUrl(a.id)} />)}</div>}
                     {/* persistent meta row: task badge + thread button + reactions all on the same line (reactions no longer occupy a separate row) */}
                     <div className="msg-meta">
