@@ -159,6 +159,7 @@ gap: task *ownership* (§6 C5).
 | `PUT /api/agents/:id/scopes` | member only | `manageAgents` (GET stays member-readable) |
 | `POST` / `DELETE /api/channels/:id/members` | member only (private-invite bypass + cross-tenant) | `manageChannels` + channel-ownership pre-check |
 | `resolveAgent` (all `/agent-api/*`) | accepted soft-deleted agents | filters `isNull(deletedAt)`; soft-delete also clears `agentTokenHash` |
+| `GET /agent-api/profile/show?handle=` human fallback | any global username | target must belong to the current workspace |
 
 `POST /api/servers/:id/machines/:id/reconnect` was already correctly gated (`manageMachines` + online-guard).
 
