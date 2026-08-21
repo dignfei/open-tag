@@ -511,6 +511,16 @@ async function finalizeAgentActivityRunNow(serverId: string, agentId: string, ch
     if (updated) await publish(serverId, { type: "message:updated", message: updated });
     return;
   }
+  if (!pending.rows.length) {
+    const [claimed] = await db.select({ id: schema.agentActivityLog.id }).from(schema.agentActivityLog).where(and(
+      eq(schema.agentActivityLog.serverId, serverId),
+      eq(schema.agentActivityLog.agentId, agentId),
+      eq(schema.agentActivityLog.channelId, channelId),
+      eq(schema.agentActivityLog.streamId, streamId),
+      isNotNull(schema.agentActivityLog.messageId),
+    )).limit(1);
+    if (claimed) return;
+  }
   if (state === "error") {
     const recent = (await db.select().from(schema.messages).where(and(
       eq(schema.messages.serverId, serverId),
