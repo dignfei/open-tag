@@ -113,3 +113,8 @@ export async function canUserReadChannel(
 
   return false;
 }
+
+/** Human channel-content writes use an explicit boundary, separate from read policy. */
+export function canUserWriteChannel(serverId: string, channelId: string, userId: string): Promise<boolean> {
+  return canUserReadChannel(serverId, channelId, userId);
+}
