@@ -52,7 +52,7 @@ export function animateBackToBottom(el: Pick<HTMLDivElement, "scrollTop" | "scro
 
 function AgentReplyPreviewBody({ m }: { m: Msg }) {
   const preview = m as AgentReplyPreviewMsg;
-  return <AgentActivityDisclosure items={preview.agentActivity} state={preview.streamError ? "error" : preview.streamDone ? "handled" : "running"} receipt={!!preview.streamDone || !!preview.streamError} autoOpenWhenLive />;
+  return <AgentActivityDisclosure items={preview.agentActivity} state={preview.streamError ? "error" : preview.streamDone ? "handled" : "running"} receipt={!!preview.streamDone || !!preview.streamError} autoOpenWhenLive agentId={m.senderType === "agent" ? m.senderId : undefined} />;
 }
 
 function MessageActivityState({ items, state }: { items?: Msg["agentActivity"]; state?: string | null }) {
