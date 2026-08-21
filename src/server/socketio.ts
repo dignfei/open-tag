@@ -76,7 +76,7 @@ async function canReadChannel(uid: string, serverId: string, channelId: string):
 
 // Internal event object → named realtime events. Content-bearing events (message/task) only fan out to channel:<channelId> rooms (members only),
 // preventing private channel content from leaking to non-members; metadata / server-level events (agent/machine/thread:updated) fan out to server:<serverId>.
-export function emitMapped(serverId: string, event: any): void {
+export async function emitMapped(serverId: string, event: any): Promise<void> {
   if (!io) return;
   const srv = io;                                                           // capture non-null (io is not narrowed inside the closure)
   const room = srv.to(`server:${serverId}`);                                // server-level (all members)

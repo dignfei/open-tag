@@ -7,7 +7,7 @@ import { emitMapped } from "./socketio.js";
 export function initRealtime(): void { /* socket.io is attached in index.ts, no redis fan-out needed */ }
 
 export async function publish(serverId: string, event: unknown): Promise<void> {
-  emitMapped(serverId, event);
+  await emitMapped(serverId, event);
 }
 
 export { nextSeq };
