@@ -143,11 +143,19 @@ async function main() {
   const agentDmMessages = await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.channelId, agentDmId));
   check("denied send leaves the conversation unchanged", agentDmMessages.length === 1);
 
-  const r4 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: ownerToken, serverId });
-  check("manager cannot read a human-agent DM they have not joined", r4.status === 403);
+  const r4 = await apiCall({ method: "GET", path: "/api/channels/dm", token: ownerToken, serverId });
+  const auditEntry = Array.isArray(r4.body) ? r4.body.find((item: any) => item.id === agentDmId) : null;
+  check("manager DM list labels the audited pair", r4.status === 200 && auditEntry?.name === `auda_${ts} ⇄ audb_${ts}`);
+  check("audited pair has no misleading single-peer identity", auditEntry?.audit === true && auditEntry.peerId === null && auditEntry.peerType === null && auditEntry.peerAvatarUrl === null);
 
-  const r5 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: memberToken, serverId });
-  check("human member reads their own human-agent DM", r5.status === 200 && JSON.stringify(r5.body).includes("human-dm-private-content"));
+  const r5 = await apiCall({ method: "GET", path: "/api/channels/dm", token: memberToken, serverId });
+  check("plain member DM list omits the agent conversation", r5.status === 200 && !JSON.stringify(r5.body).includes(agentDmId));
+
+  const r6 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: ownerToken, serverId });
+  check("manager cannot read a human-agent DM they have not joined", r6.status === 403);
+
+  const r7 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: memberToken, serverId });
+  check("human member reads their own human-agent DM", r7.status === 200 && JSON.stringify(r7.body).includes("human-dm-private-content"));
 }
 
 main()
