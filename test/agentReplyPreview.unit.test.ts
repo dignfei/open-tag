@@ -137,6 +137,24 @@ test("a loaded grouped receipt removes its current run preview", () => {
   assert.equal((merged[0] as any).clientRenderKey, agentReplyPreviewId("agent-1", "stream-1"));
 });
 
+test("an unloaded grouped receipt removes its out-of-page preview", () => {
+  const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
+  receipt.agentActivityState = "error";
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const current = realMessage("msg-20", "Current page");
+  const withPreview = applyAgentReplyPreview([current], secondStart);
+  const updated = {
+    ...receipt,
+    agentActivityStreamId: "stream-2",
+    agentActivity: [{ timestamp: 1400, kind: "status", activity: "error" }],
+  };
+
+  const merged = mergePersistedAgentMessageUpdate(withPreview, updated);
+
+  assert.deepEqual(merged.map((m) => m.id), ["msg-20"]);
+  assert.strictEqual(applyAgentReplyPreview(merged, { ...secondStart, op: "error" }), merged);
+});
+
 test("same-agent starts supersede stale runs but other agents and channels remain independent", () => {
   const first = applyAgentReplyPreview([], startEvent);
   const latest = applyAgentReplyPreview(first, { ...startEvent, streamId: "stream-2" });
