@@ -72,3 +72,12 @@ test("the live sidebar offers a stop control for its primary agent", () => {
   assert.match(liveBar, /<AgentStopButton key=\{primary\.id\} agentId=\{primary\.id\} className="live-bar__stop" \/>/);
   assert.doesNotMatch(liveBar, /\/api\/agents\/.*\/stop/);
 });
+
+test("the live sidebar offers stop controls for every listed agent", () => {
+  const liveBar = fs.readFileSync(new URL("../web/src/views/LiveAgentBar.tsx", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../web/src/styles.css", import.meta.url), "utf8");
+
+  assert.match(liveBar, /<div key=\{a\.id\} className="live-bar__pop-row">/);
+  assert.match(liveBar, /<AgentStopButton agentId=\{a\.id\} className="live-bar__stop" \/>/);
+  assert.match(styles, /\.live-bar__pop-row\{display:flex;align-items:center;gap:4px\}/);
+});
