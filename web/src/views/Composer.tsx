@@ -166,7 +166,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
       <input type="file" ref={fileRef} multiple style={{ display: "none" }} onChange={onPickFiles} />
       <div className="composer-box" onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
         {reachStatusChip && <div className="composer-status-chip" role="status">{reachStatusChip}</div>}
-        <textarea className="composer-input" ref={inputRef} rows={1} value={text} onChange={onInput} onPaste={onPaste}
+        <textarea className="composer-input" ref={inputRef} rows={1} value={text} onChange={onInput} onPaste={onPaste} readOnly={sending}
           placeholder={effectivePlaceholder}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return; // IME composition (CJK input): Enter selects a candidate, not send
@@ -188,7 +188,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
             <button className="cb-icon im" title={t("chat.uploadFile")} disabled={uploading || sending} onClick={() => fileRef.current?.click()}><Paperclip size={16} className="im-tilt" /></button>
           </div>
           <div className="cb-right">
-            {allowAsTask && <label className={"astask" + (asTask ? " on" : "")} title={t("chat.sendAsTaskTitle")}><input type="checkbox" checked={asTask} onChange={(e) => setAsTask(e.target.checked)} />{t("chat.asTask")}</label>}
+            {allowAsTask && <label className={"astask" + (asTask ? " on" : "")} title={t("chat.sendAsTaskTitle")}><input type="checkbox" checked={asTask} disabled={sending} onChange={(e) => setAsTask(e.target.checked)} />{t("chat.asTask")}</label>}
             <button className="send-btn im" title={t("chat.sendTitle")} disabled={!canSend} onClick={() => send()}><Send size={15} className="im-nudge-up" /></button>
           </div>
         </div>
