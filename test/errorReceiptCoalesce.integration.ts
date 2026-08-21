@@ -117,6 +117,10 @@ async function main() {
   check("grouping preserves the receipt timeline position", errors[0]?.id === receiptPosition.id && errors[0]?.seq === receiptPosition.seq && errors[0]?.createdAt.getTime() === receiptPosition.createdAt);
   check("grouped source activity stays bound to the receipt", errors[0]?.agentActivity.length === 4 && activityRows.length === 4 && activityRows.every((row) => row.messageId === errors[0]?.id));
 
+  await finalizeAgentActivityRun(serverId, agentId, primaryChannelId, createdStreamId, "Error Agent", "error");
+  errors = await receipts(primaryChannelId, agentId, "error");
+  check("stale stream finalization leaves the grouped receipt unchanged", errors[0]?.agentActivityStreamId === groupedStreamId && errors[0]?.agentActivity.length === 4);
+
   await finish(primaryChannelId, "handled", "handled");
   check("handled runs keep their own receipt", (await receipts(primaryChannelId, agentId)).length === 2);
 
@@ -125,6 +129,11 @@ async function main() {
 
   await finish(primaryChannelId, "other-agent-error", "error", otherAgentId);
   check("another agent keeps its own error receipt", (await receipts(primaryChannelId, otherAgentId, "error")).length === 1);
+
+  const missingStartStreamId = `missing-start_${run}`;
+  await finalizeAgentActivityRun(serverId, otherAgentId, otherChannelId, missingStartStreamId, "Other Agent", "error");
+  const missingStartReceipts = await receipts(otherChannelId, otherAgentId, "error");
+  check("an initial error without Activity still creates a receipt", missingStartReceipts.length === 1 && missingStartReceipts[0]?.agentActivityStreamId === missingStartStreamId);
 
   await db.update(schema.messages)
     .set({ createdAt: new Date(Date.now() - 11 * 60 * 1000) })
