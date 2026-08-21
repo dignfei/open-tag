@@ -525,6 +525,7 @@ async function finalizeAgentActivityRunNow(serverId: string, agentId: string, ch
       await db.transaction(async (tx) => {
         await tx.update(schema.messages).set({
           agentActivity: [...(recent.agentActivity ?? []), ...pending.items],
+          agentActivityStreamId: streamId,
           updatedAt: new Date(),
         }).where(eq(schema.messages.id, recent.id));
         if (pending.rows.length) await tx.update(schema.agentActivityLog).set({ messageId: recent.id }).where(and(
