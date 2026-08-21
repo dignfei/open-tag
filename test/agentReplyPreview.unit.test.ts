@@ -155,6 +155,17 @@ test("an unloaded grouped receipt removes its out-of-page preview", () => {
   assert.strictEqual(applyAgentReplyPreview(merged, { ...secondStart, op: "error" }), merged);
 });
 
+test("a late terminal event cannot restore an absorbed grouped preview", () => {
+  const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
+  receipt.agentActivityState = "error";
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const withPreview = applyAgentReplyPreview([receipt], secondStart);
+  const updated = { ...receipt, agentActivityStreamId: "stream-2" };
+  const merged = mergePersistedAgentMessageUpdate(withPreview, updated);
+
+  assert.strictEqual(applyAgentReplyPreview(merged, { ...secondStart, op: "error" }), merged);
+});
+
 test("same-agent starts supersede stale runs but other agents and channels remain independent", () => {
   const first = applyAgentReplyPreview([], startEvent);
   const latest = applyAgentReplyPreview(first, { ...startEvent, streamId: "stream-2" });
