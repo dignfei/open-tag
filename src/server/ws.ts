@@ -13,7 +13,7 @@ import { markMachineAgentsOffline } from "./machineLiveness.js";
 import { ACTIVITY_LOG_CAP, logActivity, pruneAgentActivityLog, startAgentActivityRun } from "./agentActivity.js";
 import { finalizeAgentActivityRun } from "./core.js";
 import { acceptAgentDeliveryAck, hasPendingAgentDelivery, noteAgentDeliveryPending, rejectAgentDeliveryAck } from "./agentDeliveryAck.js";
-import { commitAgentDeliveryAdmission, releaseAgentDeliveryAdmission, type CommittedAgentDelivery } from "./agentDeliveryAdmission.js";
+import { commitAgentDeliveryAdmission, ownsAgentDeliveryAdmission, releaseAgentDeliveryAdmission, type CommittedAgentDelivery } from "./agentDeliveryAdmission.js";
 import { createWsFrameGate } from "./wsFrameGate.js";
 import { handleConversationTurnDaemonTopologyChange, resumeConversationTurnsForMachine } from "./conversationTurnRecovery.js";
 
@@ -81,12 +81,24 @@ async function onDaemon(ws: WebSocket, key: string): Promise<void> {
         if (!hasPendingAgentDelivery(deliveryId)) {
           ws.send(JSON.stringify({ type: "agent:deliver:rejected", deliveryId, error: "delivery is not pending" }));
         } else {
-          const result = await commitAgentDeliveryAdmission({ ws, serverId: serverId!, machineId, deliveryId, agentId: msg.agentId, seq: msg.seq });
-          if (result.ok) {
-            committedDeliveries.set(result.delivery.deliveryId, result.delivery);
-            ws.send(JSON.stringify({ type: "agent:deliver:admitted", deliveryId: result.delivery.deliveryId }));
+          const existing = deliveryId ? committedDeliveries.get(deliveryId) : undefined;
+          const reusable = existing
+            && existing.agentId === msg.agentId
+            && existing.seq === msg.seq
+            && !!machineId
+            && isCurrentMachineConn(machineId, ws)
+            && await ownsAgentDeliveryAdmission(existing);
+          if (reusable) {
+            ws.send(JSON.stringify({ type: "agent:deliver:admitted", deliveryId: existing.deliveryId }));
           } else {
-            ws.send(JSON.stringify({ type: "agent:deliver:rejected", deliveryId, error: result.error }));
+            if (existing) committedDeliveries.delete(existing.deliveryId);
+            const result = await commitAgentDeliveryAdmission({ ws, serverId: serverId!, machineId, deliveryId, agentId: msg.agentId, seq: msg.seq });
+            if (result.ok) {
+              committedDeliveries.set(result.delivery.deliveryId, result.delivery);
+              ws.send(JSON.stringify({ type: "agent:deliver:admitted", deliveryId: result.delivery.deliveryId }));
+            } else {
+              ws.send(JSON.stringify({ type: "agent:deliver:rejected", deliveryId, error: result.error }));
+            }
           }
         }
       }
