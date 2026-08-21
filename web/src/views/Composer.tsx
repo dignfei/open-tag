@@ -6,6 +6,7 @@ import { Avatar, resolveAvatar } from "../Avatar.tsx";
 import { IconFile } from "../icons.tsx";
 
 const isImage = (m?: string) => !!m && m.startsWith("image/");
+const handleKey = (s: string) => s.normalize("NFC").toLowerCase();
 
 export function canSendComposerDraft(text: string, pendingAtts: { status?: string }[]): boolean {
   return pendingAtts.every((a) => a.status === "done") && (!!text.trim() || pendingAtts.length > 0);
@@ -46,7 +47,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   const reach = useMemo<{ kind: "off" | "sleep" | "work" | "on"; names: string } | null>(() => {
     const targets = new Map<string, Agent>();
     if (dmAgent) targets.set(dmAgent.id, dmAgent);
-    for (const m of text.matchAll(/@([\p{L}\p{N}_-]+)/gu)) { const a = agents.find((x) => x.name === m[1]); if (a) targets.set(a.id, a); }
+    for (const m of text.matchAll(/@([\p{L}\p{M}\p{N}_-]+)/gu)) { const key = handleKey(m[1]!); const a = agents.find((x) => handleKey(x.name) === key); if (a) targets.set(a.id, a); }
     const allTargets = [...targets.values()];
     const offline = allTargets.filter((a) => {
       if (!a.machineId) return true;
@@ -104,14 +105,14 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   const onInput = (e: ChangeEvent<HTMLTextAreaElement>) => {
     const v = e.target.value; setText(v);
     const pos = e.target.selectionStart ?? v.length;
-    const m = /@([\p{L}\p{N}_-]*)$/u.exec(v.slice(0, pos)); // same Unicode class as the messageRender side (\p{L}): supports CJK and diacritic names
+    const m = /@([\p{L}\p{M}\p{N}_-]*)$/u.exec(v.slice(0, pos)); // same Unicode classes as messageRender: supports CJK and combining-mark scripts
     if (m) { setAtQuery(m[1]); atPosRef.current = pos - m[0].length; } else setAtQuery(null);
     setAtSel(0); // typing narrows the list → restart highlight at the top
   };
   const cands = atQuery === null ? [] : [
     ...agents.map((a) => ({ name: a.name, label: a.displayName || a.name, kind: "agent", avatarUrl: a.avatarUrl })),
     ...humans.map((h) => ({ name: h.name, label: h.displayName || h.name, kind: "human", avatarUrl: h.avatarUrl })),
-  ].filter((c) => c.name && c.name.toLowerCase().includes((atQuery || "").toLowerCase())).slice(0, 8);
+  ].filter((c) => c.name && handleKey(c.name).includes(handleKey(atQuery || ""))).slice(0, 8);
   const pick = (c: { name: string }) => {
     const start = atPosRef.current;
     const after = text.slice(start + 1 + (atQuery?.length ?? 0));
