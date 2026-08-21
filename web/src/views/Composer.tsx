@@ -86,11 +86,11 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
     const asT = allowAsTask && (forceTask ?? asTask); // ⌘/Ctrl+Shift+Enter forces task; threads (allowAsTask=false) never send as task
     const ids = pendingAtts.map((a) => a.id); // canSend guarantees the full queue is uploaded
     sendingRef.current = true; setSending(true); setAtQuery(null);
-    setText(""); setAsTask(false);
-    setPendingAtts([]);
+    setAsTask(false);
     try {
       const result = await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
       if (result?.ok !== true) { reportSendFailure(result?.error); return; }
+      setText(""); setPendingAtts([]);
     } catch (error) {
       reportSendFailure(error);
     } finally {

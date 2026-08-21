@@ -49,6 +49,14 @@ test("composer reports API and network send failures", () => {
   assert.match(src, /catch \(error\) \{\s*reportSendFailure\(error\);/, "network failures must surface through the same reporter");
 });
 
+test("composer preserves content until the message request succeeds", () => {
+  const src = fs.readFileSync(new URL("../web/src/views/Composer.tsx", import.meta.url), "utf8");
+  const failed = src.indexOf("if (result?.ok !== true) { reportSendFailure(result?.error); return; }");
+  const clearText = src.indexOf('setText("")');
+  const clearAttachments = src.indexOf("setPendingAtts([])");
+  assert.ok(clearText > failed && clearAttachments > failed, "composer content must clear only after confirmed success");
+});
+
 test("composer send failures have generic and detailed localized feedback", () => {
   const src = fs.readFileSync(new URL("../web/src/views/Composer.tsx", import.meta.url), "utf8");
   const en = JSON.parse(fs.readFileSync(new URL("../web/src/locales/en.json", import.meta.url), "utf8"));
