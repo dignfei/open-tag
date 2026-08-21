@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { daemonCount, isCurrentMachineConn } from "./daemonHub.js";
 import type { WebSocket } from "ws";
@@ -91,12 +91,41 @@ export async function ownsAgentDeliveryAdmission(delivery: CommittedAgentDeliver
     && !current.replyMessageId;
 }
 
-export async function releaseAgentDeliveryAdmission(delivery: CommittedAgentDelivery): Promise<void> {
-  await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: null, deliveryAdmissionToken: null, updatedAt: new Date() }).where(and(
+export async function acknowledgeAgentDeliveryAdmission(delivery: CommittedAgentDelivery): Promise<{ accepted: boolean; resumeTurnId: string | null }> {
+  const now = new Date();
+  return db.transaction(async (tx) => {
+    const [acknowledged] = await tx.update(schema.agentMessageDecisions).set({
+      deliveryAdmissionToken: null,
+      updatedAt: now,
+    }).where(and(
+      eq(schema.agentMessageDecisions.messageId, delivery.messageId),
+      eq(schema.agentMessageDecisions.agentId, delivery.agentId),
+      eq(schema.agentMessageDecisions.deliveryAdmissionToken, delivery.admissionToken),
+    )).returning({ messageId: schema.agentMessageDecisions.messageId });
+    if (!acknowledged) return { accepted: false, resumeTurnId: null };
+
+    const [resumed] = await tx.update(schema.conversationTurns).set({
+      state: "active",
+      responsibilityState: "active",
+      dispatchAfter: now,
+      dispatchLeaseUntil: null,
+      updatedAt: now,
+    }).where(and(
+      eq(schema.conversationTurns.triggerMessageId, delivery.messageId),
+      eq(schema.conversationTurns.state, "blocked"),
+      ne(schema.conversationTurns.responsibilityState, "completed"),
+    )).returning({ id: schema.conversationTurns.id });
+    return { accepted: true, resumeTurnId: resumed?.id ?? null };
+  });
+}
+
+export async function releaseAgentDeliveryAdmission(delivery: CommittedAgentDelivery): Promise<boolean> {
+  const released = await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: null, deliveryAdmissionToken: null, updatedAt: new Date() }).where(and(
     eq(schema.agentMessageDecisions.messageId, delivery.messageId),
     eq(schema.agentMessageDecisions.agentId, delivery.agentId),
     eq(schema.agentMessageDecisions.deliveryAdmissionToken, delivery.admissionToken),
     eq(schema.agentMessageDecisions.grantStatus, "active"),
     isNull(schema.agentMessageDecisions.replyMessageId),
-  ));
+  )).returning({ messageId: schema.agentMessageDecisions.messageId });
+  return released.length === 1;
 }
