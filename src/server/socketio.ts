@@ -51,7 +51,11 @@ export function attachSocketIO(server: Server): void {
     // user can read it (member / public channel / thread of a readable channel), so realtime tracks what you view.
     socket.on("join:channel", async (channelId: string) => {
       if (!channelId || typeof channelId !== "string") return;
-      if (await canReadChannel(uid, serverId, channelId)) socket.join(`channel:${channelId}`); // refuses private/DM non-members (no content leak)
+      try {
+        if (await canReadChannel(uid, serverId, channelId)) await socket.join(`channel:${channelId}`);
+      } catch (error) {
+        log.warn("realtime room authorization failed; join withheld", { uid, serverId, channelId, error: String(error) });
+      }
     });
     socket.on("leave:channel", (channelId: string) => { if (typeof channelId === "string") socket.leave(`channel:${channelId}`); });
     socket.on("disconnect", (reason) => log.debug("socket disconnected", { uid, reason }));
