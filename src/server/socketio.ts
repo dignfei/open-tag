@@ -74,29 +74,65 @@ async function canReadChannel(uid: string, serverId: string, channelId: string):
   return false;                                                             // private / DM the user is not a member of
 }
 
+async function emitAuthorizedChannel(
+  srv: IOServer,
+  serverId: string,
+  channelId: string,
+  emissions: Array<[eventName: string, payload: unknown]>,
+  candidateChannelIds = [channelId],
+): Promise<void> {
+  const roomNames = [...new Set(candidateChannelIds)].map((id) => `channel:${id}`);
+  const sockets = new Map<string, Awaited<ReturnType<typeof srv.fetchSockets>>[number]>();
+  for (const roomName of roomNames) {
+    try {
+      for (const socket of await srv.in(roomName).fetchSockets()) sockets.set(socket.id, socket);
+    } catch (error) {
+      log.warn("realtime room lookup failed; event withheld", { serverId, channelId, roomName, error: String(error) });
+    }
+  }
+  await Promise.all([...sockets.values()].map(async (socket) => {
+    const uid = typeof socket.data.uid === "string" ? socket.data.uid : "";
+    let allowed = false;
+    try {
+      allowed = !!uid && socket.data.serverId === serverId && await canReadChannel(uid, serverId, channelId);
+    } catch (error) {
+      log.warn("realtime channel authorization failed; event withheld", { serverId, channelId, uid, error: String(error) });
+    }
+    if (!allowed) {
+      await Promise.all(roomNames.map(async (roomName) => {
+        try { await socket.leave(roomName); }
+        catch (error) { log.warn("stale realtime room eviction failed", { serverId, channelId, uid, roomName, error: String(error) }); }
+      }));
+      return;
+    }
+    try { for (const [eventName, payload] of emissions) socket.emit(eventName, payload); }
+    catch (error) { log.warn("realtime channel emit failed", { serverId, channelId, uid, error: String(error) }); }
+  }));
+}
+
 // Internal event object → named realtime events. Content-bearing events (message/task) only fan out to channel:<channelId> rooms (members only),
 // preventing private channel content from leaking to non-members; metadata / server-level events (agent/machine/thread:updated) fan out to server:<serverId>.
 export async function emitMapped(serverId: string, event: any): Promise<void> {
   if (!io) return;
   const srv = io;                                                           // capture non-null (io is not narrowed inside the closure)
   const room = srv.to(`server:${serverId}`);                                // server-level (all members)
-  const chan = (cid: string) => srv.to(`channel:${cid}`);                   // channel-level (channel members only)
   switch (event?.type) {
-    case "message": chan(event.message.channelId).emit("message:new", event.message); break; // content → channel members only
+    case "message": await emitAuthorizedChannel(srv, serverId, event.message.channelId, [["message:new", event.message]]); break;
     case "task": {
-      if (event.op === "deleted") { chan(event.channelId).emit("task:deleted", { channelId: event.channelId, taskId: event.taskId }); break; }
+      if (event.op === "deleted") { await emitAuthorizedChannel(srv, serverId, event.channelId, [["task:deleted", { channelId: event.channelId, taskId: event.taskId }]]); break; }
       const t = event.task; // = serializeMsg(message), includes channelId
-      if (event.op === "created") chan(t.channelId).emit("task:created", { channelId: t.channelId, tasks: [t] });
-      else chan(t.channelId).emit("task:updated", { channelId: t.channelId, task: t });
-      chan(t.channelId).emit("message:updated", t); // task ops also emit message:updated to sync the source message's task fields (channel members only)
+      const taskEvent: [string, unknown] = event.op === "created"
+        ? ["task:created", { channelId: t.channelId, tasks: [t] }]
+        : ["task:updated", { channelId: t.channelId, task: t }];
+      await emitAuthorizedChannel(srv, serverId, t.channelId, [taskEvent, ["message:updated", t]]);
       break;
     }
     // agent:activity merges status + trajectory (carries entries[]). Internally we still keep status/trajectory as two sources; map both to this single event here.
     case "agent": room.emit("agent:activity", { agentId: event.id, name: event.name, status: event.status, activity: event.activity, detail: event.detail ?? "" }); break;
     case "trajectory": room.emit("agent:activity", { agentId: event.agentId, name: event.name, entries: event.entries }); break;
-    case "agent:reply": chan(event.channelId).emit("agent:reply", event); break; // ephemeral streaming preview → channel members only, never server-wide
-    case "message:updated": chan(event.message.channelId).emit("message:updated", event.message); break; // reactions/edits (content) → channel members only
-    case "thread:updated": room.emit("thread:updated", { threadChannelId: event.threadChannelId, parentMessageId: event.parentMessageId, parentChannelId: event.parentChannelId, replyCount: event.replyCount, participantIds: event.participantIds, senderId: event.senderId, senderType: event.senderType }); break;
+    case "agent:reply": await emitAuthorizedChannel(srv, serverId, event.channelId, [["agent:reply", event]]); break;
+    case "message:updated": await emitAuthorizedChannel(srv, serverId, event.message.channelId, [["message:updated", event.message]]); break;
+    case "thread:updated": if (event.parentChannelId) await emitAuthorizedChannel(srv, serverId, event.parentChannelId, [["thread:updated", { threadChannelId: event.threadChannelId, parentMessageId: event.parentMessageId, parentChannelId: event.parentChannelId, replyCount: event.replyCount, senderId: event.senderId, senderType: event.senderType }]], [event.parentChannelId, event.threadChannelId]); break;
     case "agent:created": room.emit("agent:created", event.agent); break;
     case "agent:deleted": room.emit("agent:deleted", { id: event.id }); break;
     case "machine": room.emit("machine:status", { machineId: event.machineId, status: event.online ? "online" : "offline", online: event.online, hostname: event.hostname, runtimes: event.runtimes }); break; // machine status payload: machineId + status ("online"/"offline")
