@@ -70,6 +70,7 @@ async function emitAuthorizedChannel(
   channelId: string,
   emissions: Array<[eventName: string, payload: unknown]>,
   candidateChannelIds = [channelId],
+  includeServerCandidates = false,
 ): Promise<void> {
   const roomNames = [...new Set(candidateChannelIds)].map((id) => `channel:${id}`);
   const sockets = new Map<string, Awaited<ReturnType<typeof srv.fetchSockets>>[number]>();
@@ -78,6 +79,13 @@ async function emitAuthorizedChannel(
       for (const socket of await srv.in(roomName).fetchSockets()) sockets.set(socket.id, socket);
     } catch (error) {
       log.warn("realtime room lookup failed; event withheld", { serverId, channelId, roomName, error: String(error) });
+    }
+  }
+  if (includeServerCandidates) {
+    try {
+      for (const socket of await srv.in(`server:${serverId}`).fetchSockets()) sockets.set(socket.id, socket);
+    } catch (error) {
+      log.warn("realtime server-room lookup failed; event withheld", { serverId, channelId, error: String(error) });
     }
   }
   await Promise.all([...sockets.values()].map(async (socket) => {
@@ -117,9 +125,9 @@ export async function emitMapped(serverId: string, event: any): Promise<void> {
       await emitAuthorizedChannel(srv, serverId, t.channelId, [taskEvent, ["message:updated", t]]);
       break;
     }
-    // agent:activity merges status + trajectory (carries entries[]). Internally we still keep status/trajectory as two sources; map both to this single event here.
-    case "agent": room.emit("agent:activity", { agentId: event.id, name: event.name, status: event.status, activity: event.activity, detail: event.detail ?? "" }); break;
-    case "trajectory": room.emit("agent:activity", { agentId: event.agentId, name: event.name, entries: event.entries }); break;
+    // Workspace status remains visible, but channel-derived detail and trajectories follow channel access.
+    case "agent": room.emit("agent:activity", { agentId: event.id, name: event.name, status: event.status, activity: event.activity, detail: event.channelId ? "" : (event.detail ?? "") }); break;
+    case "trajectory": if (event.channelId) await emitAuthorizedChannel(srv, serverId, event.channelId, [["agent:activity", { agentId: event.agentId, name: event.name, entries: event.entries }]], [event.channelId], true); break;
     case "agent:reply": await emitAuthorizedChannel(srv, serverId, event.channelId, [["agent:reply", event]]); break;
     case "message:updated": await emitAuthorizedChannel(srv, serverId, event.message.channelId, [["message:updated", event.message]]); break;
     case "thread:updated": if (event.parentChannelId) await emitAuthorizedChannel(srv, serverId, event.parentChannelId, [["thread:updated", { threadChannelId: event.threadChannelId, parentMessageId: event.parentMessageId, parentChannelId: event.parentChannelId, replyCount: event.replyCount, senderId: event.senderId, senderType: event.senderType }]], [event.parentChannelId, event.threadChannelId]); break;
