@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertCircle, Brain, Check, ChevronRight, FilePen, FileText, Globe, ListTodo, MessageSquare, Search, Terminal, Wrench, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { AgentStopButton } from "./AgentStopButton.tsx";
 import type { AgentActivityItem } from "./store.tsx";
 
 export type AgentRunPhase = "thinking" | "working" | "error" | null;
@@ -66,7 +67,7 @@ function eventSummary(item?: AgentActivityItem): string {
   return [item.activity, item.detail].filter(Boolean).join(" · ");
 }
 
-export function AgentActivityDisclosure({ items = [], state = "handled", receipt = false, autoOpenWhenLive = false }: { items?: AgentActivityItem[]; state?: string | null; receipt?: boolean; autoOpenWhenLive?: boolean }) {
+export function AgentActivityDisclosure({ items = [], state = "handled", receipt = false, autoOpenWhenLive = false, agentId }: { items?: AgentActivityItem[]; state?: string | null; receipt?: boolean; autoOpenWhenLive?: boolean; agentId?: string | null }) {
   const { t } = useTranslation();
   const phase = useMemo(() => agentRunPhase(items, state), [items, state]);
   const live = phase === "thinking" || phase === "working";
@@ -90,13 +91,16 @@ export function AgentActivityDisclosure({ items = [], state = "handled", receipt
   if (!items.length && !live) return null;
   return (
     <div className={`msg-act${live ? " is-live" : ""}${failed ? " is-error" : ""}${receipt ? " is-receipt" : ""}`}>
-      <button className="msg-act-toggle" type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <span className="msg-act-state" aria-hidden="true">{failed ? <AlertCircle size={14} /> : live ? <Activity size={14} /> : <Check size={14} />}</span>
-        <span className="msg-act-label">{label}</span>
-        <span className="msg-act-summary">{summary}</span>
-        <span className="msg-act-count">{t("chat.activityCount", { count: items.length })}</span>
-        <ChevronRight className="msg-act-chevron" size={14} aria-hidden="true" />
-      </button>
+      <div className="msg-act-head">
+        <button className="msg-act-toggle" type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+          <span className="msg-act-state" aria-hidden="true">{failed ? <AlertCircle size={14} /> : live ? <Activity size={14} /> : <Check size={14} />}</span>
+          <span className="msg-act-label">{label}</span>
+          <span className="msg-act-summary">{summary}</span>
+          <span className="msg-act-count">{t("chat.activityCount", { count: items.length })}</span>
+          <ChevronRight className="msg-act-chevron" size={14} aria-hidden="true" />
+        </button>
+        {live && agentId ? <AgentStopButton agentId={agentId} className="msg-act-stop" iconSize={13} /> : null}
+      </div>
       <div className={`msg-act-reveal${open ? " is-open" : ""}`} aria-hidden={!open}><div className="msg-act-body">
         {items.map((item, index) => (
           <ActivityEventRow key={`${item.timestamp}-${index}`} item={item} current={live && index === items.length - 1} />

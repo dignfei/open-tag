@@ -225,8 +225,8 @@ test("channel and thread render the same Activity disclosure and no permanent Li
   assert.match(chat, /<AgentActivityDisclosure items=\{m\.agentActivity\}/);
   assert.match(chat, /message:updated/);
   assert.match(chat, /className=\{"agent-run"/);
-  assert.match(chat, /receipt=\{!!preview\.streamDone \|\| !!preview\.streamError\} autoOpenWhenLive/, "only the pre-reply trace should open itself while live");
-  assert.match(chat, /<AgentActivityDisclosure items=\{m\.agentActivity\} state=\{m\.agentActivityState\} receipt \/>/);
+  assert.match(chat, /receipt=\{!!preview\.streamDone \|\| !!preview\.streamError\} autoOpenWhenLive agentId=\{m\.senderType === "agent" \? m\.senderId : undefined\}/, "only the pre-reply trace should open itself while live");
+  assert.match(chat, /<AgentActivityDisclosure items=\{m\.agentActivity\} state=\{m\.agentActivityState\} receipt agentId=\{m\.senderType === "agent" \? m\.senderId : undefined\} \/>/);
   assert.match(layout, /chatPanelOpen \? " has-panel"/);
   assert.doesNotMatch(chat + layout, /Agent Live Trace|agentLiveTrace|agentTraceHint/);
   assert.match(activity, /aria-expanded=\{open\}/);

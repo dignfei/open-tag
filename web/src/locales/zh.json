@@ -79,6 +79,8 @@
     "delete": "删除",
     "dm": "私信",
     "stop": "停止",
+    "stopping": "正在停止…",
+    "stopFailedWithReason": "停止 agent 失败：{{reason}}",
     "start": "启动",
     "restart": "重启",
     "tabProfile": "概览",
