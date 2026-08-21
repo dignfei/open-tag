@@ -97,7 +97,9 @@ gap: task *ownership* (§6 C5).
    self-join guard (`routes-api.ts` "private channel is invite-only") has an agent-plane equivalent:
    `canAgentReadChannel` enforced in `resolveTarget` / `resolveMessageId` / `findParent` / `channel/join`
    (§6 C1–C3/C6/C7/C8 — fixed). Human REST read/write of messages and tasks is gated by
-   `canUserReadChannel` (`channelAccess.ts`) — same logic, human plane (§6 F-REST — fixed).
+   `canUserReadChannel` (`channelAccess.ts`) — same logic, human plane (§6 F-REST — fixed). Threads
+   inherit the current parent-channel decision before any direct thread membership is considered, and
+   tenant ownership is checked before membership rows can grant access.
    Direct-message identity is the canonical `dm:<sorted UUID>:<sorted UUID>` pair. An agent-to-agent
    conversation is valid only while both identities are live agents in the same workspace and its
    membership rows contain exactly that agent pair; malformed or stale rows fail closed.
