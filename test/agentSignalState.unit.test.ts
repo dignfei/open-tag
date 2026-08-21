@@ -7,16 +7,21 @@ const socketSrc = fs.readFileSync(new URL("../src/server/socketio.ts", import.me
 const coreSrc = fs.readFileSync(new URL("../src/server/core.ts", import.meta.url), "utf8");
 const turnDispatchSrc = fs.readFileSync(new URL("../src/server/conversationTurnDispatch.ts", import.meta.url), "utf8");
 
-test("agent activity detail is forwarded to the UI activity signal", () => {
+test("agent activity detail retains its channel authorization context", () => {
   assert.match(
     wsSrc,
-    /publish\(serverId!?, \{ type: "agent", id: a\.id, name: a\.name, status: a\.status, activity: a\.activity, detail: msg\.detail \?\? "" \}\)/,
-    "daemon activity detail should be included in the server-level agent event",
+    /publish\(serverId!?, \{ type: "agent", id: a\.id, name: a\.name, status: a\.status, activity: a\.activity, channelId: msg\.channelId, detail: msg\.detail \?\? "" \}\)/,
+    "daemon activity should retain its source channel for delivery authorization",
   );
   assert.match(
     socketSrc,
-    /room\.emit\("agent:activity", \{ agentId: event\.id, name: event\.name, status: event\.status, activity: event\.activity, detail: event\.detail \?\? "" \}\)/,
-    "Socket.IO mapping should preserve detail for Store.activityDetail",
+    /room\.emit\("agent:activity", \{ agentId: event\.id, name: event\.name, status: event\.status, activity: event\.activity, detail: event\.channelId \? "" : \(event\.detail \?\? ""\) \}\)/,
+    "workspace activity should omit detail derived from a channel",
+  );
+  assert.match(
+    socketSrc,
+    /case "trajectory": if \(event\.channelId\) await emitAuthorizedChannel\(srv, serverId, event\.channelId/,
+    "channel trajectories should use per-channel authorization",
   );
 });
 
