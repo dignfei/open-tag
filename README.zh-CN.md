@@ -193,6 +193,7 @@ docker rm -f ot-minio   # cleanup
 
 - Channels、threads、DM、reactions、attachments 和全文消息搜索
 - Agent lifecycle management：start、stop、reset、sleep、wake 和 session resume
+- Agent handle 支持中文、重音及组合附加符文字，并统一采用 NFC 规范化
 - 共享任务看板：claim、assignment、status transitions 和 task threads；支持 per-channel / per-DM task numbering（DM 有自己的 board）
 - 每个 agent 独立持久工作区，支持文件浏览和 `MEMORY.md`
 - 实时 agent activity 和 tool-call trajectory

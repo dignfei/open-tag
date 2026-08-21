@@ -563,9 +563,9 @@ export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () 
   }, [runtime, machineId]);
   const create = async () => {
     if (!machineId) { setErr(t("members.machineRequired")); return; } // Computer is required: an unbound agent only runs via the legacy broadcast-to-all-daemons fallback (tech-debt I77) — force an explicit pick.
-    const nm = name.trim();
+    const nm = name.trim().normalize("NFC");
     if (!nm) { setErr(t("members.nameRequired")); return; }
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(nm) || nm.length > 64) { setErr(t("members.nameInvalid")); return; } // @mention handle must be machine-safe; keep regex + length 64 in sync with core.ts AGENT_NAME_RE / MAX_AGENT_NAME
+    if (!/^\p{L}[\p{L}\p{M}\p{N}_-]*$/u.test(nm) || [...nm].length > 64) { setErr(t("members.nameInvalid")); return; } // Unicode @handle grammar; keep regex + length 64 in sync with core.ts AGENT_NAME_RE / MAX_AGENT_NAME
     setBusy(true); setErr("");
     try {
       const r = await api("POST", "/api/agents", { machineId, name: nm, description: desc.trim() || null, projectPath: projectPath.trim() || null, runtime, model: model && model !== LOCAL_DEFAULT ? model : null, reasoning: thinkingLevels.length ? (reasoning || null) : null, fastMode: fast });
@@ -593,7 +593,7 @@ export function CreateAgentModal({ onClose, prefill, onCreated }: { onClose: () 
         <label>{t("members.computerLabel")}<span className="req-mark">*</span></label>
         <Select ariaLabel={t("members.computerAriaLabel")} value={machineId} options={machineOpts} onChange={(nextMachineId) => { setMachineId(nextMachineId); setProjectPath(""); setProjectPickerOpen(false); }} placeholder={t("members.noMachineOnline")} />
         {machineOpts.length === 0 && <div className="hint">{t("members.noMachineHint")}</div>}
-        <label>{t("members.nameLabel")}</label><input value={name} maxLength={64} onChange={(e) => setName(e.target.value)} placeholder={t("members.namePlaceholder")} />
+        <label>{t("members.nameLabel")}</label><input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("members.namePlaceholder")} />
         <label>{t("members.descriptionLabel")}</label><textarea value={desc} maxLength={3000} onChange={(e) => setDesc(e.target.value)} placeholder={t("members.descriptionPlaceholder")} />
         <label>{t("members.projectDirectoryLabel")}</label><ProjectDirectoryField value={projectPath} onChange={setProjectPath} machine={machines.find((machine) => machine.id === machineId)} pickerOpen={projectPickerOpen} onPickerOpenChange={setProjectPickerOpen} parentHandlesEscape />
         <div className="hint">{t("members.projectDirectoryHint")}</div>

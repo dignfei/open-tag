@@ -6,7 +6,7 @@ import { db, schema } from "../src/db/index.ts";
 import { createMessage, getOrCreateThread } from "../src/server/core.ts";
 
 const ts = Date.now();
-const owner = `owner_${ts}`, bob = `bob_${ts}`, ghost = `ghost_${ts}`;
+const owner = `owner_${ts}`, bob = `bob_${ts}`, ghost = `Éditeur-${ts}`, ghostMention = `E\u0301diteur-${ts}`;
 
 let serverId = "", ownerId = "", bobId = "", ghostId = "";
 let pubCh = "", privCh = "", dmCh = "";
@@ -72,7 +72,7 @@ async function main() {
   await setup();
 
   console.log("\n[1] PUBLIC channel: owner @s a non-member agent and a non-member human");
-  const m1 = await createMessage({ serverId, channelId: pubCh, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghost} 跑下数据 @${bob} 你也看下` });
+  const m1 = await createMessage({ serverId, channelId: pubCh, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghostMention} 跑下数据 @${bob} 你也看下` });
   const pm = await members(pubCh), p1 = await mentionsOf(m1.id);
   check("non-member agent ghost auto-joined the channel", inChannel(pm, "agent", ghostId));
   check("non-member human bob auto-joined the channel", inChannel(pm, "user", bobId));
@@ -81,11 +81,11 @@ async function main() {
 
   console.log("\n[2] PUBLIC channel: re-@ an existing member is idempotent (no duplicate rows)");
   const before = (await members(pubCh)).length;
-  await createMessage({ serverId, channelId: pubCh, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghost} again` });
+  await createMessage({ serverId, channelId: pubCh, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghostMention} again` });
   check("member count unchanged on second mention", (await members(pubCh)).length === before);
 
   console.log("\n[3] PRIVATE channel: @ a non-member must NOT auto-join (no private-history leak)");
-  const m3 = await createMessage({ serverId, channelId: privCh, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghost} secret stuff` });
+  const m3 = await createMessage({ serverId, channelId: privCh, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghostMention} secret stuff` });
   check("ghost NOT added to the private channel", !inChannel(await members(privCh), "agent", ghostId));
   check("no mention recorded in private channel (stays a no-op)", !mentioned(await mentionsOf(m3.id), "agent", ghostId));
 
@@ -99,14 +99,14 @@ async function main() {
   console.log("\n[5] THREAD under a PUBLIC channel: @ a non-thread-member agent inherits the parent's workspace reach (auto-join + wake)");
   const parent5 = await createMessage({ serverId, channelId: pubCh, senderType: "user", senderId: ownerId, senderName: owner, content: "open a thread under the public channel" });
   const th5 = await getOrCreateThread(serverId, parent5.id, { type: "user", id: ownerId });
-  const m5 = await createMessage({ serverId, channelId: th5.id, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghost} please pick up this thread` });
+  const m5 = await createMessage({ serverId, channelId: th5.id, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghostMention} please pick up this thread` });
   check("non-member agent ghost auto-joined the THREAD (parent is public → workspace reach)", inChannel(await members(th5.id), "agent", ghostId));
   check("mention to ghost recorded in the thread (no longer silently dropped)", mentioned(await mentionsOf(m5.id), "agent", ghostId));
 
   console.log("\n[6] THREAD under a PRIVATE channel: @ a non-parent-member must NOT auto-join (inherits private reach — no leak)");
   const parent6 = await createMessage({ serverId, channelId: privCh, senderType: "user", senderId: ownerId, senderName: owner, content: "open a thread under the private channel" });
   const th6 = await getOrCreateThread(serverId, parent6.id, { type: "user", id: ownerId });
-  const m6 = await createMessage({ serverId, channelId: th6.id, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghost} secret thread work` });
+  const m6 = await createMessage({ serverId, channelId: th6.id, senderType: "user", senderId: ownerId, senderName: owner, content: `@${ghostMention} secret thread work` });
   check("ghost NOT added to the private-parent thread (no leak)", !inChannel(await members(th6.id), "agent", ghostId));
   check("no mention recorded in the private-parent thread (stays a no-op)", !mentioned(await mentionsOf(m6.id), "agent", ghostId));
 }

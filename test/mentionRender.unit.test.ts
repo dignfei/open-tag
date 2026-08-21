@@ -33,6 +33,17 @@ test("mention matching is case-insensitive", () => {
   assert.equal(out, "[@ALICE](tag:human:u-alice)");
 });
 
+test("canonically equivalent and combining-mark mentions remain linkified", () => {
+  const out = processMessageContent("@E\u0301diteur-2 and @कर्मचारी", {
+    mentions: [
+      { type: "agent", id: "a-editor", name: "Éditeur-2" },
+      { type: "agent", id: "a-devanagari", name: "कर्मचारी" },
+    ],
+    channels: ch,
+  });
+  assert.equal(out, "[@E\u0301diteur-2](tag:agent:a-editor) and [@कर्मचारी](tag:agent:a-devanagari)");
+});
+
 test("channel references still resolve against the channel list", () => {
   const out = processMessageContent("see #general", { mentions: [], channels: ch });
   assert.equal(out, "see [#general](tag:channel:c-general)");
