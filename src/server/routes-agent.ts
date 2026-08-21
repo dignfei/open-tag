@@ -705,10 +705,18 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
   if (p === "/agent-api/profile/show" && method === "GET") {
     const who = (url.searchParams.get("handle") || "").replace(/^@/, "");
     const a = who
-      ? (await db.select().from(schema.agents).where(and(eq(schema.agents.serverId, serverId), eq(schema.agents.name, who))))[0]
+      ? (await db.select().from(schema.agents).where(and(
+        eq(schema.agents.serverId, serverId),
+        eq(schema.agents.name, who),
+        isNull(schema.agents.deletedAt),
+      )))[0]
       : (await db.select().from(schema.agents).where(eq(schema.agents.id, agent.id)))[0];
     if (a) return (sendJson(res, 200, { type: "agent", name: a.name, displayName: a.displayName, description: a.description, runtime: a.runtime, model: a.model, status: a.status }), true);
-    const u = who ? (await db.select().from(schema.users).where(eq(schema.users.name, who)))[0] : null;
+    const uRow = who ? (await db.select().from(schema.users).where(eq(schema.users.name, who)))[0] : null;
+    const u = uRow && (await db.select({ userId: schema.serverMembers.userId }).from(schema.serverMembers).where(and(
+      eq(schema.serverMembers.serverId, serverId),
+      eq(schema.serverMembers.userId, uRow.id),
+    )))[0] ? uRow : null;
     if (u) return (sendJson(res, 200, { type: "user", name: u.name, displayName: u.displayName, description: u.description }), true);
     return (sendErr(res, 404, "profile not found"), true);
   }
