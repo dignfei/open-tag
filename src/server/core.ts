@@ -351,6 +351,7 @@ export async function createMessage(opts: {
   replyToMessageId?: string; replyGrantSlot?: ReplySlot;
   actionMetadata?: unknown; // action-card and other platform action payloads (slice09)
   agentActivity?: AgentActivityItem[]; agentActivityStreamId?: string | null; agentActivityState?: "running" | "handled" | "error" | null;
+  agentActivityRows?: (typeof schema.agentActivityLog.$inferSelect)[];
 }) {
   const claimedActivity = opts.senderType === "agent" && opts.senderId && opts.messageType !== "agent_activity_receipt" && !opts.agentActivityStreamId
     ? await claimPendingAgentActivity(opts.serverId, opts.senderId, opts.channelId)
@@ -372,7 +373,8 @@ export async function createMessage(opts: {
   // Channel row fetched once; its type drives task-number scope (per-DM vs per-server), thread auto-follow, mention auto-join, and wake routing below.
   const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, opts.channelId)))[0];
   const taskNumber = opts.asTask ? await nextTaskNumber(opts.serverId, ch) : null;
-  const [msg] = await db.insert(schema.messages).values({
+  const activityRows = opts.agentActivityRows ?? claimedActivity?.rows ?? [];
+  const messageValues = {
     seq, serverId: opts.serverId, channelId: opts.channelId,
     senderType: opts.senderType, senderId: opts.senderId, senderName: opts.senderName,
     messageType: opts.messageType ?? "chat", content: opts.content,
@@ -384,8 +386,17 @@ export async function createMessage(opts: {
     taskStatus: opts.asTask ? "todo" : null, taskNumber,
     replyToMessageId: opts.replyToMessageId ?? null,
     replyGrantSlot: opts.replyGrantSlot ?? null,
-  }).returning();
-  if (claimedActivity) await assignActivityRows(claimedActivity.rows, msg!.id);
+  };
+  const msg = activityRows.length
+    ? await db.transaction(async (tx) => {
+      const [created] = await tx.insert(schema.messages).values(messageValues).returning();
+      await tx.update(schema.agentActivityLog).set({ messageId: created!.id }).where(and(
+        isNull(schema.agentActivityLog.messageId),
+        inArray(schema.agentActivityLog.id, activityRows.map((row) => row.id)),
+      ));
+      return created;
+    })
+    : (await db.insert(schema.messages).values(messageValues).returning())[0];
 
   // auto-follow: reply to thread → sender auto-joins; replying after done clears done and brings thread back to inbox
   if (opts.senderId && opts.senderType !== "system" && ch?.type === "thread") {
@@ -511,11 +522,16 @@ async function finalizeAgentActivityRunNow(serverId: string, agentId: string, ch
       gt(schema.messages.createdAt, new Date(Date.now() - ERROR_RECEIPT_WINDOW_MS)),
     )).orderBy(desc(schema.messages.seq)).limit(1))[0];
     if (recent) {
-      await db.update(schema.messages).set({
-        agentActivity: [...(recent.agentActivity ?? []), ...pending.items],
-        updatedAt: new Date(),
-      }).where(eq(schema.messages.id, recent.id));
-      await assignActivityRows(pending.rows, recent.id);
+      await db.transaction(async (tx) => {
+        await tx.update(schema.messages).set({
+          agentActivity: [...(recent.agentActivity ?? []), ...pending.items],
+          updatedAt: new Date(),
+        }).where(eq(schema.messages.id, recent.id));
+        if (pending.rows.length) await tx.update(schema.agentActivityLog).set({ messageId: recent.id }).where(and(
+          isNull(schema.agentActivityLog.messageId),
+          inArray(schema.agentActivityLog.id, pending.rows.map((row) => row.id)),
+        ));
+      });
       const updated = await serializeMessageById(recent.id);
       if (updated) await publish(serverId, { type: "message:updated", message: updated });
       return;
@@ -525,6 +541,7 @@ async function finalizeAgentActivityRunNow(serverId: string, agentId: string, ch
     serverId, channelId, senderType: "agent", senderId: agentId, senderName: agentName,
     content: "", messageType: "agent_activity_receipt",
     agentActivity: pending.items, agentActivityStreamId: streamId, agentActivityState: state,
+    agentActivityRows: pending.rows,
   });
 }
 

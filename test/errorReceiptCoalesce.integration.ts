@@ -92,6 +92,26 @@ async function main() {
   let errors = await receipts(primaryChannelId, agentId, "error");
   check("concurrent recent errors share one receipt", errors.length === 1);
   check("the shared receipt retains every run", errors[0]?.agentActivity.length === 3);
+  let activityRows = await db.select().from(schema.agentActivityLog).where(and(
+    eq(schema.agentActivityLog.serverId, serverId),
+    eq(schema.agentActivityLog.agentId, agentId),
+    eq(schema.agentActivityLog.channelId, primaryChannelId),
+  ));
+  check("receipt owns every source activity row", activityRows.length === 3 && activityRows.every((row) => row.messageId === errors[0]?.id));
+
+  const createdStreamId = errors[0]!.agentActivityStreamId!;
+  await finalizeAgentActivityRun(serverId, agentId, primaryChannelId, createdStreamId, "Error Agent", "error");
+  errors = await receipts(primaryChannelId, agentId, "error");
+  check("repeated receipt finalization does not duplicate activity", errors.length === 1 && errors[0]?.agentActivity.length === 3);
+
+  await finish(primaryChannelId, "grouped-error", "error");
+  errors = await receipts(primaryChannelId, agentId, "error");
+  activityRows = await db.select().from(schema.agentActivityLog).where(and(
+    eq(schema.agentActivityLog.serverId, serverId),
+    eq(schema.agentActivityLog.agentId, agentId),
+    eq(schema.agentActivityLog.channelId, primaryChannelId),
+  ));
+  check("grouped source activity stays bound to the receipt", errors[0]?.agentActivity.length === 4 && activityRows.length === 4 && activityRows.every((row) => row.messageId === errors[0]?.id));
 
   await finish(primaryChannelId, "handled", "handled");
   check("handled runs keep their own receipt", (await receipts(primaryChannelId, agentId)).length === 2);
