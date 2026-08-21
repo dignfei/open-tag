@@ -7,6 +7,7 @@ import { addChannelMembers, getOrCreateDM, getOrCreateThread } from "../core.js"
 import { publish } from "../realtime.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
 import { canonicalDmParticipantIds, canUserReadChannel, canUserWriteChannel, classifyAgentDm, isAgentDmAuditChannel } from "../channelAccess.js";
+import { softDeleteChannelOnce } from "../channelDeletion.js";
 import { userChannels } from "./shared.js";
 
 const notSentBy = (userId: string) => or(isNull(schema.messages.senderId), ne(schema.messages.senderId, userId));
@@ -377,8 +378,9 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     if (targetCh?.type === "thread") return (sendErr(res, 403, "thread channels cannot be modified directly"), true);
     if (await isAgentDmAuditChannel(serverId, cone[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     if (method === "DELETE") {
-      await db.update(schema.channels).set({ deletedAt: new Date() }).where(and(eq(schema.channels.id, cone[1]!), eq(schema.channels.serverId, serverId))); // soft delete
-      await publish(serverId, { type: "channel:deleted", channelId: cone[1]! });
+      if (await softDeleteChannelOnce(serverId, cone[1]!)) {
+        await publish(serverId, { type: "channel:deleted", channelId: cone[1]! });
+      }
       return (sendJson(res, 200, { ok: true }), true);
     }
     const b = await readJson(req).catch(() => ({})); const patch: Record<string, unknown> = {};
