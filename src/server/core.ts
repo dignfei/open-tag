@@ -17,6 +17,23 @@ import { dispatchConversationTurn as dispatchConversationTurnWithDeps, dispatchL
 import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY } from "../daemonProtocol.js";
 
 const log = createLogger("server:core");
+const ERROR_RECEIPT_WINDOW_MS = 10 * 60 * 1000;
+const activityReceiptTails = new Map<string, Promise<void>>();
+
+async function serializeActivityReceipt<T>(key: string, action: () => Promise<T>): Promise<T> {
+  const previous = activityReceiptTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  activityReceiptTails.set(key, current);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (activityReceiptTails.get(key) === current) activityReceiptTails.delete(key);
+  }
+}
+
 const conversationTurnDispatchDeps: ConversationTurnDispatchDeps<AgentStartTarget> = {
   channelMembers,
   parseMentions,
@@ -464,6 +481,10 @@ export async function dispatchConversationTurn(turnId: string): Promise<void> {
 }
 
 export async function finalizeAgentActivityRun(serverId: string, agentId: string, channelId: string, streamId: string, agentName: string, state: "handled" | "error"): Promise<void> {
+  return serializeActivityReceipt(`${serverId}:${agentId}:${channelId}`, () => finalizeAgentActivityRunNow(serverId, agentId, channelId, streamId, agentName, state));
+}
+
+async function finalizeAgentActivityRunNow(serverId: string, agentId: string, channelId: string, streamId: string, agentName: string, state: "handled" | "error"): Promise<void> {
   const pending = await pendingActivityForStream(serverId, agentId, channelId, streamId);
   const [last] = await db.select().from(schema.messages).where(and(
     eq(schema.messages.serverId, serverId),
@@ -478,6 +499,27 @@ export async function finalizeAgentActivityRun(serverId: string, agentId: string
     const updated = await serializeMessageById(last.id);
     if (updated) await publish(serverId, { type: "message:updated", message: updated });
     return;
+  }
+  if (state === "error") {
+    const recent = (await db.select().from(schema.messages).where(and(
+      eq(schema.messages.serverId, serverId),
+      eq(schema.messages.channelId, channelId),
+      eq(schema.messages.senderType, "agent"),
+      eq(schema.messages.senderId, agentId),
+      eq(schema.messages.messageType, "agent_activity_receipt"),
+      eq(schema.messages.agentActivityState, "error"),
+      gt(schema.messages.createdAt, new Date(Date.now() - ERROR_RECEIPT_WINDOW_MS)),
+    )).orderBy(desc(schema.messages.seq)).limit(1))[0];
+    if (recent) {
+      await db.update(schema.messages).set({
+        agentActivity: [...(recent.agentActivity ?? []), ...pending.items],
+        updatedAt: new Date(),
+      }).where(eq(schema.messages.id, recent.id));
+      await assignActivityRows(pending.rows, recent.id);
+      const updated = await serializeMessageById(recent.id);
+      if (updated) await publish(serverId, { type: "message:updated", message: updated });
+      return;
+    }
   }
   await createMessage({
     serverId, channelId, senderType: "agent", senderId: agentId, senderName: agentName,
