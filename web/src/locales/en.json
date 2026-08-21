@@ -79,6 +79,8 @@
     "delete": "Delete",
     "dm": "Message",
     "stop": "Stop",
+    "stopping": "Stopping…",
+    "stopFailedWithReason": "Could not stop agent: {{reason}}",
     "start": "Start",
     "restart": "Restart",
     "tabProfile": "Overview",
