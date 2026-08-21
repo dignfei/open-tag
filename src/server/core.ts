@@ -522,11 +522,16 @@ async function finalizeAgentActivityRunNow(serverId: string, agentId: string, ch
       gt(schema.messages.createdAt, new Date(Date.now() - ERROR_RECEIPT_WINDOW_MS)),
     )).orderBy(desc(schema.messages.seq)).limit(1))[0];
     if (recent) {
-      await db.update(schema.messages).set({
-        agentActivity: [...(recent.agentActivity ?? []), ...pending.items],
-        updatedAt: new Date(),
-      }).where(eq(schema.messages.id, recent.id));
-      await assignActivityRows(pending.rows, recent.id);
+      await db.transaction(async (tx) => {
+        await tx.update(schema.messages).set({
+          agentActivity: [...(recent.agentActivity ?? []), ...pending.items],
+          updatedAt: new Date(),
+        }).where(eq(schema.messages.id, recent.id));
+        if (pending.rows.length) await tx.update(schema.agentActivityLog).set({ messageId: recent.id }).where(and(
+          isNull(schema.agentActivityLog.messageId),
+          inArray(schema.agentActivityLog.id, pending.rows.map((row) => row.id)),
+        ));
+      });
       const updated = await serializeMessageById(recent.id);
       if (updated) await publish(serverId, { type: "message:updated", message: updated });
       return;
