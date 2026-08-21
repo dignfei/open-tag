@@ -108,7 +108,8 @@ gap: task *ownership* (§6 C5).
    **Oversight exception:** a human holding `manageAgents` may read a valid agent-to-agent DM and its
    existing threads. The exception applies only to `canUserReadChannel`; the write boundary continues
    to require ordinary participant access. Human direct messages remain member-private. Agent-profile
-   conversation history uses the same capability and canonical-validity checks.
+   conversation history uses the same capability and canonical-validity checks. Thread metadata queries
+   bind every requested parent message to the already-authorized root channel.
 
 ## 5. What the hardening PRs enforced
 

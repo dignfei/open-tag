@@ -105,7 +105,12 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
   if (cthreads && method === "GET") {
     // Channel visibility gate — non-members must not enumerate thread metadata on private/DM channels (IDOR-B3)
     if (!(await canUserReadChannel(serverId, cthreads[1]!, userId))) return (sendErr(res, 403, "forbidden"), true);
-    const pids = (url.searchParams.get("parentMessageIds") || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const requestedParentIds = (url.searchParams.get("parentMessageIds") || "").split(",").map((s) => s.trim()).filter(isUuid);
+    if (!requestedParentIds.length) return (sendJson(res, 200, {}), true);
+    const parents = await db.select({ id: schema.messages.id }).from(schema.messages).where(and(
+      eq(schema.messages.serverId, serverId), eq(schema.messages.channelId, cthreads[1]!), inArray(schema.messages.id, requestedParentIds),
+    ));
+    const pids = parents.map((parent) => parent.id);
     if (!pids.length) return (sendJson(res, 200, {}), true);
     const threads = await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.type, "thread"), inArray(schema.channels.parentMessageId, pids)));
     const map: Record<string, any> = {};
