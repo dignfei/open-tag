@@ -160,14 +160,28 @@ async function main() {
   const threadWrite = await apiCall({ method: "POST", path: "/api/messages", token: ownerToken, serverId, body: { channelId: agentThreadId, content: "manager thread write" } });
   check("manager cannot reply in an audited thread", threadWrite.status === 403);
 
+  const threadFollow = await apiCall({ method: "POST", path: "/api/channels/threads/follow", token: ownerToken, serverId, body: { threadChannelId: agentThreadId } });
+  check("manager cannot follow an audited thread", threadFollow.status === 403);
+
   const threadMap = await apiCall({ method: "GET", path: `/api/channels/${agentDmId}/threads?parentMessageIds=${agentParentId},${humanParentId}`, token: ownerToken, serverId });
   check("thread metadata is limited to the requested conversation", threadMap.status === 200 && JSON.stringify(threadMap.body).includes(agentThreadId) && !JSON.stringify(threadMap.body).includes(humanThreadId));
 
   const r3 = await apiCall({ method: "POST", path: "/api/messages", token: ownerToken, serverId, body: { channelId: agentDmId, content: "manager must not write" } });
   check("manager cannot send to an audited DM", r3.status === 403);
 
+  const memberWrite = await apiCall({ method: "POST", path: `/api/channels/${agentDmId}/members`, token: ownerToken, serverId, body: { userId: ownerId } });
+  check("manager cannot add a human participant to an audited DM", memberWrite.status === 403);
+
+  const channelWrite = await apiCall({ method: "PATCH", path: `/api/channels/${agentDmId}`, token: ownerToken, serverId, body: { name: "renamed" } });
+  check("manager cannot rename an audited DM", channelWrite.status === 403);
+
+  const joinWrite = await apiCall({ method: "POST", path: `/api/channels/${agentDmId}/join`, token: ownerToken, serverId });
+  check("manager cannot join an audited DM", joinWrite.status === 403);
+
   const agentDmMessages = await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.channelId, agentDmId));
   check("denied send leaves the conversation unchanged", agentDmMessages.length === 1);
+  const agentDmMembers = await db.select().from(schema.channelMembers).where(eq(schema.channelMembers.channelId, agentDmId));
+  check("denied management leaves the agent pair unchanged", agentDmMembers.length === 2 && agentDmMembers.every((member) => member.memberType === "agent"));
 
   const r4 = await apiCall({ method: "GET", path: "/api/channels/dm", token: ownerToken, serverId });
   const auditEntry = Array.isArray(r4.body) ? r4.body.find((item: any) => item.id === agentDmId) : null;
