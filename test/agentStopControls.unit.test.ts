@@ -58,3 +58,10 @@ test("the shared stop control is permission-gated and reports pending failures",
   assert.match(en.members.stopFailedWithReason, /\{\{reason\}\}/);
   assert.match(zh.members.stopFailedWithReason, /\{\{reason\}\}/);
 });
+
+test("activity disclosures offer stop only for an identified live agent", () => {
+  const activity = fs.readFileSync(new URL("../web/src/AgentActivity.tsx", import.meta.url), "utf8");
+
+  assert.match(activity, /agentId\?: string \| null/);
+  assert.match(activity, /live && agentId \? <AgentStopButton agentId=\{agentId\}/);
+});
