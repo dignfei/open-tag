@@ -102,6 +102,9 @@ gap: task *ownership* (§6 C5).
    tenant ownership is checked before membership rows can grant access. Message creation, reactions,
    action-card execution, all task mutations, and thread creation or follow-state changes use the
    separate `canUserWriteChannel` boundary.
+   Channel-scoped attachment uploads use that same write boundary. Because multipart parsing streams
+   objects before the channel field can be authorized, a rejected upload removes every parsed object
+   before returning an error and creates no attachment rows.
    Direct-message identity is the canonical `dm:<sorted UUID>:<sorted UUID>` pair. An agent-to-agent
    conversation is valid only while both identities are live agents in the same workspace and its
    membership rows contain exactly that agent pair; malformed or stale rows fail closed.
