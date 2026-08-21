@@ -166,6 +166,19 @@ test("a late terminal event cannot restore an absorbed grouped preview", () => {
   assert.strictEqual(applyAgentReplyPreview(merged, { ...secondStart, op: "error" }), merged);
 });
 
+test("a grouped update absorbs a preview already marked terminal", () => {
+  const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
+  receipt.agentActivityState = "error";
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const previewOnly = applyAgentReplyPreview([], secondStart);
+  const erroredFirst = applyAgentReplyPreview(previewOnly, { ...secondStart, op: "error" });
+  const updated = { ...receipt, agentActivityStreamId: "stream-2" };
+
+  const replaced = mergePersistedAgentMessageUpdate(erroredFirst, updated);
+
+  assert.deepEqual(replaced.map((m) => m.id), ["receipt-1"]);
+});
+
 test("same-agent starts supersede stale runs but other agents and channels remain independent", () => {
   const first = applyAgentReplyPreview([], startEvent);
   const latest = applyAgentReplyPreview(first, { ...startEvent, streamId: "stream-2" });
