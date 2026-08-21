@@ -29,3 +29,12 @@ test("composer wires the readiness decision before clearing its draft", () => {
   assert.match(src, /catch \{ setPendingAtts\(\(p\) => p\.map\(\(x\) => \(x\.id === tmpId \? \{ \.\.\.x, status: "error" \} : x\)\)\); \}/, "a failed upload must remain visible");
   assert.match(src, /setPendingAtts\(\(p\) => p\.filter\(\(x\) => x\.id !== a\.id\)\)/, "the user must be able to remove a blocked row explicitly");
 });
+
+test("composer send failures have generic and detailed localized feedback", () => {
+  const en = JSON.parse(fs.readFileSync(new URL("../web/src/locales/en.json", import.meta.url), "utf8"));
+  const zh = JSON.parse(fs.readFileSync(new URL("../web/src/locales/zh.json", import.meta.url), "utf8"));
+  assert.equal(en.chat.sendFailed, "Could not send message");
+  assert.equal(en.chat.sendFailedReason, "Could not send message: {{error}}");
+  assert.equal(zh.chat.sendFailed, "消息发送失败");
+  assert.equal(zh.chat.sendFailedReason, "消息发送失败：{{error}}");
+});
