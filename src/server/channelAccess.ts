@@ -1,7 +1,7 @@
-// Shared channel read-access guard for the human REST plane.
-// The agent-plane mirror is canAgentReadChannel in core.ts.
-// The socket.io room-join check is canReadChannel in socketio.ts (private; not exported).
-// All three follow the same logic: channel member OR public channel OR thread of a readable parent.
+// Shared human channel authorization for REST and socket.io.
+// Reads include a narrow manager oversight rule; writes require ordinary participant access.
+// Threads inherit the current decision for their parent channel.
+// The agent-plane boundary remains canAgentReadChannel in core.ts.
 import { and, eq, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { requireCap } from "./capabilities.js";
