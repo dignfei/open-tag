@@ -20,7 +20,7 @@ import { dispatchConversationTurn, prepareConversationTurnResponsibility, type C
 import { acceptAgentDeliveryAck, rejectAgentDeliveryAck } from "./agentDeliveryAck.js";
 import { DELIVERY_ADMISSION_CAPABILITY, registerDaemon, registerDaemonCapabilities, registerMachineConn, unregisterDaemon, unregisterMachineConn } from "./daemonHub.js";
 import { handleConversationTurnDaemonTopologyChange } from "./conversationTurnRecovery.js";
-import { commitAgentDeliveryAdmission, releaseAgentDeliveryAdmission } from "./agentDeliveryAdmission.js";
+import { acknowledgeAgentDeliveryAdmission, commitAgentDeliveryAdmission, releaseAgentDeliveryAdmission } from "./agentDeliveryAdmission.js";
 import type { WebSocket } from "ws";
 
 after(async () => { await sql.end(); });
@@ -796,6 +796,19 @@ test("delivery commit is bound to the authenticated current machine and persists
     ));
     assert.equal(released?.admittedAt, null, "a failed in-flight delivery can be retried after release");
     assert.equal(released?.token, null);
+
+    const accepted = await commitAgentDeliveryAdmission({
+      ws: replacementWs, serverId: f.server.id, machineId: ownerMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.equal(accepted.ok, true);
+    const acknowledged = accepted.ok ? await acknowledgeAgentDeliveryAdmission(accepted.delivery) : null;
+    assert.deepEqual(acknowledged, { accepted: true, resumeTurnId: null });
+    const [acceptedRow] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt, token: schema.agentMessageDecisions.deliveryAdmissionToken }).from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
+    ));
+    assert.ok(acceptedRow?.admittedAt, "a final ACK preserves the durable delivered fence");
+    assert.equal(acceptedRow?.token, null, "a final ACK clears only its pending owner token");
   } finally {
     for (const socket of sockets) { unregisterMachineConn(socket); unregisterDaemon(socket); }
     await db.update(schema.agents).set({ machineId: null }).where(eq(schema.agents.serverId, f.server.id));
