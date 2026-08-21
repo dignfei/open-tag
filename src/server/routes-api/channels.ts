@@ -6,7 +6,7 @@ import { requireCap } from "../capabilities.js";
 import { addChannelMembers, getOrCreateDM, getOrCreateThread } from "../core.js";
 import { publish } from "../realtime.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
-import { canonicalDmParticipantIds, canUserReadChannel, canUserWriteChannel, classifyAgentDm } from "../channelAccess.js";
+import { canonicalDmParticipantIds, canUserReadChannel, canUserWriteChannel, classifyAgentDm, isAgentDmAuditChannel } from "../channelAccess.js";
 import { userChannels } from "./shared.js";
 
 const notSentBy = (userId: string) => or(isNull(schema.messages.senderId), ne(schema.messages.senderId, userId));
@@ -268,6 +268,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     if (!await requireCap(serverId, userId, "manageChannels")) return (sendErr(res, 403, "need manageChannels capability"), true); // members must not add anyone (incl. themselves) to a channel — this is the private-channel invite path
     const own = (await db.select({ id: schema.channels.id }).from(schema.channels).where(and(eq(schema.channels.id, cmem[1]!), eq(schema.channels.serverId, serverId))))[0];
     if (!own) return (sendErr(res, 404, "channel not found"), true); // and only this tenant's channels
+    if (await isAgentDmAuditChannel(serverId, cmem[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     const b = await readJson(req);
     const mt = b.userId ? "user" : "agent"; const mid = b.userId || b.agentId;
     if (!mid) return (sendErr(res, 400, "agentId or userId required"), true);
@@ -282,6 +283,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     if (!await requireCap(serverId, userId, "manageChannels")) return (sendErr(res, 403, "need manageChannels capability"), true);
     const own = (await db.select({ id: schema.channels.id }).from(schema.channels).where(and(eq(schema.channels.id, cmem[1]!), eq(schema.channels.serverId, serverId))))[0];
     if (!own) return (sendErr(res, 404, "channel not found"), true);
+    if (await isAgentDmAuditChannel(serverId, cmem[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     const b = await readJson(req).catch(() => ({}));
     const mt = b.userId ? "user" : "agent"; const mid = b.userId || b.agentId;
     if (mid && !isUuid(String(mid))) return (sendErr(res, 400, "invalid agentId or userId"), true); // channel_members.member_id is a uuid column
@@ -359,6 +361,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     const archTarget = (await db.select({ type: schema.channels.type }).from(schema.channels)
       .where(and(eq(schema.channels.id, cops[1]!), eq(schema.channels.serverId, serverId))))[0];
     if (archTarget?.type === "thread") return (sendErr(res, 403, "thread channels cannot be archived directly"), true);
+    if (await isAgentDmAuditChannel(serverId, cops[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     await db.update(schema.channels).set({ archivedAt: cops[2] === "archive" ? new Date() : null }).where(and(eq(schema.channels.id, cops[1]!), eq(schema.channels.serverId, serverId)));
     await publish(serverId, { type: "channel:updated", channelId: cops[1]! });
     return (sendJson(res, 200, { ok: true }), true);
@@ -372,6 +375,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     const targetCh = (await db.select({ type: schema.channels.type }).from(schema.channels)
       .where(and(eq(schema.channels.id, cone[1]!), eq(schema.channels.serverId, serverId))))[0];
     if (targetCh?.type === "thread") return (sendErr(res, 403, "thread channels cannot be modified directly"), true);
+    if (await isAgentDmAuditChannel(serverId, cone[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     if (method === "DELETE") {
       await db.update(schema.channels).set({ deletedAt: new Date() }).where(and(eq(schema.channels.id, cone[1]!), eq(schema.channels.serverId, serverId))); // soft delete
       await publish(serverId, { type: "channel:deleted", channelId: cone[1]! });
@@ -391,6 +395,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     if (!isUuid(chId!)) return (sendErr(res, 404, "channel not found"), true);
     const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.id, chId!), eq(schema.channels.serverId, serverId))))[0];
     if (!ch) return (sendErr(res, 404, "channel not found"), true);
+    if (action !== "read" && await isAgentDmAuditChannel(serverId, chId!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     if (action === "join") {
       if (ch.type === "private") return (sendErr(res, 403, "private channel is invite-only"), true); // private channels require owner/admin invitation (cmem POST); self-join is not allowed
       if (ch.type === "thread") return (sendErr(res, 403, "thread channels cannot be joined directly — use the thread follow API"), true);

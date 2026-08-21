@@ -111,7 +111,8 @@ gap: task *ownership* (§6 C5).
    conversation history uses the same capability and canonical-validity checks. Thread metadata queries
    bind every requested parent message to the already-authorized root channel.
    Privileged channel-management routes identify the same valid root through
-   `isAgentDmAuditChannel`, including inherited thread targets.
+   `isAgentDmAuditChannel`, including inherited thread targets. Membership, join, lifecycle, and
+   thread follow-state mutations refuse those conversations even when the caller can manage channels.
 
 ## 5. What the hardening PRs enforced
 
