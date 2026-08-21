@@ -814,6 +814,7 @@ test("delivery commit is bound to the authenticated current machine and persists
       eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
     ));
     assert.ok(afterStaleRelease?.admittedAt, "post-ACK cleanup cannot reopen delivered work");
+    if (accepted.ok) assert.deepEqual(await acknowledgeAgentDeliveryAdmission(accepted.delivery), { accepted: false, resumeTurnId: null });
   } finally {
     for (const socket of sockets) { unregisterMachineConn(socket); unregisterDaemon(socket); }
     await db.update(schema.agents).set({ machineId: null }).where(eq(schema.agents.serverId, f.server.id));
