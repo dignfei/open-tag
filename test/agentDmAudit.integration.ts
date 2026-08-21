@@ -151,11 +151,17 @@ async function main() {
   const r5 = await apiCall({ method: "GET", path: "/api/channels/dm", token: memberToken, serverId });
   check("plain member DM list omits the agent conversation", r5.status === 200 && !JSON.stringify(r5.body).includes(agentDmId));
 
-  const r6 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: ownerToken, serverId });
-  check("manager cannot read a human-agent DM they have not joined", r6.status === 403);
+  const r6 = await apiCall({ method: "GET", path: `/api/agents/${a1}/agent-dms`, token: ownerToken, serverId });
+  check("manager can inspect valid conversations from an agent profile", r6.status === 200 && JSON.stringify(r6.body).includes(agentDmId));
 
-  const r7 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: memberToken, serverId });
-  check("human member reads their own human-agent DM", r7.status === 200 && JSON.stringify(r7.body).includes("human-dm-private-content"));
+  const r7 = await apiCall({ method: "GET", path: `/api/agents/${a1}/agent-dms`, token: memberToken, serverId });
+  check("plain member cannot inspect agent conversation history", r7.status === 403);
+
+  const r8 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: ownerToken, serverId });
+  check("manager cannot read a human-agent DM they have not joined", r8.status === 403);
+
+  const r9 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: memberToken, serverId });
+  check("human member reads their own human-agent DM", r9.status === 200 && JSON.stringify(r9.body).includes("human-dm-private-content"));
 }
 
 main()
