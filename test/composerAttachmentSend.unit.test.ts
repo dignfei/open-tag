@@ -17,9 +17,13 @@ test("composer sends only text or a fully uploaded attachment queue", () => {
 
 test("composer wires the readiness decision before clearing its draft", () => {
   const src = fs.readFileSync(new URL("../web/src/views/Composer.tsx", import.meta.url), "utf8");
-  const guard = src.indexOf("if (!canSend) return;");
+  const guard = src.indexOf("if (!canSend || sendingRef.current) return;");
+  const claim = src.indexOf("sendingRef.current = true;");
   const effects = [src.indexOf('setText("")'), src.indexOf("setPendingAtts([])"), src.indexOf('api("POST", "/api/messages"')];
-  assert.ok(guard >= 0 && effects.every((i) => i > guard), "the send guard must run before clearing or posting the draft");
+  assert.ok(guard >= 0 && claim > guard && effects.every((i) => i > claim), "the send lock must be claimed before clearing or posting the draft");
+  assert.match(src, /const canSend = !!channelId && !sending && canSendComposerDraft/, "the rendered send state must stay disabled in flight");
+  assert.match(src, /catch \(error\) \{\s*console\.error\("Message send failed", error\);/, "request errors must not leave an unhandled send promise");
+  assert.match(src, /finally \{\s*sendingRef\.current = false; setSending\(false\);/, "the send lock must release after the request settles");
   assert.match(src, /disabled=\{!canSend\}/, "the button must expose the same readiness rule");
   assert.match(src, /const ids = pendingAtts\.map\(\(a\) => a\.id\)/, "a ready queue must be attached in full");
   assert.match(src, /catch \{ setPendingAtts\(\(p\) => p\.map\(\(x\) => \(x\.id === tmpId \? \{ \.\.\.x, status: "error" \} : x\)\)\); \}/, "a failed upload must remain visible");

@@ -33,6 +33,8 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   const [atSel, setAtSel] = useState(0); // highlighted candidate index for ↑/↓ keyboard nav
   const [pendingAtts, setPendingAtts] = useState<any[]>([]); // uploaded attachments queued to send with the next message
   const [uploading, setUploading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const atPosRef = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLInputElement>(null);
@@ -71,14 +73,22 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   ) : null;
   const reachStatusChip = reach?.kind === "off" ? t("chat.machineOfflineComposerPlaceholder", { names: reach.names }) : "";
   const effectivePlaceholder = reachPlaceholder ?? (allowAsTask && asTask ? t("chat.taskPlaceholder") : placeholder);
-  const canSend = !!channelId && canSendComposerDraft(text, pendingAtts);
+  const canSend = !!channelId && !sending && canSendComposerDraft(text, pendingAtts);
 
   const send = async (forceTask?: boolean) => {
-    const v = text.trim(); if (!canSend) return;
+    const v = text.trim(); if (!canSend || sendingRef.current) return;
     const asT = allowAsTask && (forceTask ?? asTask); // ⌘/Ctrl+Shift+Enter forces task; threads (allowAsTask=false) never send as task
+    const ids = pendingAtts.map((a) => a.id); // canSend guarantees the full queue is uploaded
+    sendingRef.current = true; setSending(true);
     setText(""); setAtQuery(null); setAsTask(false);
-    const ids = pendingAtts.map((a) => a.id); setPendingAtts([]); // canSend guarantees the full queue is uploaded
-    await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
+    setPendingAtts([]);
+    try {
+      await api("POST", "/api/messages", { channelId, content: v, asTask: asT, attachmentIds: ids });
+    } catch (error) {
+      console.error("Message send failed", error);
+    } finally {
+      sendingRef.current = false; setSending(false);
+    }
   };
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>) => { if (e.target.files?.length) addFiles(Array.from(e.target.files)); e.target.value = ""; };
   // Each file → placeholder (images get a localUrl preview + "uploading") → uploadOne streams progress → replaced with the real attachment on success, "error" on failure. Paste: images only; drag-drop: any type.
