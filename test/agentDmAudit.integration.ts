@@ -11,12 +11,15 @@
 // Run: ENV_FILE=<env pointing at dev infra> npx tsx test/agentDmAudit.integration.ts
 import "../src/env.js"; // load env before any DB/auth import
 import { EventEmitter } from "node:events";
+import { readdir } from "node:fs/promises";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { and, eq } from "drizzle-orm";
 import { db, schema } from "../src/db/index.ts";
+import { uploadsDir } from "../src/paths.ts";
 import { handleApi } from "../src/server/routes-api/index.ts";
 import { signUser } from "../src/server/auth.ts";
+import { deleteObject } from "../src/server/storage.ts";
 
 const ts = Date.now();
 let serverId = "";
@@ -77,6 +80,31 @@ async function apiCall(opts: { method: string; path: string; token: string; serv
   return { status: getStatus(), body: parsed };
 }
 
+async function uploadCall(channelId: string): Promise<{ status: number; body: unknown }> {
+  const boundary = `open-tag-agent-dm-${ts}`;
+  const body = Buffer.from([
+    `--${boundary}\r\nContent-Disposition: form-data; name="channelId"\r\n\r\n${channelId}\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="blocked.txt"\r\nContent-Type: text/plain\r\n\r\n`,
+    "blocked upload",
+    `\r\n--${boundary}--\r\n`,
+  ].join(""));
+  const req = Object.assign(Readable.from([body]), {
+    method: "POST",
+    url: "/api/attachments/upload",
+    headers: {
+      authorization: `Bearer ${ownerToken}`,
+      "x-server-id": serverId,
+      "content-type": `multipart/form-data; boundary=${boundary}`,
+      "content-length": String(body.length),
+    },
+  }) as unknown as IncomingMessage;
+  const { res, getStatus, getBody } = makeRes();
+  await handleApi(req, res, new URL("/api/attachments/upload", "http://localhost"), "POST");
+  let parsed: unknown;
+  try { parsed = JSON.parse(getBody()); } catch { parsed = getBody(); }
+  return { status: getStatus(), body: parsed };
+}
+
 async function setup() {
   const [u1] = await db.insert(schema.users).values({ name: `owner_${ts}`, displayName: "Owner", email: `o_${ts}@t.local` }).returning();
   const [u2] = await db.insert(schema.users).values({ name: `member_${ts}`, displayName: "Member", email: `m_${ts}@t.local` }).returning();
@@ -132,6 +160,9 @@ async function setup() {
 }
 
 async function cleanup() {
+  const attachments = await db.select({ storageKey: schema.attachments.storageKey }).from(schema.attachments).where(eq(schema.attachments.serverId, serverId));
+  await Promise.allSettled(attachments.map((attachment) => deleteObject(attachment.storageKey)));
+  await db.delete(schema.attachments).where(eq(schema.attachments.serverId, serverId));
   const chans = await db.select({ id: schema.channels.id }).from(schema.channels).where(eq(schema.channels.serverId, serverId));
   const msgs = await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.serverId, serverId));
   for (const m of msgs) await db.delete(schema.messageMentions).where(eq(schema.messageMentions.messageId, m.id));
@@ -180,6 +211,25 @@ async function main() {
 
   const joinWrite = await apiCall({ method: "POST", path: `/api/channels/${agentDmId}/join`, token: ownerToken, serverId });
   check("manager cannot join an audited DM", joinWrite.status === 403);
+
+  const attachmentsBefore = await db.select({ id: schema.attachments.id }).from(schema.attachments).where(and(
+    eq(schema.attachments.serverId, serverId), eq(schema.attachments.channelId, agentDmId),
+  ));
+  const objectsBefore = new Set(await readdir(uploadsDir()).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }));
+  const upload = await uploadCall(agentDmId);
+  const attachmentsAfter = await db.select({ id: schema.attachments.id }).from(schema.attachments).where(and(
+    eq(schema.attachments.serverId, serverId), eq(schema.attachments.channelId, agentDmId),
+  ));
+  const objectsAfter = new Set(await readdir(uploadsDir()).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }));
+  check("manager cannot upload to an audited DM", upload.status === 403);
+  check("denied upload creates no attachment row", attachmentsAfter.length === attachmentsBefore.length);
+  check("denied upload leaves no stored object", objectsAfter.size === objectsBefore.size && [...objectsAfter].every((key) => objectsBefore.has(key)));
 
   const agentDmMessages = await db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.channelId, agentDmId));
   check("denied send leaves the conversation unchanged", agentDmMessages.length === 1);
