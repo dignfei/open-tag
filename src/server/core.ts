@@ -551,7 +551,11 @@ export async function resolveTarget(serverId: string, target: string, selfAgentI
     if (!peerId || !peerType) return null;
     baseChannelId = await getOrCreateDM(serverId, selfAgentId, "agent", peerId, peerType);
   } else {
-    const ch = (await db.select().from(schema.channels).where(and(eq(schema.channels.serverId, serverId), eq(schema.channels.name, t.replace(/^#/, "")))))[0];
+    const ch = (await db.select().from(schema.channels).where(and(
+      eq(schema.channels.serverId, serverId),
+      eq(schema.channels.name, t.replace(/^#/, "")),
+      isNull(schema.channels.deletedAt),
+    )))[0];
     baseChannelId = ch?.id ?? null;
   }
   if (!baseChannelId) return null;
