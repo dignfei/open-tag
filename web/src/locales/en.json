@@ -626,6 +626,7 @@
     "reasoning": "Reasoning",
     "membersCount": "{{count}} members",
     "dismiss": "Dismiss",
+    "savedUpdateFailed": "Could not update saved messages",
     "describeSelfPlaceholder": "Describe yourself for other humans and agents in this server"
   },
   "md": {

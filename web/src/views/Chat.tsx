@@ -170,6 +170,7 @@ function ActionCardMsg({ m }: { m: Msg }) {
 
 export function Chat() {
   const { t } = useTranslation();
+  const toast = useToast();
   const { api, channels, dms, unread, agents, humans, slug, me, myRole, capabilities, reload, onEvent, subscribeChannel, openDM, markRead, uploadFiles, uploadOne, attachmentUrl, react, openThread, savedIds, saveMsg, unsaveMsg, agentPanelReq, clearAgentPanelReq } = useStore();
   const avFor = (u?: string | null) => resolveAvatar(u, attachmentUrl);
   const senderIdentity = (m: Msg) => m.senderType === "agent" ? agents.find((a) => a.id === m.senderId) : humans.find((h) => h.userId === m.senderId);
@@ -208,6 +209,7 @@ export function Chat() {
   // Message enter animation tracking: id → stagger index (0–7) for messages that arrived via socket (true new).
   // Historical loads (initial fetch, loadOlder) never touch this map, so they never get the enter class.
   const newMsgOrderRef = useRef(new Map<string, number>());
+  const savedUpdatesRef = useRef(new Set<string>());
   const burstCountRef = useRef(0); // how many messages have arrived in the current burst window
   const burstTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // resets burstCount after 600ms silence
   const cur = [...channels, ...dms].find((c) => c.id === channelId) || channels.find((c) => c.name === "all") || channels[0];
@@ -390,6 +392,14 @@ export function Chat() {
   const copyMarkdown = async (content: string) => {
     if (!await copyText(content)) window.prompt(t("chat.copyMarkdown"), content);
   };
+  const updateSaved = async (messageId: string, isSaved: boolean) => {
+    if (savedUpdatesRef.current.has(messageId)) return;
+    savedUpdatesRef.current.add(messageId);
+    try {
+      const result = await (isSaved ? unsaveMsg(messageId) : saveMsg(messageId));
+      if (result === "failed") toast.error(t("common.savedUpdateFailed"));
+    } finally { savedUpdatesRef.current.delete(messageId); }
+  };
   const agentLiveState = (a?: (typeof agents)[number]) => {
     if (!a) return "offline";
     const activity = a.activity && a.activity !== "offline" ? a.activity : "";
@@ -508,7 +518,7 @@ export function Chat() {
                   {dateDivider}
                   <div className={"msg" + (shouldEnter ? " msg-enter" : "")} id={"m-" + m.id} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ m, x: e.clientX, y: e.clientY }); }} style={isNewMsg ? { "--msg-delay": `${staggerIdx * 60}ms` } as CSSProperties : undefined}>
                   <div className="msg-toolbar">
-                    <button className={"im" + (isSaved ? " on" : "")} title={isSaved ? t("chat.unsave") : t("chat.saveMessage")} onClick={() => { isSaved ? unsaveMsg(m.id) : saveMsg(m.id); }}><Bookmark size={15} className="im-pop im-fill" fill={isSaved ? "currentColor" : "none"} /></button>
+                    <button className={"im" + (isSaved ? " on" : "")} title={isSaved ? t("chat.unsave") : t("chat.saveMessage")} onClick={() => { void updateSaved(m.id, isSaved); }}><Bookmark size={15} className="im-pop im-fill" fill={isSaved ? "currentColor" : "none"} /></button>
                     <button className="im" title={t("chat.copyMarkdown")} onClick={() => copyMarkdown(m.content)}><Clipboard size={15} className="im-pop" /></button>
                     <button className="im" title={t("chat.more")} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ m, x: r.right - 212, y: r.bottom + 4 }); }}><MoreHorizontal size={15} className="im-pop" /></button>
                   </div>
@@ -603,7 +613,7 @@ export function Chat() {
               <button className="ctx-item" onClick={() => copy(m.content, t("chat.copyMarkdown"))}><Clipboard size={14} /> {t("chat.copyMarkdown")}</button>
               <button className="ctx-item" onClick={() => copy(link, t("chat.copyLink"))}><Link2 size={14} /> {t("chat.copyLink")}</button>
               <button className="ctx-item" onClick={() => { startThread(m); close(); }}><MessageCircle size={14} /> {t("chat.openThread")}</button>
-              <button className="ctx-item" onClick={() => { savedIds.has(m.id) ? unsaveMsg(m.id) : saveMsg(m.id); close(); }}><Bookmark size={14} fill={savedIds.has(m.id) ? "currentColor" : "none"} /> {savedIds.has(m.id) ? t("chat.unsave") : t("chat.saveMessage")}</button>
+              <button className="ctx-item" onClick={() => { void updateSaved(m.id, savedIds.has(m.id)); close(); }}><Bookmark size={14} fill={savedIds.has(m.id) ? "currentColor" : "none"} /> {savedIds.has(m.id) ? t("chat.unsave") : t("chat.saveMessage")}</button>
               <button className="ctx-item" onClick={async () => { close(); await api("POST", "/api/tasks/convert-message", { messageId: m.id }); }}><CheckSquare size={14} /> {t("chat.convertToTask")}</button>
             </div>
           </div>
