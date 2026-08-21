@@ -100,7 +100,8 @@ gap: task *ownership* (§6 C5).
    `canUserReadChannel` (`channelAccess.ts`) — same logic, human plane (§6 F-REST — fixed). Threads
    inherit the current parent-channel decision before any direct thread membership is considered, and
    tenant ownership is checked before membership rows can grant access. Message creation, reactions,
-   action-card execution, and all task mutations use the separate `canUserWriteChannel` boundary.
+   action-card execution, all task mutations, and thread creation or follow-state changes use the
+   separate `canUserWriteChannel` boundary.
    Direct-message identity is the canonical `dm:<sorted UUID>:<sorted UUID>` pair. An agent-to-agent
    conversation is valid only while both identities are live agents in the same workspace and its
    membership rows contain exactly that agent pair; malformed or stale rows fail closed.

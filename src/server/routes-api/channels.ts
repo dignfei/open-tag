@@ -6,7 +6,7 @@ import { requireCap } from "../capabilities.js";
 import { addChannelMembers, getOrCreateDM, getOrCreateThread } from "../core.js";
 import { publish } from "../realtime.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
-import { canUserReadChannel } from "../channelAccess.js";
+import { canUserReadChannel, canUserWriteChannel } from "../channelAccess.js";
 import { userChannels } from "./shared.js";
 
 const notSentBy = (userId: string) => or(isNull(schema.messages.senderId), ne(schema.messages.senderId, userId));
@@ -68,18 +68,24 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
   // Thread follow/unfollow/done/undone. follow = join as member (channelMember); done = per-user mark as complete, removes from inbox.
   if (p === "/api/channels/threads/follow" && method === "POST") {
     const tid = (await readJson(req).catch(() => ({})))?.threadChannelId;
-    if (tid) await db.insert(schema.channelMembers).values({ channelId: String(tid), memberType: "user", memberId: userId }).onConflictDoNothing();
+    if (!isUuid(String(tid ?? ""))) return (sendErr(res, 404, "thread not found"), true);
+    if (!(await canUserWriteChannel(serverId, String(tid), userId))) return (sendErr(res, 403, "forbidden"), true);
+    await db.insert(schema.channelMembers).values({ channelId: String(tid), memberType: "user", memberId: userId }).onConflictDoNothing();
     return (sendJson(res, 200, { ok: true }), true);
   }
   if (p === "/api/channels/threads/unfollow" && method === "POST") {
     const tid = (await readJson(req).catch(() => ({})))?.threadChannelId;
-    if (tid) await db.delete(schema.channelMembers).where(and(eq(schema.channelMembers.channelId, String(tid)), eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
+    if (!isUuid(String(tid ?? ""))) return (sendErr(res, 404, "thread not found"), true);
+    if (!(await canUserWriteChannel(serverId, String(tid), userId))) return (sendErr(res, 403, "forbidden"), true);
+    await db.delete(schema.channelMembers).where(and(eq(schema.channelMembers.channelId, String(tid)), eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
     return (sendJson(res, 200, { ok: true }), true);
   }
   if ((p === "/api/channels/threads/done" || p === "/api/channels/threads/undone") && method === "POST") {
     const tid = (await readJson(req).catch(() => ({})))?.threadChannelId;
+    if (!isUuid(String(tid ?? ""))) return (sendErr(res, 404, "thread not found"), true);
+    if (!(await canUserWriteChannel(serverId, String(tid), userId))) return (sendErr(res, 403, "forbidden"), true);
     const doneAt = p.endsWith("/done") ? new Date() : null;
-    if (tid) await db.update(schema.channelMembers).set({ threadDoneAt: doneAt }).where(and(eq(schema.channelMembers.channelId, String(tid)), eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
+    await db.update(schema.channelMembers).set({ threadDoneAt: doneAt }).where(and(eq(schema.channelMembers.channelId, String(tid)), eq(schema.channelMembers.memberType, "user"), eq(schema.channelMembers.memberId, userId)));
     return (sendJson(res, 200, { ok: true }), true);
   }
   const cthreads = /^\/api\/channels\/([^/]+)\/threads$/.exec(p);
@@ -90,7 +96,7 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     const parent = (await db.select().from(schema.messages).where(and(eq(schema.messages.id, b.parentMessageId), eq(schema.messages.serverId, serverId))))[0];
     if (!parent) return (sendErr(res, 404, "parent message not found"), true);
     // Channel visibility gate — non-members must not create threads on private/DM channels (IDOR-B3)
-    if (!(await canUserReadChannel(serverId, parent.channelId, userId))) return (sendErr(res, 403, "forbidden"), true);
+    if (!(await canUserWriteChannel(serverId, parent.channelId, userId))) return (sendErr(res, 403, "forbidden"), true);
     const th = await getOrCreateThread(serverId, b.parentMessageId, { type: "user", id: userId });
     const replies = await db.select({ createdAt: schema.messages.createdAt }).from(schema.messages).where(eq(schema.messages.channelId, th.id));
     const parts = await db.select().from(schema.channelMembers).where(eq(schema.channelMembers.channelId, th.id));
