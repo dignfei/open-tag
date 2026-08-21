@@ -116,6 +116,96 @@ test("message updates merge finalized tail Activity into the persisted message",
   assert.equal(merged[0]?.agentActivity?.[0]?.activity, "online");
 });
 
+test("a loaded grouped receipt removes its current run preview", () => {
+  const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
+  receipt.agentActivityState = "error";
+  (receipt as any).clientRenderKey = agentReplyPreviewId("agent-1", "stream-1");
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const withPreview = applyAgentReplyPreview([receipt], secondStart);
+  assert.deepEqual(withPreview.map((m) => m.id), ["receipt-1", "agent-reply:agent-1:stream-2"]);
+  const updated = {
+    ...receipt,
+    agentActivityStreamId: "stream-2",
+    agentActivity: [{ timestamp: 1400, kind: "status", activity: "error" }],
+  };
+
+  const merged = mergePersistedAgentMessageUpdate(withPreview, updated);
+
+  assert.deepEqual(merged.map((m) => m.id), ["receipt-1"]);
+  assert.equal(merged[0]?.agentActivityStreamId, "stream-2");
+  assert.equal(merged[0]?.agentActivity?.[0]?.timestamp, 1400);
+  assert.equal((merged[0] as any).clientRenderKey, agentReplyPreviewId("agent-1", "stream-1"));
+});
+
+test("an unloaded grouped receipt removes its out-of-page preview", () => {
+  const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
+  receipt.agentActivityState = "error";
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const current = realMessage("msg-20", "Current page");
+  const withPreview = applyAgentReplyPreview([current], secondStart);
+  const updated = {
+    ...receipt,
+    agentActivityStreamId: "stream-2",
+    agentActivity: [{ timestamp: 1400, kind: "status", activity: "error" }],
+  };
+
+  const merged = mergePersistedAgentMessageUpdate(withPreview, updated);
+
+  assert.deepEqual(merged.map((m) => m.id), ["msg-20"]);
+  assert.strictEqual(applyAgentReplyPreview(merged, { ...secondStart, op: "error" }), merged);
+});
+
+test("a public message update can recover a missing create event", () => {
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const previewOnly = applyAgentReplyPreview([], secondStart);
+  const updated = realMessage("msg-21", "Published");
+  updated.agentActivityStreamId = "stream-2";
+
+  const merged = mergePersistedAgentMessageUpdate(previewOnly, updated);
+
+  assert.deepEqual(merged.map((m) => m.id), ["msg-21"]);
+  assert.equal(merged[0]?.content, "Published");
+  assert.equal((merged[0] as any).clientRenderKey, agentReplyPreviewId("agent-1", "stream-2"));
+});
+
+test("a current receipt update can recover a missing create event", () => {
+  const current = realMessage("msg-20", "Current page");
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const withPreview = applyAgentReplyPreview([current], secondStart);
+  const updated = realMessage("receipt-21", "", "agent_activity_receipt");
+  updated.agentActivityStreamId = "stream-2";
+  updated.agentActivityState = "error";
+
+  const merged = mergePersistedAgentMessageUpdate(withPreview, updated);
+
+  assert.deepEqual(merged.map((m) => m.id), ["msg-20", "receipt-21"]);
+  assert.equal((merged[1] as any).clientRenderKey, agentReplyPreviewId("agent-1", "stream-2"));
+});
+
+test("a late terminal event cannot restore an absorbed grouped preview", () => {
+  const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
+  receipt.agentActivityState = "error";
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const withPreview = applyAgentReplyPreview([receipt], secondStart);
+  const updated = { ...receipt, agentActivityStreamId: "stream-2" };
+  const merged = mergePersistedAgentMessageUpdate(withPreview, updated);
+
+  assert.strictEqual(applyAgentReplyPreview(merged, { ...secondStart, op: "error" }), merged);
+});
+
+test("a grouped update absorbs a preview already marked terminal", () => {
+  const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
+  receipt.agentActivityState = "error";
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const previewOnly = applyAgentReplyPreview([], secondStart);
+  const erroredFirst = applyAgentReplyPreview(previewOnly, { ...secondStart, op: "error" });
+  const updated = { ...receipt, agentActivityStreamId: "stream-2" };
+
+  const replaced = mergePersistedAgentMessageUpdate(erroredFirst, updated);
+
+  assert.deepEqual(replaced.map((m) => m.id), ["receipt-1"]);
+});
+
 test("same-agent starts supersede stale runs but other agents and channels remain independent", () => {
   const first = applyAgentReplyPreview([], startEvent);
   const latest = applyAgentReplyPreview(first, { ...startEvent, streamId: "stream-2" });

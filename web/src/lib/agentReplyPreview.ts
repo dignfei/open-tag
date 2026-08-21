@@ -135,7 +135,31 @@ export function absorbPersistedAgentMessagePreview(messages: Msg[], msg: Msg): {
 }
 
 export function mergePersistedAgentMessageUpdate(messages: Msg[], msg: Msg): Msg[] {
-  return messages.map((m) => m.id === msg.id ? { ...m, ...msg } : m);
+  const existingIdx = messages.findIndex((m) => m.id === msg.id);
+  const previewIdx = msg.senderType === "agent" && msg.senderId && msg.agentActivityStreamId
+    ? messages.findIndex((m) => m.messageType === AGENT_REPLY_PREVIEW_TYPE
+      && m.senderId === msg.senderId
+      && m.channelId === msg.channelId
+      && (m as AgentReplyPreviewMsg).streamId === msg.agentActivityStreamId)
+    : -1;
+  if (existingIdx < 0 && previewIdx < 0) return messages;
+  if (existingIdx < 0) {
+    const firstDurableSeq = messages.reduce((min, m) => m.messageType === AGENT_REPLY_PREVIEW_TYPE ? min : Math.min(min, m.seq), Infinity);
+    if (msg.messageType === "agent_activity_receipt" && Number.isFinite(firstDurableSeq) && msg.seq < firstDurableSeq) {
+      return messages.filter((_, i) => i !== previewIdx);
+    }
+    const preview = messages[previewIdx] as AgentReplyPreviewMsg;
+    const replacement: AgentReplyPreviewMsg = {
+      ...msg,
+      clientRenderKey: preview.clientRenderKey,
+      streamId: preview.streamId,
+    };
+    return messages.map((m, i) => i === previewIdx ? replacement : m);
+  }
+  return messages.flatMap((m, i) => {
+    if (i === previewIdx) return [];
+    return i === existingIdx ? [{ ...m, ...msg }] : [m];
+  });
 }
 
 export function hasStreamingAgentReplyPreview(messages: Msg[]): boolean {

@@ -69,6 +69,7 @@ async function finish(channelId: string, stream: string, state: "handled" | "err
     detail: stream,
   }, { channelId, streamId, runSeq: 1 });
   await finalizeAgentActivityRun(serverId, actorId, channelId, streamId, actorId === agentId ? "Error Agent" : "Other Agent", state);
+  return streamId;
 }
 
 function receipts(channelId: string, actorId: string, state?: "handled" | "error") {
@@ -103,15 +104,22 @@ async function main() {
   await finalizeAgentActivityRun(serverId, agentId, primaryChannelId, createdStreamId, "Error Agent", "error");
   errors = await receipts(primaryChannelId, agentId, "error");
   check("repeated receipt finalization does not duplicate activity", errors.length === 1 && errors[0]?.agentActivity.length === 3);
+  const receiptPosition = { id: errors[0]!.id, seq: errors[0]!.seq, createdAt: errors[0]!.createdAt.getTime() };
 
-  await finish(primaryChannelId, "grouped-error", "error");
+  const groupedStreamId = await finish(primaryChannelId, "grouped-error", "error");
   errors = await receipts(primaryChannelId, agentId, "error");
   activityRows = await db.select().from(schema.agentActivityLog).where(and(
     eq(schema.agentActivityLog.serverId, serverId),
     eq(schema.agentActivityLog.agentId, agentId),
     eq(schema.agentActivityLog.channelId, primaryChannelId),
   ));
+  check("grouped receipt follows the latest stream", errors[0]?.agentActivityStreamId === groupedStreamId);
+  check("grouping preserves the receipt timeline position", errors[0]?.id === receiptPosition.id && errors[0]?.seq === receiptPosition.seq && errors[0]?.createdAt.getTime() === receiptPosition.createdAt);
   check("grouped source activity stays bound to the receipt", errors[0]?.agentActivity.length === 4 && activityRows.length === 4 && activityRows.every((row) => row.messageId === errors[0]?.id));
+
+  await finalizeAgentActivityRun(serverId, agentId, primaryChannelId, createdStreamId, "Error Agent", "error");
+  errors = await receipts(primaryChannelId, agentId, "error");
+  check("stale stream finalization leaves the grouped receipt unchanged", errors[0]?.agentActivityStreamId === groupedStreamId && errors[0]?.agentActivity.length === 4);
 
   await finish(primaryChannelId, "handled", "handled");
   check("handled runs keep their own receipt", (await receipts(primaryChannelId, agentId)).length === 2);
@@ -121,6 +129,11 @@ async function main() {
 
   await finish(primaryChannelId, "other-agent-error", "error", otherAgentId);
   check("another agent keeps its own error receipt", (await receipts(primaryChannelId, otherAgentId, "error")).length === 1);
+
+  const missingStartStreamId = `missing-start_${run}`;
+  await finalizeAgentActivityRun(serverId, otherAgentId, otherChannelId, missingStartStreamId, "Other Agent", "error");
+  const missingStartReceipts = await receipts(otherChannelId, otherAgentId, "error");
+  check("an initial error without Activity still creates a receipt", missingStartReceipts.length === 1 && missingStartReceipts[0]?.agentActivityStreamId === missingStartStreamId);
 
   await db.update(schema.messages)
     .set({ createdAt: new Date(Date.now() - 11 * 60 * 1000) })
