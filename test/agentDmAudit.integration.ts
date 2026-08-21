@@ -22,6 +22,7 @@ const ts = Date.now();
 let serverId = "";
 let ownerId = "", memberId = "";
 let agentDmId = "", humanAgentDmId = "";
+let agentThreadId = "", humanThreadId = "", agentParentId = "", humanParentId = "";
 let a1 = "", a2 = "";
 let ownerToken = "", memberToken = "";
 let failures = 0;
@@ -99,7 +100,15 @@ async function setup() {
     { channelId: agentDmId, memberType: "agent", memberId: a1 },
     { channelId: agentDmId, memberType: "agent", memberId: a2 },
   ]);
-  await db.insert(schema.messages).values({ serverId, channelId: agentDmId, senderType: "agent", senderId: a1, senderName: `auda_${ts}`, content: "agent-audit-secret-content", seq: 1 });
+  const [agentParent] = await db.insert(schema.messages).values({ serverId, channelId: agentDmId, senderType: "agent", senderId: a1, senderName: `auda_${ts}`, content: "agent-audit-secret-content", seq: 1 }).returning();
+  agentParentId = agentParent!.id;
+  const [agentThread] = await db.insert(schema.channels).values({ serverId, name: `thread-${agentParentId}`, type: "thread", parentMessageId: agentParentId }).returning();
+  agentThreadId = agentThread!.id;
+  await db.insert(schema.channelMembers).values([
+    { channelId: agentThreadId, memberType: "agent", memberId: a1 },
+    { channelId: agentThreadId, memberType: "agent", memberId: a2 },
+  ]);
+  await db.insert(schema.messages).values({ serverId, channelId: agentThreadId, senderType: "agent", senderId: a2, senderName: `audb_${ts}`, content: "agent-thread-secret-content", seq: 2 });
 
   // human↔agent DM (member user + agent) — stays member-private even from the owner
   const [hdm] = await db.insert(schema.channels).values({ serverId, name: `dm:${[memberId, a1].sort().join(":")}`, type: "dm" }).returning();
@@ -108,7 +117,15 @@ async function setup() {
     { channelId: humanAgentDmId, memberType: "user", memberId: memberId },
     { channelId: humanAgentDmId, memberType: "agent", memberId: a1 },
   ]);
-  await db.insert(schema.messages).values({ serverId, channelId: humanAgentDmId, senderType: "user", senderId: memberId, senderName: `member_${ts}`, content: "human-dm-private-content", seq: 1 });
+  const [humanParent] = await db.insert(schema.messages).values({ serverId, channelId: humanAgentDmId, senderType: "user", senderId: memberId, senderName: `member_${ts}`, content: "human-dm-private-content", seq: 3 }).returning();
+  humanParentId = humanParent!.id;
+  const [humanThread] = await db.insert(schema.channels).values({ serverId, name: `thread-${humanParentId}`, type: "thread", parentMessageId: humanParentId }).returning();
+  humanThreadId = humanThread!.id;
+  await db.insert(schema.channelMembers).values([
+    { channelId: humanThreadId, memberType: "user", memberId },
+    { channelId: humanThreadId, memberType: "agent", memberId: a1 },
+  ]);
+  await db.insert(schema.messages).values({ serverId, channelId: humanThreadId, senderType: "user", senderId: memberId, senderName: `member_${ts}`, content: "human-thread-private-content", seq: 4 });
 
   ownerToken = signUser(ownerId);
   memberToken = signUser(memberId);
@@ -137,6 +154,15 @@ async function main() {
   const r2 = await apiCall({ method: "GET", path: `/api/messages/channel/${agentDmId}`, token: memberToken, serverId });
   check("plain member cannot read agent↔agent DM", r2.status === 403);
 
+  const threadRead = await apiCall({ method: "GET", path: `/api/messages/channel/${agentThreadId}`, token: ownerToken, serverId });
+  check("manager can read an existing audited thread", threadRead.status === 200 && JSON.stringify(threadRead.body).includes("agent-thread-secret-content"));
+
+  const threadWrite = await apiCall({ method: "POST", path: "/api/messages", token: ownerToken, serverId, body: { channelId: agentThreadId, content: "manager thread write" } });
+  check("manager cannot reply in an audited thread", threadWrite.status === 403);
+
+  const threadMap = await apiCall({ method: "GET", path: `/api/channels/${agentDmId}/threads?parentMessageIds=${agentParentId},${humanParentId}`, token: ownerToken, serverId });
+  check("thread metadata is limited to the requested conversation", threadMap.status === 200 && JSON.stringify(threadMap.body).includes(agentThreadId) && !JSON.stringify(threadMap.body).includes(humanThreadId));
+
   const r3 = await apiCall({ method: "POST", path: "/api/messages", token: ownerToken, serverId, body: { channelId: agentDmId, content: "manager must not write" } });
   check("manager cannot send to an audited DM", r3.status === 403);
 
@@ -159,6 +185,9 @@ async function main() {
 
   const r8 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: ownerToken, serverId });
   check("manager cannot read a human-agent DM they have not joined", r8.status === 403);
+
+  const privateThread = await apiCall({ method: "GET", path: `/api/messages/channel/${humanThreadId}`, token: ownerToken, serverId });
+  check("manager cannot read a human-agent DM thread", privateThread.status === 403);
 
   const r9 = await apiCall({ method: "GET", path: `/api/messages/channel/${humanAgentDmId}`, token: memberToken, serverId });
   check("human member reads their own human-agent DM", r9.status === 200 && JSON.stringify(r9.body).includes("human-dm-private-content"));
