@@ -92,8 +92,9 @@ gap: task *ownership* (§6 C5).
 3. **Capability/scope pass ≠ resource access.** Passing the role/scope gate is necessary, not sufficient.
    A second check must confirm the subject may touch *this specific resource*: channel membership for
    reads/writes, ownership for tasks/attachments, `manageX` for privileged management.
-4. **Channel visibility is invite-only for private/DM — for humans *and* agents.** Public channels: any
-   member of the server may read/join. Private / DM / thread: only explicitly-added members. The human
+4. **Channel visibility is invite-only for private/DM — for humans *and* agents, apart from the narrow
+   manager oversight rule below.** Public channels: any member of the server may read/join. Private /
+   DM / thread: only explicitly-added members receive ordinary access. The human
    self-join guard (`routes-api.ts` "private channel is invite-only") has an agent-plane equivalent:
    `canAgentReadChannel` enforced in `resolveTarget` / `resolveMessageId` / `findParent` / `channel/join`
    (§6 C1–C3/C6/C7/C8 — fixed). Human REST read/write of messages and tasks is gated by
