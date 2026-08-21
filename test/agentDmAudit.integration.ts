@@ -154,6 +154,9 @@ async function main() {
   const r2 = await apiCall({ method: "GET", path: `/api/messages/channel/${agentDmId}`, token: memberToken, serverId });
   check("plain member cannot read agent↔agent DM", r2.status === 403);
 
+  const sync = await apiCall({ method: "GET", path: "/api/messages/sync?since=0", token: ownerToken, serverId });
+  check("manager reconnect sync includes audited conversation updates", sync.status === 200 && JSON.stringify(sync.body).includes("agent-audit-secret-content") && JSON.stringify(sync.body).includes("agent-thread-secret-content"));
+
   const threadRead = await apiCall({ method: "GET", path: `/api/messages/channel/${agentThreadId}`, token: ownerToken, serverId });
   check("manager can read an existing audited thread", threadRead.status === 200 && JSON.stringify(threadRead.body).includes("agent-thread-secret-content"));
 
