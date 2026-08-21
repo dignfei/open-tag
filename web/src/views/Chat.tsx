@@ -372,7 +372,7 @@ export function Chat() {
   const doDM = async (agentId: string) => { const id = await openDM("agent", agentId); if (id) nav(`/s/${slug}/channel/${id}`); }; // used by AgentProfile onMessage callback
   const doDMHuman = async (uid: string) => { const id = await openDM("user", uid); if (id) nav(`/s/${slug}/channel/${id}`); }; // used by HumanProfile onMessage callback
   // Opening a thread is an explicit "show me this thread" action → it becomes the right-column base layer and clears any profile overlay on top of it (otherwise the just-opened thread would stay hidden behind a stale profile).
-  const startThread = async (m: Msg) => { if (!cur) return; const tid = threadMeta[m.id]?.threadChannelId || await openThread(cur.id, m.id); if (tid) { setProfile(null); setThread({ channelId: tid, parent: m }); setThreadMeta((tm) => (tm[m.id] ? { ...tm, [m.id]: { ...tm[m.id]!, unreadCount: 0 } } : tm)); markRead(tid); } }; // opening a thread clears the unread count optimistically and marks the thread channel as read
+  const startThread = async (m: Msg) => { if (!cur) return; const tid = threadMeta[m.id]?.threadChannelId || (isAuditDm ? null : await openThread(cur.id, m.id)); if (tid) { setProfile(null); setThread({ channelId: tid, parent: m }); setThreadMeta((tm) => (tm[m.id] ? { ...tm, [m.id]: { ...tm[m.id]!, unreadCount: 0 } } : tm)); markRead(tid); } }; // audit mode opens existing threads but never creates one
   // "Jump to unread thread" bar: open a thread whose parent message may not be in the loaded page — fetch the parent
   // by id (it isn't on screen to pass through startThread), open the panel, mark it read, and drop it from the bar.
   const openUnreadThread = async (item: { threadChannelId: string; parentMessageId: string }) => {
@@ -597,7 +597,7 @@ export function Chat() {
               : <HumanProfile uid={profile.id} onClose={() => setProfile(null)} onMessage={() => { const id = profile.id; setProfile(null); doDMHuman(id); }} />}
           </aside>
         : thread
-        ? <ThreadPanel channelId={thread.channelId} parent={thread.parent} onClose={() => setThread(null)} onOpenProfile={(type, id) => setProfile({ type, id })} />
+        ? <ThreadPanel channelId={thread.channelId} parent={thread.parent} readOnly={isAuditDm} onClose={() => setThread(null)} onOpenProfile={(type, id) => setProfile({ type, id })} />
         : null}
       <ConnectComputerWizard mode="onboard" />
       {showMembers && cur && <ChannelMembersModal channelId={cur.id} channelName={cur.name} onClose={() => setShowMembers(false)} />}
@@ -613,7 +613,7 @@ export function Chat() {
               {!isAuditDm && <div className="ctx-rx">{QUICK_EMOJIS.slice(0, 6).map((e) => <button key={e} title={e} onClick={() => { react(m.id, e, false); close(); }}>{e}</button>)}</div>}
               <button className="ctx-item" onClick={() => copy(m.content, t("chat.copyMarkdown"))}><Clipboard size={14} /> {t("chat.copyMarkdown")}</button>
               <button className="ctx-item" onClick={() => copy(link, t("chat.copyLink"))}><Link2 size={14} /> {t("chat.copyLink")}</button>
-              <button className="ctx-item" onClick={() => { startThread(m); close(); }}><MessageCircle size={14} /> {t("chat.openThread")}</button>
+              {(!isAuditDm || threadMeta[m.id]?.threadChannelId) && <button className="ctx-item" onClick={() => { startThread(m); close(); }}><MessageCircle size={14} /> {t("chat.openThread")}</button>}
               <button className="ctx-item" onClick={() => { void updateSaved(m.id, savedIds.has(m.id)); close(); }}><Bookmark size={14} fill={savedIds.has(m.id) ? "currentColor" : "none"} /> {savedIds.has(m.id) ? t("chat.unsave") : t("chat.saveMessage")}</button>
               {!isAuditDm && <button className="ctx-item" onClick={async () => { close(); await api("POST", "/api/tasks/convert-message", { messageId: m.id }); }}><CheckSquare size={14} /> {t("chat.convertToTask")}</button>}
             </div>
@@ -701,7 +701,7 @@ function EditChannelModal({ channel, onClose, onDone, onDeleted }: { channel: an
 }
 
 // Thread panel: right-side overlay showing the parent message, its replies, and a reply composer.
-function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId: string; parent: Msg; onClose: () => void; onOpenProfile: (type: "agent" | "human", id: string) => void }) {
+function ThreadPanel({ channelId, parent, readOnly = false, onClose, onOpenProfile }: { channelId: string; parent: Msg; readOnly?: boolean; onClose: () => void; onOpenProfile: (type: "agent" | "human", id: string) => void }) {
   const { t } = useTranslation();
   const { api, onEvent, subscribeChannel, attachmentUrl, me, react, agents, humans, channels, slug } = useStore();
   const senderIdentity = (m: Msg) => m.senderType === "agent" ? agents.find((a) => a.id === m.senderId) : humans.find((h) => h.userId === m.senderId);
@@ -779,7 +779,7 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
         <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} />
         {!!m.attachments?.length && <div className="msg-atts">{m.attachments.map((a) => <AttCard key={a.id} a={a} url={attachmentUrl(a.id)} />)}</div>}
         {/* same guard as the channel feed: the preview's synthetic id must never be POSTed to /reactions */}
-        <Reactions m={m} mine={me?.id ?? ""} onReact={(emoji, remove) => react(m.id, emoji, remove)} />
+        <Reactions m={m} mine={me?.id ?? ""} onReact={(emoji, remove) => react(m.id, emoji, remove)} readOnly={readOnly} />
       </div>
       </div>
     </Fragment>
@@ -788,8 +788,8 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
   return (
     <aside className="thread-panel">
       <div className="thread-head"><span className="grow">{t("chat.thread")}</span>
-        <button className="tp-link" title={t("chat.markDone")} onClick={async () => { await api("POST", "/api/channels/threads/done", { threadChannelId: channelId }); onClose(); }}><CheckCircle2 size={14} /></button>
-        <button className="tp-link" title={t("chat.unfollowThread")} onClick={async () => { await api("POST", "/api/channels/threads/unfollow", { threadChannelId: channelId }); onClose(); }}><BellOff size={14} /></button>
+        {!readOnly && <button className="tp-link" title={t("chat.markDone")} onClick={async () => { await api("POST", "/api/channels/threads/done", { threadChannelId: channelId }); onClose(); }}><CheckCircle2 size={14} /></button>}
+        {!readOnly && <button className="tp-link" title={t("chat.unfollowThread")} onClick={async () => { await api("POST", "/api/channels/threads/unfollow", { threadChannelId: channelId }); onClose(); }}><BellOff size={14} /></button>}
         <button className="tp-link" onClick={() => nav(`/s/${slug}/channel/${parent.channelId}?msg=${parent.id}`)} title={t("chat.viewInChannel")}><ExternalLink size={14} /></button>
         <button className="tp-close" onClick={onClose} title={t("chat.close")}><X size={15} /></button></div>
       <div className="scroll" ref={scrollRef}>
@@ -803,8 +803,8 @@ function ThreadPanel({ channelId, parent, onClose, onOpenProfile }: { channelId:
           return row(m, dateDivider);
         })}
       </div>
-      {channels.find((c) => c.id === parent.channelId)?.type === "showcase"
-        ? <div className="showcase-readonly"><Eye size={14} />{t("chat.showcaseReadOnly")}</div>
+      {channels.find((c) => c.id === parent.channelId)?.type === "showcase" || readOnly
+        ? <div className="showcase-readonly"><Eye size={14} />{t(readOnly ? "chat.agentDmReadOnly" : "chat.showcaseReadOnly")}</div>
         : <Composer channelId={channelId} placeholder={t("chat.threadReplyPlaceholder")} className="thread-composer" />}
     </aside>
   );
