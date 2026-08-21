@@ -2,7 +2,7 @@
 // env OPEN_TAG_STORAGE=local|s3; s3 uses @aws-sdk/client-s3 to connect to any S3-compatible endpoint (OPEN_TAG_S3_*).
 // storageKey is driver-agnostic (local = relative filename, s3 = object key); switching storage backends requires no changes to business logic.
 import { createWriteStream } from "node:fs";
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
@@ -32,6 +32,15 @@ export async function saveObject(filename: string, stream: Readable): Promise<Sa
 export async function readObject(key: string): Promise<Buffer> {
   if (DRIVER === "s3") return readS3(key);
   return readFile(path.join(LOCAL_DIR, key));
+}
+
+/** Delete an object after a rejected or rolled-back upload. Missing local objects are already clean. */
+export async function deleteObject(key: string): Promise<void> {
+  if (DRIVER === "s3") return deleteS3(key);
+  try { await unlink(path.join(LOCAL_DIR, key)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 // ── S3-compatible driver (disabled by default; enable by running `npm i @aws-sdk/client-s3` and setting OPEN_TAG_S3_ENDPOINT/BUCKET/KEY/SECRET, optional OPEN_TAG_S3_REGION) ──
@@ -74,4 +83,9 @@ async function readS3(key: string): Promise<Buffer> {
   const r = await (await s3client(cfg)).send(new mod.GetObjectCommand({ Bucket: cfg.bucket, Key: key }));
   const chunks: Buffer[] = []; for await (const c of r.Body as Readable) chunks.push(c as Buffer);
   return Buffer.concat(chunks);
+}
+async function deleteS3(key: string): Promise<void> {
+  const cfg = s3Config();
+  const mod = await import("@aws-sdk/client-s3" as string);
+  await (await s3client(cfg)).send(new mod.DeleteObjectCommand({ Bucket: cfg.bucket, Key: key }));
 }
