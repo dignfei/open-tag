@@ -155,6 +155,19 @@ test("an unloaded grouped receipt removes its out-of-page preview", () => {
   assert.strictEqual(applyAgentReplyPreview(merged, { ...secondStart, op: "error" }), merged);
 });
 
+test("a public message update can recover a missing create event", () => {
+  const secondStart = { ...startEvent, streamId: "stream-2" };
+  const previewOnly = applyAgentReplyPreview([], secondStart);
+  const updated = realMessage("msg-21", "Published");
+  updated.agentActivityStreamId = "stream-2";
+
+  const merged = mergePersistedAgentMessageUpdate(previewOnly, updated);
+
+  assert.deepEqual(merged.map((m) => m.id), ["msg-21"]);
+  assert.equal(merged[0]?.content, "Published");
+  assert.equal((merged[0] as any).clientRenderKey, agentReplyPreviewId("agent-1", "stream-2"));
+});
+
 test("a late terminal event cannot restore an absorbed grouped preview", () => {
   const receipt = realMessage("receipt-1", "", "agent_activity_receipt");
   receipt.agentActivityState = "error";
