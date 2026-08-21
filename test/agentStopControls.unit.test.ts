@@ -26,3 +26,16 @@ test("API failures are reported and permit a later retry", async () => {
   await requestAgentStop(api, "agent-response-failure");
   assert.equal(calls, 2);
 });
+
+test("network failures release the pending stop request", async () => {
+  let calls = 0;
+  const api = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("network unavailable");
+    return { ok: true };
+  };
+
+  await assert.rejects(requestAgentStop(api, "agent-network-failure"), /network unavailable/);
+  await requestAgentStop(api, "agent-network-failure");
+  assert.equal(calls, 2);
+});
