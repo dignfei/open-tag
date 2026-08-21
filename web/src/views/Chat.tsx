@@ -120,7 +120,7 @@ function SysMsg({ m, channels, nav, pill }: { m: Msg; channels: NameItem[]; nav:
   );
 }
 
-function ActionCardMsg({ m }: { m: Msg }) {
+function ActionCardMsg({ m, readOnly = false }: { m: Msg; readOnly?: boolean }) {
   const { t } = useTranslation();
   const { createChannel, markActionExecuted, slug, agents, attachmentUrl } = useStore();
   const toast = useToast();
@@ -143,7 +143,7 @@ function ActionCardMsg({ m }: { m: Msg }) {
           {a.description ? <div className="ac-detail"><span className="ac-k">{t("chat.description")}</span> {a.description}</div> : null}
           {executed
             ? <div className="ac-done"><CheckCircle2 size={13} /> {t("chat.executedBy", { name: meta.executedByUserName || t("chat.someone") })}</div>
-            : <button className="ac-btn" onClick={() => setOpen(true)}>{isChan ? t("chat.createChannel") : t("chat.createAgentBtn")}</button>}
+            : !readOnly && <button className="ac-btn" onClick={() => setOpen(true)}>{isChan ? t("chat.createChannel") : t("chat.createAgentBtn")}</button>}
         </div>
         <AgentActivityDisclosure items={m.agentActivity} state={m.agentActivityState} />
       </div>
@@ -482,7 +482,7 @@ export function Chat() {
                   ? <div className="date-divider"><span className="date-divider-label">{fmtDateDivider(m.createdAt, i18n.language, t("chat.dateToday"), t("chat.dateYesterday"))}</span></div>
                   : null;
                 // action card (agent proposal card) → rendered by dedicated ActionCardMsg component
-                if (m.messageType === "action" && m.actionMetadata?.kind === "action-card") return <Fragment key={m.id}>{dateDivider}<ActionCardMsg m={m} /></Fragment>;
+                if (m.messageType === "action" && m.actionMetadata?.kind === "action-card") return <Fragment key={m.id}>{dateDivider}<ActionCardMsg m={m} readOnly={isAuditDm} /></Fragment>;
                 // system messages (task lifecycle events, etc.) → centered grey bar (no avatar, no full message block)
                 // If the system message has thread replies (e.g. showcase case anchors), render a thread-pill below the bar so it's clickable.
                 if (m.senderType === "system") return (
@@ -553,15 +553,15 @@ export function Chat() {
                     <div className="msg-meta">
                         {m.taskStatus && (() => {
                           const TI = TASK_ICON[m.taskStatus] || Circle;
-                          const isShowcase = cur?.type === "showcase";
-                          const claimable = !isShowcase && !m.taskAssigneeId && m.taskStatus === "todo";
+                          const taskReadOnly = cur?.type === "showcase" || isAuditDm;
+                          const claimable = !taskReadOnly && !m.taskAssigneeId && m.taskStatus === "todo";
                           const claimedByMe = m.taskAssigneeType === "user" && m.taskAssigneeId === me?.id;
                           const opts = ynOptions(m.taskStatus, manageServer, claimedByMe);
-                          const open = !isShowcase && taskMenu === m.id;
+                          const open = !taskReadOnly && taskMenu === m.id;
                           return (
                             <span className="task-pill-wrap">
                               {/* clicking the badge changes status; in showcase channels the pill is a read-only label */}
-                              <button className={"task-pill st-" + m.taskStatus} onClick={(e) => { e.stopPropagation(); if (!isShowcase) setTaskMenu(open ? null : m.id); }} title={isShowcase ? undefined : t("chat.taskChangeStatus", { number: m.taskNumber })} style={isShowcase ? { cursor: "default" } : undefined}><TI size={11} /> #{m.taskNumber} {t(ST_LABEL[m.taskStatus] ?? m.taskStatus)}{taskAssignee(m)}</button>
+                              <button className={"task-pill st-" + m.taskStatus} onClick={(e) => { e.stopPropagation(); if (!taskReadOnly) setTaskMenu(open ? null : m.id); }} title={taskReadOnly ? undefined : t("chat.taskChangeStatus", { number: m.taskNumber })} style={taskReadOnly ? { cursor: "default" } : undefined}><TI size={11} /> #{m.taskNumber} {t(ST_LABEL[m.taskStatus] ?? m.taskStatus)}{taskAssignee(m)}</button>
                               {open && <div className="st-menu" onMouseLeave={() => setTaskMenu(null)}>
                                 {claimable && <button onClick={() => { setTaskMenu(null); doTask(m, "claim"); }}>{t("chat.claim")}</button>}
                                 {opts.map((s) => <button key={s} className={s === m.taskStatus ? "on" : ""} onClick={() => { setTaskMenu(null); if (s !== m.taskStatus) doTask(m, "status", { status: s }); }}><span className={"st-dot st-" + s} />{t(ST_LABEL[s])}</button>)}
@@ -615,7 +615,7 @@ export function Chat() {
               <button className="ctx-item" onClick={() => copy(link, t("chat.copyLink"))}><Link2 size={14} /> {t("chat.copyLink")}</button>
               <button className="ctx-item" onClick={() => { startThread(m); close(); }}><MessageCircle size={14} /> {t("chat.openThread")}</button>
               <button className="ctx-item" onClick={() => { void updateSaved(m.id, savedIds.has(m.id)); close(); }}><Bookmark size={14} fill={savedIds.has(m.id) ? "currentColor" : "none"} /> {savedIds.has(m.id) ? t("chat.unsave") : t("chat.saveMessage")}</button>
-              <button className="ctx-item" onClick={async () => { close(); await api("POST", "/api/tasks/convert-message", { messageId: m.id }); }}><CheckSquare size={14} /> {t("chat.convertToTask")}</button>
+              {!isAuditDm && <button className="ctx-item" onClick={async () => { close(); await api("POST", "/api/tasks/convert-message", { messageId: m.id }); }}><CheckSquare size={14} /> {t("chat.convertToTask")}</button>}
             </div>
           </div>
         );
