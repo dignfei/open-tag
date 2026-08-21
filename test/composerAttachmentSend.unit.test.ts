@@ -29,6 +29,13 @@ test("composer wires the readiness decision before clearing its draft", () => {
   assert.match(src, /setPendingAtts\(\(p\) => p\.filter\(\(x\) => x\.id !== a\.id\)\)/, "the user must be able to remove a blocked row explicitly");
 });
 
+test("composer locks draft changes while a send is in flight", () => {
+  const src = fs.readFileSync(new URL("../web/src/views/Composer.tsx", import.meta.url), "utf8");
+  assert.match(src, /if \(!arr\.length \|\| !channelId \|\| sendingRef\.current\) return;/, "new uploads must be rejected while sending");
+  assert.equal(src.match(/disabled=\{uploading \|\| sending\}/g)?.length, 2, "both upload controls must be disabled while sending");
+  assert.match(src, /<button disabled=\{sending\} onClick=\{\(\) => setPendingAtts/, "attachment removal must be disabled while sending");
+});
+
 test("composer reports API and network send failures", () => {
   const src = fs.readFileSync(new URL("../web/src/views/Composer.tsx", import.meta.url), "utf8");
   const request = src.indexOf('const result = await api("POST", "/api/messages"');

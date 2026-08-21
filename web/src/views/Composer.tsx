@@ -100,7 +100,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>) => { if (e.target.files?.length) addFiles(Array.from(e.target.files)); e.target.value = ""; };
   // Each file → placeholder (images get a localUrl preview + "uploading") → uploadOne streams progress → replaced with the real attachment on success, "error" on failure. Paste: images only; drag-drop: any type.
   const addFiles = async (files: FileList | File[]) => {
-    const arr = Array.from(files); if (!arr.length || !channelId) return;
+    const arr = Array.from(files); if (!arr.length || !channelId || sendingRef.current) return;
     setUploading(true);
     try {
       for (const f of arr) {
@@ -159,7 +159,7 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
           {a.status === "uploading" && <span className="patt-prog" style={{ ["--pct" as string]: (a.progress || 0) + "%" } as CSSProperties}>{a.progress || 0}%</span>}
           {a.status === "done" && <span className="patt-ok"><CheckCircle2 size={13} /></span>}
           {a.status === "error" && <span className="patt-err">!</span>}
-          <button onClick={() => setPendingAtts((p) => p.filter((x) => x.id !== a.id))}>×</button>
+          <button disabled={sending} onClick={() => setPendingAtts((p) => p.filter((x) => x.id !== a.id))}>×</button>
         </span>;
       })}</div>}
       <input type="file" ref={imgRef} accept="image/*" multiple style={{ display: "none" }} onChange={onPickFiles} />
@@ -184,8 +184,8 @@ export function Composer({ channelId, placeholder, allowAsTask = false, dmAgent,
           }} />
         <div className="composer-bar">
           <div className="cb-left">
-            <button className="cb-icon im" title={t("chat.uploadImage")} disabled={uploading} onClick={() => imgRef.current?.click()}><ImagePlus size={16} className="im-pop" /></button>
-            <button className="cb-icon im" title={t("chat.uploadFile")} disabled={uploading} onClick={() => fileRef.current?.click()}><Paperclip size={16} className="im-tilt" /></button>
+            <button className="cb-icon im" title={t("chat.uploadImage")} disabled={uploading || sending} onClick={() => imgRef.current?.click()}><ImagePlus size={16} className="im-pop" /></button>
+            <button className="cb-icon im" title={t("chat.uploadFile")} disabled={uploading || sending} onClick={() => fileRef.current?.click()}><Paperclip size={16} className="im-tilt" /></button>
           </div>
           <div className="cb-right">
             {allowAsTask && <label className={"astask" + (asTask ? " on" : "")} title={t("chat.sendAsTaskTitle")}><input type="checkbox" checked={asTask} onChange={(e) => setAsTask(e.target.checked)} />{t("chat.asTask")}</label>}
