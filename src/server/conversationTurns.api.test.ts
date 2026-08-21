@@ -203,6 +203,7 @@ test("real API: sender-scoped turns debounce once without merging different huma
     assert.deepEqual(decisions.map((row) => [row.attention, row.grantSlot, row.grantStatus]), [
       ["assigned", "primary", "active"], ["assigned", "primary", "active"],
     ]);
+    assert.ok(decisions.every((row) => row.deliveryAdmittedAt && row.deliveryAdmissionToken === null), "final daemon ACKs are durable before their Turns settle");
 
     const owner = agents.find((agent) => agent.id === aliceTurn.ownerAgentId)!;
     const ownerIndex = agents.findIndex((agent) => agent.id === owner.id);
@@ -327,6 +328,11 @@ test("real API: sender-scoped turns debounce once without merging different huma
     ));
     assert.equal(afterWindowTurns.length, 3, "same human starts a new turn after the prior window closes");
     assert.equal(afterWindowTurns.find((turn) => turn.triggerMessageId === alice3.body.id)?.state, "dispatched", "the durable admission lets recovery settle after a lost final ACK");
+    const [withheldDecision] = await db.select({
+      admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt,
+      token: schema.agentMessageDecisions.deliveryAdmissionToken,
+    }).from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, alice3.body.id));
+    assert.ok(withheldDecision?.admittedAt && withheldDecision.token, "a lost final ACK remains distinguishable from acknowledged long-running work");
 
     withholdNextTurnAck = true;
     withheldDeliveryId = null;

@@ -249,6 +249,7 @@ export const agentMessageDecisions = pgTable("agent_message_decisions", {
   // Durable transport admission is separate from reply/publication state. A partial fan-out retry
   // must never send work again to a recipient whose daemon already accepted this Turn.
   deliveryAdmittedAt: timestamp("delivery_admitted_at", { withTimezone: true }),
+  deliveryAdmissionToken: uuid("delivery_admission_token"), // non-null until the final daemon ACK; fences stale NACK/disconnect cleanup
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

@@ -20,7 +20,7 @@ import { dispatchConversationTurn, prepareConversationTurnResponsibility, type C
 import { acceptAgentDeliveryAck, rejectAgentDeliveryAck } from "./agentDeliveryAck.js";
 import { DELIVERY_ADMISSION_CAPABILITY, registerDaemon, registerDaemonCapabilities, registerMachineConn, unregisterDaemon, unregisterMachineConn } from "./daemonHub.js";
 import { handleConversationTurnDaemonTopologyChange } from "./conversationTurnRecovery.js";
-import { commitAgentDeliveryAdmission, releaseAgentDeliveryAdmission } from "./agentDeliveryAdmission.js";
+import { acknowledgeAgentDeliveryAdmission, commitAgentDeliveryAdmission, releaseAgentDeliveryAdmission } from "./agentDeliveryAdmission.js";
 import type { WebSocket } from "ws";
 
 after(async () => { await sql.end(); });
@@ -750,10 +750,14 @@ test("delivery commit is bound to the authenticated current machine and persists
       deliveryId, agentId: agent.id, seq: message.seq,
     });
     assert.equal(committed.ok, true);
-    const [decision] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
+    const [decision] = await db.select({
+      admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt,
+      token: schema.agentMessageDecisions.deliveryAdmissionToken,
+    }).from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
     ));
     assert.ok(decision?.admittedAt, "commit returns only after durable recipient admission is visible");
+    assert.equal(decision?.token, committed.ok ? committed.delivery.admissionToken : null, "commit returns its durable admission owner token");
 
     const replacementWs = fakeWs();
     sockets.push(replacementWs);
@@ -765,11 +769,58 @@ test("delivery commit is bound to the authenticated current machine and persists
     });
     assert.deepEqual(stale, { ok: false, error: "stale or unidentified machine connection" });
 
+    const pendingReplacement = await commitAgentDeliveryAdmission({
+      ws: replacementWs, serverId: f.server.id, machineId: ownerMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.deepEqual(pendingReplacement, { ok: false, error: "delivery recipient is no longer admissible" });
     if (committed.ok) await releaseAgentDeliveryAdmission(committed.delivery);
-    const [released] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
+    const replacement = await commitAgentDeliveryAdmission({
+      ws: replacementWs, serverId: f.server.id, machineId: ownerMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.equal(replacement.ok, true);
+    assert.notEqual(replacement.ok && replacement.delivery.admissionToken, committed.ok && committed.delivery.admissionToken, "a replacement admission receives a new owner token");
+    if (committed.ok) await releaseAgentDeliveryAdmission(committed.delivery);
+    const [stillOwned] = await db.select({
+      admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt,
+      token: schema.agentMessageDecisions.deliveryAdmissionToken,
+    }).from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
+    ));
+    assert.ok(stillOwned?.admittedAt, "stale cleanup cannot release a replacement admission");
+    assert.equal(stillOwned?.token, replacement.ok ? replacement.delivery.admissionToken : null);
+    if (replacement.ok) await releaseAgentDeliveryAdmission(replacement.delivery);
+    const [released] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt, token: schema.agentMessageDecisions.deliveryAdmissionToken }).from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
     ));
     assert.equal(released?.admittedAt, null, "a failed in-flight delivery can be retried after release");
+    assert.equal(released?.token, null);
+
+    const accepted = await commitAgentDeliveryAdmission({
+      ws: replacementWs, serverId: f.server.id, machineId: ownerMachine.id,
+      deliveryId, agentId: agent.id, seq: message.seq,
+    });
+    assert.equal(accepted.ok, true);
+    await db.update(schema.conversationTurns).set({
+      state: "blocked", responsibilityState: "blocked", dispatchLeaseUntil: new Date(Date.now() + 60_000),
+    }).where(eq(schema.conversationTurns.id, attached.turn.id));
+    const acknowledged = accepted.ok ? await acknowledgeAgentDeliveryAdmission(accepted.delivery) : null;
+    assert.deepEqual(acknowledged, { accepted: true, resumeTurnId: attached.turn.id });
+    const [acceptedRow] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt, token: schema.agentMessageDecisions.deliveryAdmissionToken }).from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
+    ));
+    assert.ok(acceptedRow?.admittedAt, "a final ACK preserves the durable delivered fence");
+    assert.equal(acceptedRow?.token, null, "a final ACK clears only its pending owner token");
+    const [resumed] = await db.select({ state: schema.conversationTurns.state, responsibilityState: schema.conversationTurns.responsibilityState, lease: schema.conversationTurns.dispatchLeaseUntil })
+      .from(schema.conversationTurns).where(eq(schema.conversationTurns.id, attached.turn.id));
+    assert.deepEqual([resumed?.state, resumed?.responsibilityState, resumed?.lease], ["active", "active", null], "a late ACK reopens an unfinished blocked Turn for scheduler settlement");
+    if (accepted.ok) await releaseAgentDeliveryAdmission(accepted.delivery);
+    const [afterStaleRelease] = await db.select({ admittedAt: schema.agentMessageDecisions.deliveryAdmittedAt }).from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, message.id), eq(schema.agentMessageDecisions.agentId, agent.id),
+    ));
+    assert.ok(afterStaleRelease?.admittedAt, "post-ACK cleanup cannot reopen delivered work");
+    if (accepted.ok) assert.deepEqual(await acknowledgeAgentDeliveryAdmission(accepted.delivery), { accepted: false, resumeTurnId: null });
   } finally {
     for (const socket of sockets) { unregisterMachineConn(socket); unregisterDaemon(socket); }
     await db.update(schema.agents).set({ machineId: null }).where(eq(schema.agents.serverId, f.server.id));

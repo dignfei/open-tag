@@ -1,4 +1,5 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { daemonCount, isCurrentMachineConn } from "./daemonHub.js";
 import type { WebSocket } from "ws";
@@ -8,6 +9,7 @@ export interface CommittedAgentDelivery {
   messageId: string;
   agentId: string;
   seq: number;
+  admissionToken: string;
 }
 
 export async function commitAgentDeliveryAdmission(input: {
@@ -52,18 +54,78 @@ export async function commitAgentDeliveryAdmission(input: {
   if (!decision) return { ok: false, error: "delivery recipient not found" };
   if (!isCurrentMachineConn(input.machineId, input.ws)) return { ok: false, error: "machine connection was replaced" };
 
-  await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: new Date(), updatedAt: new Date() }).where(and(
+  const now = new Date();
+  const admissionToken = randomUUID();
+  const [committed] = await db.update(schema.agentMessageDecisions).set({
+    deliveryAdmittedAt: now,
+    deliveryAdmissionToken: admissionToken,
+    updatedAt: now,
+  }).where(and(
     eq(schema.agentMessageDecisions.messageId, turn.triggerMessageId),
     eq(schema.agentMessageDecisions.agentId, input.agentId),
+    eq(schema.agentMessageDecisions.serverId, input.serverId),
+    eq(schema.agentMessageDecisions.grantStatus, "active"),
+    isNull(schema.agentMessageDecisions.replyMessageId),
     isNull(schema.agentMessageDecisions.deliveryAdmittedAt),
-  ));
-  return { ok: true, delivery: { deliveryId: input.deliveryId, messageId: turn.triggerMessageId, agentId: input.agentId, seq: turn.lastSeq } };
+    isNull(schema.agentMessageDecisions.deliveryAdmissionToken),
+  )).returning({ messageId: schema.agentMessageDecisions.messageId });
+  if (committed) {
+    return { ok: true, delivery: { deliveryId: input.deliveryId, messageId: turn.triggerMessageId, agentId: input.agentId, seq: turn.lastSeq, admissionToken } };
+  }
+  return { ok: false, error: "delivery recipient is no longer admissible" };
 }
 
-export async function releaseAgentDeliveryAdmission(delivery: CommittedAgentDelivery): Promise<void> {
-  await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: null, updatedAt: new Date() }).where(and(
+export async function ownsAgentDeliveryAdmission(delivery: CommittedAgentDelivery): Promise<boolean> {
+  const [current] = await db.select({
+    deliveryAdmittedAt: schema.agentMessageDecisions.deliveryAdmittedAt,
+    deliveryAdmissionToken: schema.agentMessageDecisions.deliveryAdmissionToken,
+    grantStatus: schema.agentMessageDecisions.grantStatus,
+    replyMessageId: schema.agentMessageDecisions.replyMessageId,
+  }).from(schema.agentMessageDecisions).where(and(
     eq(schema.agentMessageDecisions.messageId, delivery.messageId),
     eq(schema.agentMessageDecisions.agentId, delivery.agentId),
+  )).limit(1);
+  return !!current?.deliveryAdmittedAt
+    && current.deliveryAdmissionToken === delivery.admissionToken
+    && current.grantStatus === "active"
+    && !current.replyMessageId;
+}
+
+export async function acknowledgeAgentDeliveryAdmission(delivery: CommittedAgentDelivery): Promise<{ accepted: boolean; resumeTurnId: string | null }> {
+  const now = new Date();
+  return db.transaction(async (tx) => {
+    const [acknowledged] = await tx.update(schema.agentMessageDecisions).set({
+      deliveryAdmissionToken: null,
+      updatedAt: now,
+    }).where(and(
+      eq(schema.agentMessageDecisions.messageId, delivery.messageId),
+      eq(schema.agentMessageDecisions.agentId, delivery.agentId),
+      eq(schema.agentMessageDecisions.deliveryAdmissionToken, delivery.admissionToken),
+    )).returning({ messageId: schema.agentMessageDecisions.messageId });
+    if (!acknowledged) return { accepted: false, resumeTurnId: null };
+
+    const [resumed] = await tx.update(schema.conversationTurns).set({
+      state: "active",
+      responsibilityState: "active",
+      dispatchAfter: now,
+      dispatchLeaseUntil: null,
+      updatedAt: now,
+    }).where(and(
+      eq(schema.conversationTurns.triggerMessageId, delivery.messageId),
+      eq(schema.conversationTurns.state, "blocked"),
+      ne(schema.conversationTurns.responsibilityState, "completed"),
+    )).returning({ id: schema.conversationTurns.id });
+    return { accepted: true, resumeTurnId: resumed?.id ?? null };
+  });
+}
+
+export async function releaseAgentDeliveryAdmission(delivery: CommittedAgentDelivery): Promise<boolean> {
+  const released = await db.update(schema.agentMessageDecisions).set({ deliveryAdmittedAt: null, deliveryAdmissionToken: null, updatedAt: new Date() }).where(and(
+    eq(schema.agentMessageDecisions.messageId, delivery.messageId),
+    eq(schema.agentMessageDecisions.agentId, delivery.agentId),
+    eq(schema.agentMessageDecisions.deliveryAdmissionToken, delivery.admissionToken),
+    eq(schema.agentMessageDecisions.grantStatus, "active"),
     isNull(schema.agentMessageDecisions.replyMessageId),
-  ));
+  )).returning({ messageId: schema.agentMessageDecisions.messageId });
+  return released.length === 1;
 }
