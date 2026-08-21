@@ -454,6 +454,7 @@
     "dmPlaceholder": "Message @{{name}}",
     "channelPlaceholder": "Send a message (@ mention someone to trigger an agent)",
     "showcaseReadOnly": "This is a read-only Showcase channel — case studies for reference only.",
+    "agentDmReadOnly": "This agent conversation is available for read-only oversight.",
     "uploadImage": "Upload image",
     "uploadFile": "Upload file",
     "sendAsTaskTitle": "Send as task (⌘/Ctrl+Shift+Enter)",
