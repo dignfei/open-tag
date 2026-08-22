@@ -76,3 +76,18 @@ test("filtering preserves allowed message order without mutating the source", ()
   assert.deepEqual(filtered.map((message) => message.content), ["human", "listed", "self"]);
   assert.equal(messages.length, 4);
 });
+
+test("agent-attributed system rows inherit their actor's policy", () => {
+  const messages = [
+    { senderType: "system", senderId: blockedId, content: "blocked task title" },
+    { senderType: "system", senderId: allowedId, content: "listed task update" },
+    { senderType: "system", senderId: null, content: "platform notice" },
+    { senderType: "system", senderId: "00000000-0000-4000-8000-000000000004", content: "human audit" },
+  ];
+  const filtered = filterAgentInput(
+    { id: targetId, incomingMode: "sealed", commandWhitelist: [allowedId] },
+    messages,
+    new Set([blockedId, allowedId]),
+  );
+  assert.deepEqual(filtered.map((message) => message.content), ["listed task update", "platform notice", "human audit"]);
+});

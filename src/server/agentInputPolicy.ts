@@ -59,7 +59,14 @@ export function inputSenderAllowed(
 export function filterAgentInput<T extends { senderType: string; senderId: string | null }>(
   target: AgentInputPolicy,
   messages: T[],
+  agentActorIds: ReadonlySet<string> = new Set(),
 ): T[] {
   if ((target.incomingMode ?? "open") === "open") return messages;
-  return messages.filter((message) => inputSenderAllowed(target, message.senderType, message.senderId));
+  return messages.filter((message) => inputSenderAllowed(
+    target,
+    message.senderType === "system" && !!message.senderId && agentActorIds.has(message.senderId)
+      ? "agent"
+      : message.senderType,
+    message.senderId,
+  ));
 }
