@@ -87,3 +87,27 @@ test("permission save failures preserve state and show localized feedback", () =
   assert.equal(en.members.permissionsSaveFailed, "Couldn't save agent permissions. Try again.");
   assert.equal(zh.members.permissionsSaveFailed, "保存 agent 权限失败，请重试。");
 });
+
+test("permission saves adopt only the expected success envelope", () => {
+  const saveStart = permissions.indexOf("const save = async");
+  const saveEnd = permissions.indexOf("const groups", saveStart);
+  const save = permissions.slice(saveStart, saveEnd);
+  const requestAt = save.indexOf('await api("PUT"');
+  const agentAt = save.indexOf("?.agentId !== id", requestAt);
+  const modeAt = save.indexOf('?.mode !== "custom"', requestAt);
+  const revisionAt = save.indexOf("Number.isInteger(", requestAt);
+  const grantedArrayAt = save.indexOf("Array.isArray(", requestAt);
+  const grantedStringsAt = save.indexOf('typeof scope === "string"', requestAt);
+  const successDataAt = save.indexOf("setData(", requestAt);
+  const successGrantedAt = save.indexOf("setGranted(", requestAt);
+  const successSavedAt = save.indexOf("setSaved(true)", requestAt);
+
+  assert.ok(
+    agentAt > requestAt && modeAt > requestAt && revisionAt > requestAt
+      && grantedArrayAt > requestAt && grantedStringsAt > requestAt
+      && successDataAt > agentAt && successDataAt > modeAt && successDataAt > revisionAt
+      && successDataAt > grantedArrayAt && successDataAt > grantedStringsAt
+      && successGrantedAt > grantedStringsAt && successSavedAt > grantedStringsAt,
+    "local state and Saved must follow validation of every consumed response field",
+  );
+});
