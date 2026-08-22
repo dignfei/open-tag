@@ -268,6 +268,7 @@ class HermesRun {
         if (out) this.cb.onTrajectory([{ kind: "text", text: clip(out) }]);
         if (bridged !== false) this.cb.onActivity("online", "");
         this.turnBusy = false;
+        if (bridged === false) this.cb.onAcceptedTurnFailure?.(input);
         this.pump();
         return;
       }
@@ -289,6 +290,7 @@ class HermesRun {
         this.reportExit(code ?? 1);
         return;
       }
+      this.cb.onAcceptedTurnFailure?.(input);
       this.pump();
     });
   }
