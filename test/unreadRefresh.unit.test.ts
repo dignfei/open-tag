@@ -126,8 +126,12 @@ test("disposed badge refreshes ignore late responses", async () => {
   );
 
   const request = refresh.request();
+  let requestDone = false;
+  void request.then(() => { requestDone = true; });
   await nextTurn();
   refresh.dispose();
+  await nextTurn();
+  assert.equal(requestDone, true);
   pending.resolve({ previousWorkspace: 5 });
   await request;
   await refresh.request();
