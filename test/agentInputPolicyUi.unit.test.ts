@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import { filterAvailableAgentIds } from "../web/src/lib/agentInputPolicy.ts";
+import {
+  filterAvailableAgentIds,
+  MAX_AGENT_INPUT_SOURCES,
+  toggleAgentInputSource,
+} from "../web/src/lib/agentInputPolicy.ts";
 import { isCurrentAgentProfileResponse } from "../web/src/lib/agentProfileLoad.ts";
 
 const src = fs.readFileSync(new URL("../web/src/views/Members.tsx", import.meta.url), "utf8");
@@ -18,6 +22,12 @@ test("agent input settings render only for managers and live peer candidates", (
   assert.match(src, /candidates=\{visibleAgents\.filter\(\(candidate\)\s*=>\s*candidate\.id\s*!==\s*id\)\}/);
   assert.deepEqual(filterAvailableAgentIds(["live", "deleted"], ["live"]), ["live"]);
   assert.match(editor, /const submittedWhitelist = filterAvailableAgentIds\(whitelist, candidateIds\)/);
+});
+
+test("agent input selections stop at the server limit", () => {
+  const selected = Array.from({ length: MAX_AGENT_INPUT_SOURCES }, (_, index) => `agent-${index}`);
+  assert.deepEqual([...toggleAgentInputSource(selected, "overflow")], selected);
+  assert.equal(toggleAgentInputSource(selected, "agent-0").has("agent-0"), false);
 });
 
 test("agent profile responses stay bound to their request identity", () => {
