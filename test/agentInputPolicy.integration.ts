@@ -475,6 +475,33 @@ async function main() {
       && delegationOwner.decision === "pending"
       && delegationTarget.grantStatus === "none"
       && delegationTarget.delegatedByAgentId === null);
+    await db.insert(schema.agentMessageDecisions).values({
+      serverId: server.id,
+      channelId: channel!.id,
+      messageId: coordinationMessage.id,
+      agentId: peer.id,
+      attention: "direct",
+      observedAt: new Date(),
+      decision: "requested",
+      reasonCode: "better_fit",
+      summary: "allowed candidate",
+      decidedAt: new Date(Date.now() + 1_000),
+    });
+    const promotedCoordination = await decideReply({
+      serverId: server.id,
+      agentId: target.id,
+      messageId: coordinationMessage.id,
+      decision: "no_action",
+    });
+    const promotionRows = await db.select().from(schema.agentMessageDecisions)
+      .where(eq(schema.agentMessageDecisions.messageId, coordinationMessage.id));
+    const blockedPromotion = promotionRows.find((row) => row.agentId === blocked.id)!;
+    const allowedPromotion = promotionRows.find((row) => row.agentId === peer.id)!;
+    check("primary release skips protected coordination candidates", promotedCoordination.ok
+      && promotedCoordination.promotedAgentId === peer.id
+      && blockedPromotion.grantStatus === "none"
+      && allowedPromotion.grantStatus === "active"
+      && allowedPromotion.delegatedByAgentId === target.id);
     const deniedThread = await agentApi({
       method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
       token: targetToken, agentId: target.id,

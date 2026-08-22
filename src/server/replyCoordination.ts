@@ -172,38 +172,6 @@ export function coordinationHeader(row: DecisionRow | undefined): string {
   return ` attention=${row.attention} decision=${row.decision} grant=${grant ?? "none"} trigger=${row.messageId.slice(0, 8)}`;
 }
 
-async function slotState(messageId: string): Promise<{ primaryState: "none" | "active" | "consumed"; supplementalTaken: boolean }> {
-  const rows = await db.select({ slot: schema.agentMessageDecisions.grantSlot, status: schema.agentMessageDecisions.grantStatus })
-    .from(schema.agentMessageDecisions).where(and(
-      eq(schema.agentMessageDecisions.messageId, messageId),
-      inArray(schema.agentMessageDecisions.grantStatus, SLOT_STATUSES),
-    ));
-  const primary = rows.find((r) => r.slot === "primary");
-  return {
-    primaryState: primary?.status === "consumed" || primary?.status === "publishing" ? "consumed" : primary ? "active" : "none",
-    supplementalTaken: rows.some((r) => r.slot === "supplemental"),
-  };
-}
-
-async function grantRequestedSlot(messageId: string, agentId: string, slot: ReplySlot): Promise<boolean> {
-  try {
-    const rows = await db.update(schema.agentMessageDecisions).set({
-      grantSlot: slot,
-      grantStatus: "active",
-      grantedAt: new Date(),
-      updatedAt: new Date(),
-    }).where(and(
-      eq(schema.agentMessageDecisions.messageId, messageId),
-      eq(schema.agentMessageDecisions.agentId, agentId),
-      inArray(schema.agentMessageDecisions.grantStatus, ["none", "released"]),
-    )).returning({ agentId: schema.agentMessageDecisions.agentId });
-    return rows.length === 1;
-  } catch (e) {
-    if (conflictCode(e) === "23505") return false;
-    throw e;
-  }
-}
-
 export async function releaseUnavailableReplyGrant(messageId: string, agentId: string): Promise<void> {
   await db.update(schema.agentMessageDecisions).set({
     grantStatus: "released", reasonCode: "recipient_unavailable", updatedAt: new Date(),
@@ -214,20 +182,40 @@ export async function releaseUnavailableReplyGrant(messageId: string, agentId: s
   ));
 }
 
-async function promoteBetterFit(messageId: string): Promise<DecisionRow | null> {
+async function promoteBetterFit(messageId: string, sourceAgentId: string): Promise<DecisionRow | null> {
   const candidates = await db.select().from(schema.agentMessageDecisions).where(and(
     eq(schema.agentMessageDecisions.messageId, messageId),
     eq(schema.agentMessageDecisions.decision, "requested"),
     eq(schema.agentMessageDecisions.reasonCode, "better_fit"),
     eq(schema.agentMessageDecisions.grantStatus, "none"),
-  )).orderBy(asc(schema.agentMessageDecisions.decidedAt));
+  )).orderBy(asc(schema.agentMessageDecisions.decidedAt), asc(schema.agentMessageDecisions.agentId));
   for (const candidate of candidates) {
-    if (await grantRequestedSlot(messageId, candidate.agentId, "primary")) {
-      return (await db.select().from(schema.agentMessageDecisions).where(and(
+    const promoted = await db.transaction(async (tx) => {
+      const current = (await tx.select().from(schema.agentMessageDecisions).where(and(
         eq(schema.agentMessageDecisions.messageId, messageId),
         eq(schema.agentMessageDecisions.agentId, candidate.agentId),
-      )))[0] ?? null;
-    }
+      )).for("update"))[0];
+      if (current?.decision !== "requested" || current.reasonCode !== "better_fit" || current.grantStatus !== "none") return null;
+      const target = (await tx.select().from(schema.agents).where(and(
+        eq(schema.agents.id, current.agentId),
+        eq(schema.agents.serverId, current.serverId),
+        isNull(schema.agents.deletedAt),
+      )).for("update"))[0];
+      if (!target || !inputSenderAllowed(target, "agent", sourceAgentId)) return null;
+      const [granted] = await tx.update(schema.agentMessageDecisions).set({
+        grantSlot: "primary",
+        grantStatus: "active",
+        grantedAt: new Date(),
+        delegatedByAgentId: sourceAgentId,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(schema.agentMessageDecisions.messageId, messageId),
+        eq(schema.agentMessageDecisions.agentId, current.agentId),
+        eq(schema.agentMessageDecisions.grantStatus, "none"),
+      )).returning();
+      return granted ?? null;
+    }).catch((error) => conflictCode(error) === "23505" ? null : Promise.reject(error));
+    if (promoted) return promoted;
   }
   return null;
 }
@@ -323,7 +311,7 @@ export async function decideReply(o: {
       decidedAt: now,
       updatedAt: now,
     }).where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId))).returning();
-    const promoted = ownedPrimary ? await promoteBetterFit(o.messageId) : null;
+    const promoted = ownedPrimary ? await promoteBetterFit(o.messageId, o.agentId) : null;
     await completeConversationTurnIfSettled(o.messageId);
     return { ok: true, row: updated!, promotedAgentId: promoted?.agentId };
   }
