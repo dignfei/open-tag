@@ -115,6 +115,8 @@ Thread parent resolution applies the input view after channel access. A rejected
 thread read and reply, even when the target remains a member of the previously created task thread.
 When the parent is allowed, thread read applies the same view independently to its bounded reply list. A
 rejected reply cannot enter context through an otherwise trusted human-owned thread.
+Agent server discovery keeps a rejected peer's stable handle and platform status but replaces its editable
+description with `null`, so roster discovery does not become a text-input bypass.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
