@@ -338,6 +338,12 @@ async function main() {
       method: "PATCH", path: endpoint, token: ownerToken, serverId: server.id,
       body: { commandWhitelist: [peer.id] },
     });
+    const deniedThread = await agentApi({
+      method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
+      token: targetToken, agentId: target.id,
+    });
+    check("thread read hides a rejected parent with 404", deniedThread.status === 404
+      && !JSON.stringify(deniedThread.body).includes("protected task handoff"));
     const protectedSearch = await agentApi({
       method: "GET", path: `/agent-api/search?q=${encodeURIComponent("protected task handoff")}`,
       token: targetToken, agentId: target.id,

@@ -16,7 +16,7 @@ import { conversationTurnDeliveryBlockReason } from "./daemonHub.js";
 import { isConversationTurnCapabilityPaused } from "./conversationTurnRecovery.js";
 import { CHANNEL_DELETED_NOTICE_KIND, channelDeletedNoticeForAgent, type ChannelDeletedNoticeMetadata } from "./channelDeletionNotice.js";
 import { inputSenderAllowed } from "./agentInputPolicy.js";
-import { filterAgentInputView } from "./agentInputView.js";
+import { agentInputVisible, filterAgentInputView } from "./agentInputView.js";
 
 // Freshness-hold draft buffer (prevents agent↔agent duplicate replies): when the agent sends
 // and new messages have arrived since last read → save as draft + surface bounded context, do not post immediately.
@@ -728,6 +728,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     // Agent ACL: a bare parent short id (no channel given) skips resolveTarget, so gate on the found parent's
     // channel — otherwise an agent could read/reply into a thread under a private channel it can't access.
     if (parent && !(await canAgentReadChannel(serverId, parent.channelId, agent.id))) return null;
+    if (parent && !await agentInputVisible(agent, parent)) return null;
     return parent;
   };
   if (p === "/agent-api/thread/reply" && method === "POST") {
