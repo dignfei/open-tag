@@ -228,6 +228,15 @@ async function main() {
     await db.insert(schema.channelMembers).values([target, peer, blocked].map((agent) => ({
       channelId: channel!.id, memberType: "agent", memberId: agent.id,
     })));
+    const protectedMembers = await agentApi({
+      method: "GET", path: `/agent-api/channel/members?channel=${encodeURIComponent(`#${channel!.name}`)}`,
+      token: targetToken, agentId: target.id,
+    });
+    const memberPeer = protectedMembers.body.members.find((entry: any) => entry.name === peer.name);
+    const memberBlocked = protectedMembers.body.members.find((entry: any) => entry.name === blocked.name);
+    check("channel member list hides rejected display text", protectedMembers.status === 200
+      && memberPeer?.displayName === peer.displayName
+      && memberBlocked?.displayName === blocked.name);
     const blockedMessage = await createMessage({
       serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: blocked.id,
       senderName: blocked.name, content: `@${target.name} blocked request`,

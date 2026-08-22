@@ -853,7 +853,11 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const tgt = await resolveTarget(serverId, url.searchParams.get("channel") ?? "", agent.id);
     if (!tgt) return (sendErr(res, 404, "channel not found"), true);
     const mems = await channelMembers(tgt.channelId);
-    return (sendJson(res, 200, { members: mems.map((m) => ({ type: m.type, name: m.name, displayName: m.displayName })) }), true);
+    return (sendJson(res, 200, { members: mems.map((m) => ({
+      type: m.type,
+      name: m.name,
+      displayName: m.type === "agent" && !inputSenderAllowed(agent, "agent", m.id) ? m.name : m.displayName,
+    })) }), true);
   }
   // channel leave (only affects own membership)
   if (p === "/agent-api/channel/leave" && method === "POST") {
