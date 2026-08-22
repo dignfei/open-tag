@@ -2,8 +2,10 @@
 // The daemon shells out to the runtime's list command on its own machine and parses stdout, so the
 // candidates reflect what that machine + login can actually use (not a hard-coded server table).
 //
-// Scope: opencode / cursor / pi / codex enumerate models; Hermes enumerates local profiles.
-//  - claude keeps a static server-side catalog but probes supported thinking controls dynamically.
+// Scope: opencode / cursor / pi enumerate models; Hermes enumerates local profiles; reasonix
+// enumerates the providers/models of its resolved config via `reasonix doctor --json`.
+//  - claude / codex have no "list models" command — their catalogs stay static, server-side, but
+//    supported thinking/reasoning controls are probed dynamically.
 //  - copilot / kimi would need an ACP (JSON-RPC over stdio) handshake — not done yet.
 //  Both gaps are tracked in docs/tech-debt-tracker.md.
 //
@@ -31,6 +33,9 @@ const titleCase = (s: string): string => (s ? s[0]!.toUpperCase() + s.slice(1) :
 function isModelId(s: string): boolean {
   return /^[A-Za-z][A-Za-z0-9\-_./]*$/.test(s);
 }
+
+// claude/codex have no "list models" command — their catalog is static, but each model's reasoning-effort
+// levels ARE probed (so the UI offers exactly what the installed CLI supports, not a guess).
 
 // `claude --help` advertises the effort *superset* on one `--effort` line:
 //   `--effort <level>   Effort level for the current session (low, medium, high, xhigh, max)`
@@ -91,6 +96,47 @@ export function parseCodexModels(jsonStr: string): DiscoveredModel[] {
       .filter((l: ThinkingLevel) => l.value);
     const thinking = levels.length ? { levels, default: typeof m?.default_reasoning_level === "string" ? m.default_reasoning_level : undefined } : undefined;
     out.push({ id: slug, label: typeof m?.display_name === "string" && m.display_name ? m.display_name : slug, provider: "openai", ...(thinking ? { thinking } : {}) });
+  }
+  return out;
+}
+
+// reasonix has no "list models" command — its catalog is config-driven (reasonix.toml /
+// ~/.reasonix/config.toml). `reasonix doctor --json` emits the RESOLVED config, which is more
+// faithful than re-parsing TOML ourselves (project > user > built-in defaults already applied).
+// Each provider carries `models` (or a single `model`).
+//
+// The resolved default lives in `config.default_model`, NOT in a per-provider `is_default` flag:
+// v1.18.0 emits `is_default: false` on every provider even when one is the default, so keying off
+// it left the whole list unmarked and the modal preselected whatever provider came first in config
+// order. `default_model` is either `"<provider>/<model>"` or a bare provider/model name — match a
+// provider by name or a model id by its trailing segment.
+export function parseReasonixModels(jsonStr: string): DiscoveredModel[] {
+  let parsed: any;
+  try { parsed = JSON.parse(jsonStr); } catch { return []; }
+  const providers = Array.isArray(parsed?.providers) ? parsed.providers : [];
+  const rawDefault = typeof parsed?.config?.default_model === "string" ? parsed.config.default_model : "";
+  const slash = rawDefault.indexOf("/");
+  const defProvider = slash >= 0 ? rawDefault.slice(0, slash) : rawDefault;
+  const defModel = slash >= 0 ? rawDefault.slice(slash + 1) : "";
+  // Each provider contributes its `models` list (or its single `model`), in config order.
+  const entries: { id: string; provider: any }[] = [];
+  for (const p of providers) {
+    const list = Array.isArray(p?.models) && p.models.length ? p.models : (typeof p?.model === "string" && p.model ? [p.model] : []);
+    for (const m of list) entries.push({ id: String(m), provider: p });
+  }
+  // Resolve default_model to exactly ONE model id: an explicit `is_default` provider wins, else a
+  // `<provider>/<model>` or bare-provider-name match, else a bare model id. Nothing matches → no default.
+  const flagged = entries.find((e) => e.provider?.is_default === true);
+  const defaultId = flagged?.id
+    ?? (defModel ? entries.find((e) => e.provider?.name === defProvider && e.id === defModel)?.id : undefined)
+    ?? entries.find((e) => e.provider?.name === defProvider)?.id // bare provider name (default_model = "hy3")
+    ?? entries.find((e) => e.id === rawDefault)?.id;            // bare model id (default_model = "hy3-ioa")
+  const out: DiscoveredModel[] = [];
+  const seen = new Set<string>();
+  for (const { id, provider } of entries) {
+    if (!isModelId(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: id, provider: provider?.name ?? "reasonix", ...(id === defaultId ? { default: true } : {}) });
   }
   return out;
 }
@@ -224,15 +270,15 @@ function discoverHermesProfiles(): DiscoveredModel[] {
   return discoverHermesProfilesFromRoots(roots);
 }
 
-// ── bounded shell probes (the large-output path is covered by a fake-CLI regression test) ──
+// ── shelling out (not unit-tested — covered by the live E2E run) ──
 
 const LIST_TIMEOUT_MS = 7_000; // a single probe must stay under runtimeModels' 8s WS-RPC budget, else the server gives up while the daemon keeps spawning
-const OUT_CAP = 1024 * 1024; // a current Codex catalog exceeds 256 KiB; keep each stream bounded at 1 MiB
+const OUT_CAP = 256 * 1024; // bound memory if a CLI floods stdout
 
 // Run a runtime's list command and capture stdout/stderr. Uses the daemon's own env (so the CLI sees
 // the same login/config the agent runs use) minus NODE_OPTIONS — a proxy flag there makes some
 // bundled CLIs refuse to start (same gotcha the opencode/cursor/pi runtimes guard against).
-export function runList(bin: string, args: string[], timeoutMs: number = LIST_TIMEOUT_MS): Promise<{ stdout: string; stderr: string; code: number | null }> {
+function runList(bin: string, args: string[], timeoutMs: number = LIST_TIMEOUT_MS): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve) => {
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
@@ -244,8 +290,8 @@ export function runList(bin: string, args: string[], timeoutMs: number = LIST_TI
     }
     let stdout = "";
     let stderr = "";
-    proc.stdout?.on("data", (c: Buffer) => { if (stdout.length < OUT_CAP) stdout += c.toString().slice(0, OUT_CAP - stdout.length); });
-    proc.stderr?.on("data", (c: Buffer) => { if (stderr.length < OUT_CAP) stderr += c.toString().slice(0, OUT_CAP - stderr.length); });
+    proc.stdout?.on("data", (c: Buffer) => { if (stdout.length < OUT_CAP) stdout += c.toString(); });
+    proc.stderr?.on("data", (c: Buffer) => { if (stderr.length < OUT_CAP) stderr += c.toString(); });
     const timer = setTimeout(() => { try { proc.kill(process.platform === "win32" ? undefined : "SIGKILL"); } catch { /* */ } }, timeoutMs);
     proc.on("error", (e) => { clearTimeout(timer); resolve({ stdout, stderr: stderr || String((e as any)?.message ?? e), code: 1 }); });
     proc.on("exit", (code) => { clearTimeout(timer); resolve({ stdout, stderr, code }); });
@@ -253,8 +299,8 @@ export function runList(bin: string, args: string[], timeoutMs: number = LIST_TI
 }
 
 // Probe the live model list for a runtime on this machine. Returns null for runtimes we can't probe
-// (copilot/kimi) or when the probe yields nothing — the caller falls back to a static list. Never
-// throws; a missing CLI surfaces as the spawn "error" event → empty output → null.
+// (claude/codex/copilot/kimi) or when the probe yields nothing — the caller falls back to a static
+// list. Never throws; a missing CLI surfaces as the spawn "error" event → empty output → null.
 export async function listModels(runtime: string): Promise<DiscoveredModel[] | null> {
   switch (runtime) {
     case "opencode": {
@@ -288,6 +334,11 @@ export async function listModels(runtime: string): Promise<DiscoveredModel[] | n
     case "codex": {
       const r = await runList("codex", ["debug", "models"]);
       const models = parseCodexModels(r.stdout);
+      return models.length ? models : null;
+    }
+    case "reasonix": {
+      const r = await runList("reasonix", ["doctor", "--json"]);
+      const models = parseReasonixModels(r.stdout || r.stderr);
       return models.length ? models : null;
     }
     case "hermes": {
