@@ -130,6 +130,33 @@ async function main() {
   const after = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, first!.threadId!), eq(schema.messages.senderType, "system")));
   check("same-assignee retry returns the existing task", second?.id === first?.id);
   check("same-assignee retry does not append another system handoff message", after.length === before.length);
+
+  console.log("\n[7] sealed destination rejects an unlisted agent before task mutation");
+  const msg5 = await createMessage({ serverId, channelId, senderType: "user", senderId: ownerId, senderName: `owner_${ts}`, content: "protected handoff" });
+  const task5 = await convertMessageToTask(serverId, msg5.id, { type: "user", id: ownerId });
+  await db.update(schema.agents).set({ incomingMode: "sealed", commandWhitelist: [] }).where(eq(schema.agents.id, dstAgentId));
+  const auditBefore = await db.select().from(schema.messages).where(and(
+    eq(schema.messages.channelId, task5!.threadId!),
+    eq(schema.messages.senderType, "system"),
+  ));
+  const blocked = await assignTask(serverId, task5!.id, dstAgentId, { type: "agent", id: srcAgentId });
+  const unchanged = (await db.select().from(schema.messages).where(eq(schema.messages.id, task5!.id)))[0]!;
+  const blockedMembership = await db.select().from(schema.channelMembers).where(and(
+    eq(schema.channelMembers.channelId, task5!.threadId!),
+    eq(schema.channelMembers.memberType, "agent"),
+    eq(schema.channelMembers.memberId, dstAgentId),
+  ));
+  const auditAfter = await db.select().from(schema.messages).where(and(
+    eq(schema.messages.channelId, task5!.threadId!),
+    eq(schema.messages.senderType, "system"),
+  ));
+  check("unlisted handoff returns null", blocked === null);
+  check("unlisted handoff leaves task ownership unchanged", unchanged.taskAssigneeId === null && unchanged.taskStatus === "todo");
+  check("unlisted handoff creates no membership or audit row", blockedMembership.length === 0 && auditAfter.length === auditBefore.length);
+
+  await db.update(schema.agents).set({ commandWhitelist: [srcAgentId] }).where(eq(schema.agents.id, dstAgentId));
+  const allowed = await assignTask(serverId, task5!.id, dstAgentId, { type: "agent", id: srcAgentId });
+  check("listed source can hand off the same task", allowed?.taskAssigneeId === dstAgentId);
 }
 
 main()

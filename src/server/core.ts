@@ -846,6 +846,7 @@ export async function assignTask(
     isNull(schema.agents.deletedAt),
   )))[0];
   if (!target) return null;
+  if (by?.type === "agent" && !inputSenderAllowed(target, by.type, by.id)) return null;
 
   const cur = (await db.select().from(schema.messages).where(and(
     eq(schema.messages.id, messageId),
