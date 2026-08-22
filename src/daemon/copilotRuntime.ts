@@ -154,15 +154,16 @@ class CopilotRun {
     this.proc = proc;
     proc.once("spawn", () => { input.admission.accept(); if (input.initial) this.admission.accept(); });
     let buf = "";
-    let resultSeen = false;
+    let resultExitCode: number | undefined;
+    let protocolError: string | null = null;
     const errTail: string[] = [];
     let errLen = 0;
     const processLine = (ln: string) => {
       const t = ln.trim(); if (!t) return;
       let evt: any; try { evt = JSON.parse(t); } catch { return; }
       const emit = handleCopilotEvent(evt);
-      if (emit.exitCode !== undefined) resultSeen = true; // gate on result event, not sessionId
-      if (emit.error) { this.cb.onTrajectory([{ kind: "text", text: "[copilot error] " + emit.error.slice(0, 500) }]); this.cb.onActivity("error", emit.error.slice(0, 200)); }
+      if (emit.exitCode !== undefined) resultExitCode = emit.exitCode;
+      if (emit.error) { protocolError = emit.error; this.cb.onTrajectory([{ kind: "text", text: "[copilot error] " + emit.error.slice(0, 500) }]); this.cb.onActivity("error", emit.error.slice(0, 200)); }
       if (emit.activity) this.cb.onActivity(emit.activity.activity, emit.activity.detail);
       if (emit.trajectory.length) this.cb.onTrajectory(emit.trajectory);
     };
@@ -188,16 +189,20 @@ class CopilotRun {
       if (buf.trim()) processLine(buf); buf = "";
       this.proc = null; this.turnBusy = false; if (this.stopped) { this.reportExit(code); return; }
       if (this.currentInput === input) this.currentInput = null;
-      if (code === 0 || resultSeen) {
+      if (!protocolError && (resultExitCode === 0 || (resultExitCode === undefined && code === 0))) {
         this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return;
       }
       // Non-zero exit with no result: the error lives on stderr (e.g. an unavailable --model exits 1
       // with no JSON event). Surface it loudly rather than failing silently.
       const tail = errTail.join("").trim();
-      const last = tail.split("\n").filter(Boolean).pop() || `copilot exited ${code ?? "signal"}`;
-      this.cb.onTrajectory([{ kind: "text", text: "[copilot error] " + clip(tail).slice(0, 500) }]);
-      this.cb.onActivity("error", last.slice(0, 200));
-      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.reportExit(code ?? 1); return; } // first-turn hard failure → crashed
+      const last = protocolError || tail.split("\n").filter(Boolean).pop()
+        || (resultExitCode !== undefined ? `copilot result exited ${resultExitCode}` : `copilot exited ${code ?? "signal"}`);
+      if (!protocolError) {
+        this.cb.onTrajectory([{ kind: "text", text: "[copilot error] " + clip(tail || last).slice(0, 500) }]);
+        this.cb.onActivity("error", last.slice(0, 200));
+      }
+      if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.reportExit(protocolError ? 1 : (resultExitCode ?? code ?? 1)); return; } // first-turn hard failure → crashed
+      this.cb.onAcceptedTurnFailure?.(input);
       this.pump(); // a later turn failed; keep the session alive so the next message can retry
     });
   }
