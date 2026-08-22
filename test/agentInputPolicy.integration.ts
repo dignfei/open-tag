@@ -10,7 +10,7 @@ import { db, schema, sql } from "../src/db/index.ts";
 import { hashToken, signUser } from "../src/server/auth.ts";
 
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
-const { createMessage, parseMentions } = await import("../src/server/core.ts");
+const { createMessage, parseMentions, resolveMessageId } = await import("../src/server/core.ts");
 const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
 const { handleAgentApi } = await import("../src/server/routes-agent.ts");
@@ -275,6 +275,8 @@ async function main() {
       && !historyText.includes("blocked request")
       && historyText.includes("listed request")
       && historyText.includes("human request"));
+    check("protected id resolution hides rejected input", await resolveMessageId(server.id, blockedMessage.id, target.id) === null);
+    check("protected id resolution keeps listed input addressable", await resolveMessageId(server.id, allowedMessage.id, target.id) === allowedMessage.id);
 
     const task = await createMessage({
       serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: blocked.id,

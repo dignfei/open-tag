@@ -16,6 +16,7 @@ import { attachMessageToConversationTurn, scheduleConversationTurn, type Convers
 import { dispatchConversationTurn as dispatchConversationTurnWithDeps, dispatchLegacyMessage, prepareConversationTurnResponsibility, type ConversationTurnDispatchDeps } from "./conversationTurnDispatch.js";
 import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY } from "../daemonProtocol.js";
 import { inputSenderAllowed } from "./agentInputPolicy.js";
+import { agentInputVisible } from "./agentInputView.js";
 
 const log = createLogger("server:core");
 const ERROR_RECEIPT_WINDOW_MS = 10 * 60 * 1000;
@@ -798,11 +799,24 @@ export async function resolveIdOrPrefix(
 export async function resolveMessageId(serverId: string, idOrShort: string | undefined | null, agentId?: string): Promise<string | null> {
   const id = await resolveIdOrPrefix(schema.messages, serverId, idOrShort);
   if (!id) return null;
-  const m = (await db.select({ id: schema.messages.id, channelId: schema.messages.channelId }).from(schema.messages).where(eq(schema.messages.id, id)))[0];
+  const m = (await db.select().from(schema.messages).where(eq(schema.messages.id, id)))[0];
   if (!m) return null;
   // Agent ACL: on the agent plane (agentId passed), only resolve a message in a channel the agent can access —
   // otherwise an agent could probe/react/claim any message in the server by its (short) id.
   if (agentId && !(await canAgentReadChannel(serverId, m.channelId, agentId))) return null;
+  if (agentId) {
+    const target = (await db.select({
+      id: schema.agents.id,
+      serverId: schema.agents.serverId,
+      incomingMode: schema.agents.incomingMode,
+      commandWhitelist: schema.agents.commandWhitelist,
+    }).from(schema.agents).where(and(
+      eq(schema.agents.id, agentId),
+      eq(schema.agents.serverId, serverId),
+      isNull(schema.agents.deletedAt),
+    )))[0];
+    if (!target || !await agentInputVisible(target, m)) return null;
+  }
   return m.id;
 }
 
