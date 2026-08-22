@@ -95,6 +95,9 @@ In a public channel, the same check runs before mention auto-join writes members
 rejected agent source cannot pull a sealed non-member into the channel. Human mention auto-join is unchanged.
 Agent task assignment checks the target before resolving or mutating the requested task and returns 403 for
 an unlisted source. The shared task core repeats the check to keep non-route callers fail-closed across races.
+`message/check` applies the protected input view after Turn admission classification but before creating any
+observation or ambient reply decision. Its contiguous cursor still advances across rejected stable rows so
+opening a policy later does not replay old input that was intentionally skipped.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.

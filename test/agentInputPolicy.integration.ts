@@ -65,6 +65,7 @@ async function agentApi(options: { method: string; path: string; token: string; 
 }
 
 async function main() {
+  const targetToken = `sk_agent_policy_target_${suffix}`;
   const blockedToken = `sk_agent_policy_blocked_${suffix}`;
   const users = await db.insert(schema.users).values([
     { name: `policy-owner-${suffix}`, displayName: "Owner", email: `policy-owner-${suffix}@test.invalid` },
@@ -84,7 +85,7 @@ async function main() {
     { serverId: foreignServer.id, userId: owner.id, role: "owner" },
   ]);
   const localAgents = await db.insert(schema.agents).values([
-    { serverId: server.id, name: `target-${suffix}`, displayName: "Target" },
+    { serverId: server.id, name: `target-${suffix}`, displayName: "Target", agentTokenHash: hashToken(targetToken) },
     { serverId: server.id, name: `peer-${suffix}`, displayName: "Peer" },
     { serverId: server.id, name: `blocked-${suffix}`, displayName: "Blocked", agentTokenHash: hashToken(blockedToken) },
     { serverId: server.id, name: `showcase-${suffix}`, displayName: "Showcase", creatorType: "system" },
@@ -228,6 +229,21 @@ async function main() {
     check("dispatch completes a rejected command without starting or delivering", blockedStarts === 0
       && blockedDeliveries === 0 && blockedEdges.length === 0
       && dispatchedBlocked.state === "dispatched" && dispatchedBlocked.responsibilityState === "completed");
+    const sealedCheck = await agentApi({
+      method: "GET", path: "/agent-api/message/check", token: targetToken, agentId: target.id,
+    });
+    const blockedObservation = await db.select().from(schema.agentMessageObservations).where(and(
+      eq(schema.agentMessageObservations.messageId, blockedMessage.id),
+      eq(schema.agentMessageObservations.agentId, target.id),
+    ));
+    const targetCursor = (await db.select().from(schema.channelMembers).where(and(
+      eq(schema.channelMembers.channelId, channel!.id),
+      eq(schema.channelMembers.memberType, "agent"),
+      eq(schema.channelMembers.memberId, target.id),
+    )))[0]!;
+    check("message check hides rejected agent input", sealedCheck.status === 200
+      && !JSON.stringify(sealedCheck.body).includes("blocked request") && blockedObservation.length === 0);
+    check("hidden stable input still advances the channel cursor", targetCursor.lastReadSeq >= blockedMessage.seq);
 
     const allowedMessage = await createMessage({
       serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: peer.id,

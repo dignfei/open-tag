@@ -16,6 +16,7 @@ import { conversationTurnDeliveryBlockReason } from "./daemonHub.js";
 import { isConversationTurnCapabilityPaused } from "./conversationTurnRecovery.js";
 import { CHANNEL_DELETED_NOTICE_KIND, channelDeletedNoticeForAgent, type ChannelDeletedNoticeMetadata } from "./channelDeletionNotice.js";
 import { inputSenderAllowed } from "./agentInputPolicy.js";
+import { filterAgentInputView } from "./agentInputView.js";
 
 // Freshness-hold draft buffer (prevents agent↔agent duplicate replies): when the agent sends
 // and new messages have arrived since last read → save as draft + surface bounded context, do not post immediately.
@@ -304,7 +305,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       const visibility = await classifyInboxVisibility({ agentId: agent.id, messages: unread, durableDeliveryBlock, purpose: "inbox" });
       capabilityPaused ||= visibility.capabilityPaused;
       topologyBlocked ||= visibility.topologyBlocked;
-      const stable = visibility.visible;
+      const stable = await filterAgentInputView(agent, visibility.visible);
       const stableForeign = stable.filter((message) => message.senderId !== agent.id);
       const observedRows = stableForeign.length
         ? await db.select({ messageId: schema.agentMessageObservations.messageId }).from(schema.agentMessageObservations).where(and(
