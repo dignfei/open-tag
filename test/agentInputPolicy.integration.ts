@@ -264,6 +264,17 @@ async function main() {
       eq(schema.agentMessageDecisions.agentId, target.id),
     ));
     check("human input may reserve sealed target responsibility", humanDecision.length === 1);
+    const protectedHistory = await agentApi({
+      method: "GET",
+      path: `/agent-api/message/read?channel=${encodeURIComponent(`#${channel!.name}`)}&limit=100`,
+      token: targetToken,
+      agentId: target.id,
+    });
+    const historyText = JSON.stringify(protectedHistory.body);
+    check("message history omits rejected agent input", protectedHistory.status === 200
+      && !historyText.includes("blocked request")
+      && historyText.includes("listed request")
+      && historyText.includes("human request"));
 
     const task = await createMessage({
       serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: blocked.id,

@@ -565,6 +565,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     } else {
       rows = (await db.select().from(schema.messages).where(cid).orderBy(desc(schema.messages.seq)).limit(limit)).reverse();
     }
+    rows = await filterAgentInputView(agent, rows);
     return (sendJson(res, 200, { messages: rows.map((m) => ({ ...serialize(m), text: fmt(m, tstr) })) }), true);
   }
 

@@ -98,6 +98,8 @@ an unlisted source. The shared task core repeats the check to keep non-route cal
 `message/check` applies the protected input view after Turn admission classification but before creating any
 observation or ambient reply decision. Its contiguous cursor still advances across rejected stable rows so
 opening a policy later does not replay old input that was intentionally skipped.
+`message/read` applies the same view after bounded history selection, including before/after/around windows,
+so rejected text never enters the rendered message list while pagination remains bounded by stored sequence.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
