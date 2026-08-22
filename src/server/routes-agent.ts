@@ -817,11 +817,9 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
   if (p === "/agent-api/message/resolve" && method === "GET") {
     const raw = (url.searchParams.get("id") || "").trim();
     if (!raw) return (sendErr(res, 400, "id required"), true);
-    const m = (await db.select().from(schema.messages).where(and(eq(schema.messages.serverId, serverId), raw.length >= 32 ? eq(schema.messages.id, raw) : like(sql`${schema.messages.id}::text`, raw.toLowerCase() + "%"))))[0];
+    const messageId = await resolveMessageId(serverId, raw, agent.id);
+    const m = messageId ? (await db.select().from(schema.messages).where(eq(schema.messages.id, messageId)))[0] : undefined;
     if (!m) return (sendErr(res, 404, "message not found", { code: "RESOLVE_FAILED" }), true);
-    // Agent ACL: resolve has its own message lookup (not resolveMessageId), so gate the resolved message's
-    // channel here too — otherwise it leaks any message's content by (short) id (C7).
-    if (!(await canAgentReadChannel(serverId, m.channelId, agent.id))) return (sendErr(res, 404, "message not found", { code: "RESOLVE_FAILED" }), true);
     const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, m.channelId)))[0];
     return (sendJson(res, 200, { ...serialize(m), text: fmt(m, ch ? await addressableTarget(ch, agent.id) : m.channelId) }), true);
   }

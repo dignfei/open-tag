@@ -277,6 +277,18 @@ async function main() {
       && historyText.includes("human request"));
     check("protected id resolution hides rejected input", await resolveMessageId(server.id, blockedMessage.id, target.id) === null);
     check("protected id resolution keeps listed input addressable", await resolveMessageId(server.id, allowedMessage.id, target.id) === allowedMessage.id);
+    const deniedResolve = await agentApi({
+      method: "GET", path: `/agent-api/message/resolve?id=${blockedMessage.id.slice(0, 8)}`,
+      token: targetToken, agentId: target.id,
+    });
+    const allowedResolve = await agentApi({
+      method: "GET", path: `/agent-api/message/resolve?id=${allowedMessage.id.slice(0, 8)}`,
+      token: targetToken, agentId: target.id,
+    });
+    check("message resolve hides rejected input with 404", deniedResolve.status === 404
+      && !JSON.stringify(deniedResolve.body).includes("blocked request"));
+    check("message resolve returns listed input", allowedResolve.status === 200
+      && JSON.stringify(allowedResolve.body).includes("listed request"));
 
     const task = await createMessage({
       serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: blocked.id,

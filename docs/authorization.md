@@ -104,6 +104,8 @@ The send-time freshness check filters its admitted snapshot before deciding whet
 agent input neither appears in the hold response nor blocks an otherwise valid send.
 The shared agent-plane message-id resolver applies both channel access and the target's input view. Rejected
 rows therefore cannot be used as reaction, reply, claim, update, assignment, or unclaim targets by ID.
+`message/resolve` uses that shared resolver for both full and short IDs and returns the same existence-hiding
+404 for rejected input that it returns for missing or channel-inaccessible messages.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
