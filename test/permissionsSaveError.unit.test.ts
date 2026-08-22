@@ -172,3 +172,34 @@ test("permission loads fail closed and remain retryable", () => {
   assert.equal(zh.members.permissionsLoadFailed, "加载 agent 权限失败。");
   assert.equal(zh.members.permissionsRetry, "重试");
 });
+
+test("late permission save responses stay silent after the panel closes", () => {
+  assert.match(permissions, /const mountedRef = useRef\(true\)/);
+  assert.match(
+    permissions,
+    /useEffect\(\(\) => \{\s*mountedRef\.current = true;\s*return \(\) => \{ mountedRef\.current = false; \};\s*\}, \[\]\)/,
+  );
+
+  const saveStart = permissions.indexOf("const save = async");
+  const saveEnd = permissions.indexOf("const groups", saveStart);
+  const save = permissions.slice(saveStart, saveEnd);
+  const requestAt = save.indexOf('await api("PUT"');
+  const inactiveAt = save.indexOf("if (!mountedRef.current) return", requestAt);
+  const responseErrorAt = save.indexOf("result?.error", requestAt);
+  const successAt = save.indexOf("setData(", requestAt);
+  const catchAt = save.indexOf("catch", requestAt);
+  const feedbackAt = save.indexOf("if (mountedRef.current) toast.error", catchAt);
+  const finallyAt = save.indexOf("finally", catchAt);
+  const releaseGuardAt = save.indexOf("if (mountedRef.current)", finallyAt);
+  const releaseAt = save.indexOf("savingRef.current = false", finallyAt);
+
+  assert.ok(
+    inactiveAt > requestAt && responseErrorAt > inactiveAt && successAt > inactiveAt,
+    "an inactive panel must stop before validating or adopting a settled save",
+  );
+  assert.ok(feedbackAt > catchAt, "an inactive panel must not emit failure feedback");
+  assert.ok(
+    releaseGuardAt > finallyAt && releaseAt > releaseGuardAt,
+    "an inactive panel must not schedule state updates while releasing its discarded gate",
+  );
+});
