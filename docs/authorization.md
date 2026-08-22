@@ -93,6 +93,8 @@ For agent-authored direct mentions and DMs, the server applies the target's poli
 reply decision, owner, grant, or wake responsibility. Human-authored Turns keep their existing routing.
 In a public channel, the same check runs before mention auto-join writes membership or mention rows, so a
 rejected agent source cannot pull a sealed non-member into the channel. Human mention auto-join is unchanged.
+Agent task assignment checks the target before resolving or mutating the requested task and returns 403 for
+an unlisted source. The shared task core repeats the check to keep non-route callers fail-closed across races.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.

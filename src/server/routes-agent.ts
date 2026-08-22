@@ -15,6 +15,7 @@ import { canonicalReplyTriggerMessageId } from "./conversationTurns.js";
 import { conversationTurnDeliveryBlockReason } from "./daemonHub.js";
 import { isConversationTurnCapabilityPaused } from "./conversationTurnRecovery.js";
 import { CHANNEL_DELETED_NOTICE_KIND, channelDeletedNoticeForAgent, type ChannelDeletedNoticeMetadata } from "./channelDeletionNotice.js";
+import { inputSenderAllowed } from "./agentInputPolicy.js";
 
 // Freshness-hold draft buffer (prevents agent↔agent duplicate replies): when the agent sends
 // and new messages have arrived since last read → save as draft + surface bounded context, do not post immediately.
@@ -670,6 +671,9 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       isNull(schema.agents.deletedAt),
     )))[0];
     if (!targetAgent) return (sendErr(res, 404, "target agent not found"), true);
+    if (!inputSenderAllowed(targetAgent, "agent", agent.id)) {
+      return (sendErr(res, 403, "target agent does not accept commands from this agent"), true);
+    }
 
     let mid: string | null = null;
     if (b.number != null && b.channel) {

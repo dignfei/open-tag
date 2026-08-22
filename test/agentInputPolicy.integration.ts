@@ -7,12 +7,13 @@ import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { and, eq, inArray } from "drizzle-orm";
 import { db, schema, sql } from "../src/db/index.ts";
-import { signUser } from "../src/server/auth.ts";
+import { hashToken, signUser } from "../src/server/auth.ts";
 
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
 const { createMessage, parseMentions } = await import("../src/server/core.ts");
 const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
+const { handleAgentApi } = await import("../src/server/routes-agent.ts");
 
 const suffix = Date.now().toString(36);
 let failures = 0;
@@ -21,17 +22,19 @@ const check = (label: string, condition: boolean) => {
   if (!condition) failures++;
 };
 
-function request(options: { method: string; path: string; token: string; serverId: string; body?: object }): IncomingMessage {
+function request(options: { method: string; path: string; token: string; serverId?: string; agentId?: string; body?: object }): IncomingMessage {
   const encoded = options.body === undefined ? "" : JSON.stringify(options.body);
   const stream = Readable.from(encoded ? [Buffer.from(encoded)] : ([] as Buffer[]));
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${options.token}`,
+    "content-type": "application/json",
+  };
+  if (options.serverId) headers["x-server-id"] = options.serverId;
+  if (options.agentId) headers["x-agent-id"] = options.agentId;
   return Object.assign(stream, {
     method: options.method,
     url: options.path,
-    headers: {
-      authorization: `Bearer ${options.token}`,
-      "x-server-id": options.serverId,
-      "content-type": "application/json",
-    },
+    headers,
   }) as unknown as IncomingMessage;
 }
 
@@ -55,7 +58,14 @@ async function api(options: { method: string; path: string; token: string; serve
   return { status: output.status(), body: output.body() };
 }
 
+async function agentApi(options: { method: string; path: string; token: string; agentId: string; body?: object }) {
+  const output = response();
+  await handleAgentApi(request(options), output.res, new URL(options.path, "http://localhost"), options.method);
+  return { status: output.status(), body: output.body() };
+}
+
 async function main() {
+  const blockedToken = `sk_agent_policy_blocked_${suffix}`;
   const users = await db.insert(schema.users).values([
     { name: `policy-owner-${suffix}`, displayName: "Owner", email: `policy-owner-${suffix}@test.invalid` },
     { name: `policy-member-${suffix}`, displayName: "Member", email: `policy-member-${suffix}@test.invalid` },
@@ -76,7 +86,7 @@ async function main() {
   const localAgents = await db.insert(schema.agents).values([
     { serverId: server.id, name: `target-${suffix}`, displayName: "Target" },
     { serverId: server.id, name: `peer-${suffix}`, displayName: "Peer" },
-    { serverId: server.id, name: `blocked-${suffix}`, displayName: "Blocked" },
+    { serverId: server.id, name: `blocked-${suffix}`, displayName: "Blocked", agentTokenHash: hashToken(blockedToken) },
     { serverId: server.id, name: `showcase-${suffix}`, displayName: "Showcase", creatorType: "system" },
     { serverId: server.id, name: `deleted-${suffix}`, displayName: "Deleted", deletedAt: new Date() },
   ]).returning();
@@ -238,6 +248,55 @@ async function main() {
       eq(schema.agentMessageDecisions.agentId, target.id),
     ));
     check("human input may reserve sealed target responsibility", humanDecision.length === 1);
+
+    const task = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: blocked.id,
+      senderName: blocked.name, content: "protected task handoff", asTask: true,
+    });
+    const deniedAssignment = await agentApi({
+      method: "POST", path: "/agent-api/task/assign", token: blockedToken, agentId: blocked.id,
+      body: { messageId: task.id, to: target.name },
+    });
+    const deniedTask = (await db.select().from(schema.messages).where(eq(schema.messages.id, task.id)))[0]!;
+    const deniedThreadMember = await db.select().from(schema.channelMembers).where(and(
+      eq(schema.channelMembers.channelId, task.threadId!),
+      eq(schema.channelMembers.memberType, "agent"),
+      eq(schema.channelMembers.memberId, target.id),
+    ));
+    const deniedAudits = await db.select().from(schema.messages).where(and(
+      eq(schema.messages.channelId, task.threadId!),
+      eq(schema.messages.senderType, "system"),
+    ));
+    check("unlisted agent task handoff returns 403", deniedAssignment.status === 403);
+    check("rejected handoff leaves the task and thread unchanged", deniedTask.taskAssigneeId === null
+      && deniedTask.taskStatus === "todo" && deniedThreadMember.length === 0 && deniedAudits.length === 0);
+
+    const allowBlocked = await api({
+      method: "PATCH", path: endpoint, token: ownerToken, serverId: server.id,
+      body: { commandWhitelist: [peer.id, blocked.id] },
+    });
+    check("manager can allow the task source", allowBlocked.status === 200);
+    const allowedAssignment = await agentApi({
+      method: "POST", path: "/agent-api/task/assign", token: blockedToken, agentId: blocked.id,
+      body: { messageId: task.id, to: target.name },
+    });
+    const assignedTask = (await db.select().from(schema.messages).where(eq(schema.messages.id, task.id)))[0]!;
+    const assignedThreadMember = await db.select().from(schema.channelMembers).where(and(
+      eq(schema.channelMembers.channelId, task.threadId!),
+      eq(schema.channelMembers.memberType, "agent"),
+      eq(schema.channelMembers.memberId, target.id),
+    ));
+    const assignmentAudits = await db.select().from(schema.messages).where(and(
+      eq(schema.messages.channelId, task.threadId!),
+      eq(schema.messages.senderType, "system"),
+    ));
+    check("listed agent may hand off a real task", allowedAssignment.status === 200
+      && assignedTask.taskAssigneeId === target.id && assignedTask.taskStatus === "in_progress"
+      && assignedThreadMember.length === 1 && assignmentAudits.length === 1);
+    await api({
+      method: "PATCH", path: endpoint, token: ownerToken, serverId: server.id,
+      body: { commandWhitelist: [peer.id] },
+    });
   } finally {
     await db.delete(schema.causalEdges).where(eq(schema.causalEdges.serverId, server.id));
     await db.delete(schema.agentMessageObservations).where(eq(schema.agentMessageObservations.serverId, server.id));
