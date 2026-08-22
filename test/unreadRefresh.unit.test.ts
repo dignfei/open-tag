@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createUnreadRefresh } from "../web/src/unreadRefresh.ts";
+import { createUnreadRefresh, parseUnreadValues } from "../web/src/unreadRefresh.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -35,4 +35,14 @@ test("overlapping badge refreshes run one trailing load", async () => {
   await Promise.all(requests);
   assert.deepEqual(commits, [{ channel: 1 }, { channel: 4 }]);
   assert.equal(loadCount, 2);
+});
+
+test("badge snapshots keep only positive integer counts", () => {
+  assert.deepEqual(parseUnreadValues({ active: 3, cleared: 0 }), { active: 3 });
+});
+
+test("malformed badge snapshots are rejected", () => {
+  for (const value of [null, [], "invalid", { error: "failed" }, { channel: -1 }, { channel: 1.5 }, { channel: Number.NaN }]) {
+    assert.equal(parseUnreadValues(value), null);
+  }
 });
