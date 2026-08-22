@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import { filterAvailableAgentIds } from "../web/src/lib/agentInputPolicy.ts";
 import { isCurrentAgentProfileResponse } from "../web/src/lib/agentProfileLoad.ts";
 
 const src = fs.readFileSync(new URL("../web/src/views/Members.tsx", import.meta.url), "utf8");
@@ -15,7 +16,8 @@ const zh = JSON.parse(fs.readFileSync(new URL("../web/src/locales/zh.json", impo
 test("agent input settings render only for managers and live peer candidates", () => {
   assert.match(src, /capabilities\.manageAgents\s*&&\s*a\.creatorType\s*!==\s*"system"\s*&&\s*<AgentInputPolicyCard/);
   assert.match(src, /candidates=\{visibleAgents\.filter\(\(candidate\)\s*=>\s*candidate\.id\s*!==\s*id\)\}/);
-  assert.match(editor, /candidateIds\.has\(id\)/, "stale unavailable ids must not become invisible saved selections");
+  assert.deepEqual(filterAvailableAgentIds(["live", "deleted"], ["live"]), ["live"]);
+  assert.match(editor, /const submittedWhitelist = filterAvailableAgentIds\(whitelist, candidateIds\)/);
 });
 
 test("agent profile responses stay bound to their request identity", () => {

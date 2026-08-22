@@ -20,6 +20,7 @@ import i18n from "../i18n";
 import { ProjectDirectoryField } from "./ProjectDirectoryPicker.tsx";
 import { copyText } from "../lib/clipboard.ts";
 import { isCurrentAgentProfileResponse } from "../lib/agentProfileLoad.ts";
+import { filterAvailableAgentIds } from "../lib/agentInputPolicy.ts";
 
 // Unified agent status label: fine-grained activity (working/thinking/online) takes priority;
 // offline/absent falls back to lifecycle status (active/sleeping/inactive).
@@ -335,9 +336,12 @@ function AgentInputPolicyCard({
   const toast = useToast();
   const candidateIds = new Set(candidates.map((candidate) => candidate.id));
   const [mode, setMode] = useState<"open" | "sealed">(agent.incomingMode === "open" ? "open" : "sealed");
-  const [whitelist, setWhitelist] = useState<Set<string>>(() => new Set(Array.isArray(agent.commandWhitelist)
-    ? agent.commandWhitelist.filter((id: unknown): id is string => typeof id === "string" && candidateIds.has(id))
-    : []));
+  const [whitelist, setWhitelist] = useState<Set<string>>(() => new Set(filterAvailableAgentIds(
+    Array.isArray(agent.commandWhitelist)
+      ? agent.commandWhitelist.filter((id: unknown): id is string => typeof id === "string")
+      : [],
+    candidateIds,
+  )));
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -355,7 +359,7 @@ function AgentInputPolicyCard({
     savingRef.current = true;
     setSaving(true);
     const submittedMode = mode;
-    const submittedWhitelist = [...whitelist];
+    const submittedWhitelist = filterAvailableAgentIds(whitelist, candidateIds);
     try {
       const result = await api("PATCH", `/api/agents/${agent.id}`, {
         incomingMode: submittedMode,
