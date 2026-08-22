@@ -15,12 +15,13 @@ function fixtureEvents(name: string): any[] {
 }
 
 const PATH_KEY = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+const testPath = (binDir: string) => [binDir, path.dirname(process.execPath)].join(path.delimiter);
 
 function fakeKimi(binDir: string, source: string): void {
   const scriptName = "kimi-fake.cjs";
   writeFileSync(path.join(binDir, scriptName), source, "utf8");
   if (process.platform === "win32") {
-    writeFileSync(path.join(binDir, "kimi.cmd"), `@echo off\r\n"${process.execPath}" "%~dp0${scriptName}" %*\r\n`, "utf8");
+    writeFileSync(path.join(binDir, "kimi"), `#!/usr/bin/env node\r\nrequire("./${scriptName}");\r\n`, "utf8");
   } else {
     const executable = path.join(binDir, "kimi");
     writeFileSync(executable, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(binDir, scriptName))} "$@"\n`, "utf8");
@@ -116,7 +117,7 @@ test("Kimi clears a stale resume id and retries the same admitted turn before qu
     session = kimiRuntime.start({
       cwd: root,
       stateDir: root,
-      env: { [PATH_KEY]: binDir, HOME: root, OPEN_TAG_TEST_ATTEMPTS: attemptsFile },
+      env: { [PATH_KEY]: testPath(binDir), HOME: root, OPEN_TAG_TEST_ATTEMPTS: attemptsFile },
       sessionId: "session_stale",
       systemPrompt: "standing instructions",
       initialPrompt: "current turn",
@@ -136,11 +137,14 @@ test("Kimi clears a stale resume id and retries the same admitted turn before qu
     assert.equal(queuedError, undefined);
 
     const attempts: string[][] = JSON.parse(readFileSync(attemptsFile, "utf8"));
-    const promptOf = (args: string[]) => args[args.indexOf("-p") + 1];
-    assert.deepEqual(attempts[0]?.slice(-2), ["-r", "session_stale"]);
+    const promptOf = (args: string[]) => args[args.indexOf("-p") + 1]!;
+    const resumeOf = (args: string[]) => args.includes("-r") ? args[args.indexOf("-r") + 1] : null;
+    assert.equal(resumeOf(attempts[0]!), "session_stale");
+    assert.match(promptOf(attempts[0]!), /current turn/);
     assert.equal(attempts[1]?.includes("-r"), false, "the stale input must retry without resume");
     assert.equal(promptOf(attempts[1]!), promptOf(attempts[0]!), "fresh retry must preserve the current input");
-    assert.deepEqual(attempts[2]?.slice(-2), ["-r", "session_fresh"]);
+    assert.equal(resumeOf(attempts[2]!), "session_fresh");
+    assert.match(promptOf(attempts[2]!), /queued turn/);
     assert.notEqual(promptOf(attempts[2]!), promptOf(attempts[1]!), "queued work runs only after the retry");
     assert.deepEqual(sessions, ["session_stale", null, "session_fresh"]);
     assert.deepEqual(admissions, [undefined]);
@@ -178,7 +182,7 @@ test("Kimi stop during stale-session clearing cannot start the fresh retry", asy
     session = kimiRuntime.start({
       cwd: root,
       stateDir: root,
-      env: { [PATH_KEY]: binDir, HOME: root, OPEN_TAG_TEST_ATTEMPTS: attemptsFile },
+      env: { [PATH_KEY]: testPath(binDir), HOME: root, OPEN_TAG_TEST_ATTEMPTS: attemptsFile },
       sessionId: "session_stale",
       systemPrompt: "standing instructions",
       initialPrompt: "current turn",
