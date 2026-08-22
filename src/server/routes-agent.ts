@@ -873,7 +873,11 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     if (!a) return (sendErr(res, 404, "attachment not found"), true);
     // Agent ACL: the agent may view an attachment only if it uploaded it, or it can access the channel the
     // attachment was posted in — otherwise an attachment id leaks a private channel's file. 404 (don't reveal).
-    const canView = (a.uploaderType === "agent" && a.uploaderId === agent.id) || (!!a.channelId && await canAgentReadChannel(serverId, a.channelId, agent.id));
+    const ownUpload = a.uploaderType === "agent" && a.uploaderId === agent.id;
+    const uploaderAllowed = inputSenderAllowed(agent, a.uploaderType ?? "system", a.uploaderId);
+    const channelAllowed = !!a.channelId && await canAgentReadChannel(serverId, a.channelId, agent.id);
+    const parentVisible = !a.messageId || !!await resolveMessageId(serverId, a.messageId, agent.id);
+    const canView = ownUpload || (uploaderAllowed && channelAllowed && parentVisible);
     if (!canView) return (sendErr(res, 404, "attachment not found"), true);
     try {
       const buf = await readObject(a.storageKey);

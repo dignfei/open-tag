@@ -300,6 +300,23 @@ async function main() {
     check("message resolve returns listed input", allowedResolve.status === 200
       && JSON.stringify(allowedResolve.body).includes("listed request"));
 
+    const [blockedAttachment] = await db.insert(schema.attachments).values({
+      serverId: server.id,
+      channelId: channel!.id,
+      messageId: blockedMessage.id,
+      uploaderType: "agent",
+      uploaderId: blocked.id,
+      filename: "blocked.txt",
+      mimeType: "text/plain",
+      sizeBytes: 7,
+      storageKey: "/not-read/blocked.txt",
+    }).returning();
+    const deniedAttachment = await agentApi({
+      method: "GET", path: `/agent-api/attachment/view?id=${blockedAttachment!.id}`,
+      token: targetToken, agentId: target.id,
+    });
+    check("attachment view hides rejected agent input", deniedAttachment.status === 404);
+
     const task = await createMessage({
       serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: blocked.id,
       senderName: blocked.name, content: "protected task handoff", asTask: true,
@@ -450,6 +467,7 @@ async function main() {
     await db.delete(schema.causalEdges).where(eq(schema.causalEdges.serverId, server.id));
     await db.delete(schema.agentMessageObservations).where(eq(schema.agentMessageObservations.serverId, server.id));
     await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.serverId, server.id));
+    await db.delete(schema.attachments).where(eq(schema.attachments.serverId, server.id));
     const messageIds = (await db.select({ id: schema.messages.id }).from(schema.messages)
       .where(eq(schema.messages.serverId, server.id))).map((message) => message.id);
     if (messageIds.length) await db.delete(schema.messageMentions).where(inArray(schema.messageMentions.messageId, messageIds));
