@@ -338,6 +338,13 @@ async function main() {
       method: "PATCH", path: endpoint, token: ownerToken, serverId: server.id,
       body: { commandWhitelist: [peer.id] },
     });
+    const protectedSearch = await agentApi({
+      method: "GET", path: `/agent-api/search?q=${encodeURIComponent("protected task handoff")}`,
+      token: targetToken, agentId: target.id,
+    });
+    check("search omits rejected agent rows and attributed audits", protectedSearch.status === 200
+      && protectedSearch.body.results.length === 0
+      && !JSON.stringify(protectedSearch.body).includes("protected task handoff"));
 
     const [freshnessChannel] = await db.insert(schema.channels).values({
       serverId: server.id, name: `policy-fresh-${suffix}`, type: "channel",

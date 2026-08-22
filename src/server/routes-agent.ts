@@ -779,8 +779,9 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     if (!joined.length) return (sendJson(res, 200, { results: [] }), true);
     const rows = await db.select().from(schema.messages)
       .where(and(eq(schema.messages.serverId, serverId), inArray(schema.messages.channelId, joined), ilike(schema.messages.content, `%${q}%`)))
-      .orderBy(desc(schema.messages.seq)).limit(20);
-    return (sendJson(res, 200, { results: rows.map((m) => ({ id: m.id, channelId: m.channelId, senderType: m.senderType, senderName: m.senderName, content: m.content, createdAt: m.createdAt })) }), true);
+      .orderBy(desc(schema.messages.seq)).limit(100);
+    const visible = (await filterAgentInputView(agent, rows)).slice(0, 20);
+    return (sendJson(res, 200, { results: visible.map((m) => ({ id: m.id, channelId: m.channelId, senderType: m.senderType, senderName: m.senderName, content: m.content, createdAt: m.createdAt })) }), true);
   }
 
   // profile show: own profile or @handle lookup
