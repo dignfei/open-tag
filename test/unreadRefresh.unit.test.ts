@@ -65,3 +65,23 @@ test("a failed badge load preserves state and allows retry", async () => {
   await refresh.request();
   assert.deepEqual(commits, [{ channel: 2 }]);
 });
+
+test("disposed badge refreshes ignore late responses", async () => {
+  const pending = deferred<unknown>();
+  const commits: unknown[] = [];
+  let loadCount = 0;
+  const refresh = createUnreadRefresh(
+    () => { loadCount += 1; return pending.promise; },
+    (values) => commits.push(values),
+  );
+
+  const request = refresh.request();
+  await nextTurn();
+  refresh.dispose();
+  pending.resolve({ previousWorkspace: 5 });
+  await request;
+  await refresh.request();
+
+  assert.deepEqual(commits, []);
+  assert.equal(loadCount, 1);
+});
