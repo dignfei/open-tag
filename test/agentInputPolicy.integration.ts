@@ -11,7 +11,7 @@ import { hashToken, signUser } from "../src/server/auth.ts";
 
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
 const { createMessage, getOrCreateThread, parseMentions, resolveMessageId, setTaskStatus } = await import("../src/server/core.ts");
-const { dispatchConversationTurn, dispatchLegacyMessage } = await import("../src/server/conversationTurnDispatch.ts");
+const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
 const { fireReminder } = await import("../src/server/reminders.ts");
 const { claimReplyCoordination, decideReply } = await import("../src/server/replyCoordination.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
@@ -272,27 +272,11 @@ async function main() {
       eq(schema.messages.content, `⏰ @${blocked.name} reminder: ${reminderContent}`),
     )))[0]!;
     check("agent reminder preserves its source identity", attributedSystemMessage.senderName === "reminder");
-    const legacyRecipients: string[] = [];
-    await dispatchLegacyMessage({
-      msg: attributedSystemMessage,
-      channel: channel!,
-      members: dispatchMembers,
-      mentions: parseMentions(attributedSystemMessage.content, dispatchMembers),
-      asTask: false,
-    }, {
-      channelMembers: async () => dispatchMembers,
-      parseMentions,
-      agentStartTarget: async () => ({ ok: true as const }),
-      sendAgentStart: () => true,
-      sendAgentDeliver: (_serverId, _target, payload) => {
-        legacyRecipients.push(String(payload.agentId));
-        return true;
-      },
-      markAgentUnavailable: async () => {},
-      finalizeAgentActivityRun: async () => {},
-    });
+    const reminderDecisions = await db.select().from(schema.agentMessageDecisions)
+      .where(eq(schema.agentMessageDecisions.messageId, attributedSystemMessage.id));
     check("attributed system delivery rejects blocked targets but keeps an explicit self reminder",
-      legacyRecipients.length === 1 && legacyRecipients[0] === blocked.id);
+      !reminderDecisions.some((decision) => decision.agentId === target.id)
+      && reminderDecisions.some((decision) => decision.agentId === blocked.id));
     await dispatchConversationTurn(persistedBlocked.conversationTurnId!, {
       channelMembers: async () => dispatchMembers,
       parseMentions,
