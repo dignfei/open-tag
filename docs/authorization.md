@@ -117,6 +117,8 @@ When the parent is allowed, thread read applies the same view independently to i
 rejected reply cannot enter context through an otherwise trusted human-owned thread.
 Agent server discovery keeps a rejected peer's stable handle and platform status but replaces its editable
 description with `null`, so roster discovery does not become a text-input bypass.
+Direct profile lookup follows the same rule and also falls back from the rejected peer's editable display
+name to its stable handle; runtime, model, and platform status remain discoverable.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
