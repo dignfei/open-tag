@@ -7,6 +7,8 @@ const start = src.indexOf("function PermissionsTab");
 const end = src.indexOf("function AppsTab", start);
 assert.ok(start >= 0 && end > start, "PermissionsTab implementation must exist");
 const permissions = src.slice(start, end);
+const en = JSON.parse(fs.readFileSync(new URL("../web/src/locales/en.json", import.meta.url), "utf8"));
+const zh = JSON.parse(fs.readFileSync(new URL("../web/src/locales/zh.json", import.meta.url), "utf8"));
 
 test("members without manageAgents can inspect but cannot edit agent permissions", () => {
   assert.match(permissions, /const\s*\{[^}]*\bcapabilities\b[^}]*\}\s*=\s*useStore\(\)/);
@@ -56,4 +58,32 @@ test("permission saves block overlap and always release the active-view gate", (
   assert.match(permissions.slice(grantButtonAt, grantLabelAt), /disabled=\{saving\}/);
   assert.match(permissions.slice(saveButtonAt, saveLabelAt), /disabled=\{saving\}/);
   assert.match(permissions, /<input\s+type="checkbox"[^>]*disabled=\{!canManage\s*\|\|\s*saving\}/);
+});
+
+test("permission save failures preserve state and show localized feedback", () => {
+  const saveStart = permissions.indexOf("const save = async");
+  const saveEnd = permissions.indexOf("const groups", saveStart);
+  const save = permissions.slice(saveStart, saveEnd);
+  const requestAt = save.indexOf('await api("PUT"');
+  const errorGuardAt = save.search(/if\s*\(\s*result\?\.error\s*\)\s*throw/);
+  const successDataAt = save.indexOf("setData(", requestAt);
+  const successGrantedAt = save.indexOf("setGranted(", requestAt);
+  const successSavedAt = save.indexOf("setSaved(true)", requestAt);
+  const catchAt = save.indexOf("catch", successSavedAt);
+  const feedbackAt = save.indexOf('toast.error(t("members.permissionsSaveFailed"))', catchAt);
+  const finallyAt = save.indexOf("finally", feedbackAt);
+
+  assert.ok(
+    requestAt >= 0 && errorGuardAt > requestAt && successDataAt > errorGuardAt
+      && successGrantedAt > errorGuardAt && successSavedAt > errorGuardAt,
+    "resolved API errors must be rejected before success state is committed",
+  );
+  assert.ok(catchAt > successSavedAt && feedbackAt > catchAt && finallyAt > feedbackAt);
+  assert.doesNotMatch(
+    save.slice(catchAt, finallyAt),
+    /set(?:Data|Granted)\(|setSaved\(true\)/,
+    "the failure path must not replace the current permission state",
+  );
+  assert.equal(en.members.permissionsSaveFailed, "Couldn't save agent permissions. Try again.");
+  assert.equal(zh.members.permissionsSaveFailed, "保存 agent 权限失败，请重试。");
 });
