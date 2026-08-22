@@ -374,13 +374,40 @@ function PermissionsTab({ id }: { id: string }) {
   const canManage = !!capabilities.manageAgents;
   const [data, setData] = useState<any>(null);
   const [granted, setGranted] = useState<Set<string>>(new Set());
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { (async () => { const d = await api("GET", `/api/agents/${id}/scopes`); setData(d); setGranted(new Set(d.granted || [])); })(); }, [id]);
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setLoadFailed(false);
+    (async () => {
+      try {
+        const result = await api("GET", `/api/agents/${id}/scopes`);
+        const validCatalog = Array.isArray(result?.catalog) && result.catalog.every((scope: any) =>
+          typeof scope?.key === "string" && typeof scope?.group === "string"
+          && typeof scope?.label === "string" && typeof scope?.description === "string");
+        if (result?.error || result?.agentId !== id || (result?.mode !== "default" && result?.mode !== "custom")
+          || !Number.isInteger(result?.revision) || !Array.isArray(result?.granted)
+          || !result.granted.every((scope: unknown) => typeof scope === "string") || !validCatalog) {
+          throw new Error("invalid permission response");
+        }
+        if (cancelled) return;
+        setData(result);
+        setGranted(new Set(result.granted));
+      } catch {
+        if (!cancelled) setLoadFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, loadAttempt]);
   useEffect(() => () => { if (savedTimerRef.current) clearTimeout(savedTimerRef.current); }, []);
-  if (!data) return <div className="scroll"><div className="empty">{t("members.loading")}</div></div>;
+  if (!data) return <div className="scroll"><div className="empty">{loadFailed
+    ? <>{t("members.permissionsLoadFailed")} <button type="button" className="joinbtn" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>{t("members.permissionsRetry")}</button></>
+    : t("members.loading")}</div></div>;
   const toggle = (k: string) => setGranted((g) => { const n = new Set(g); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const save = async (scopes: string[]) => {
     if (!canManage || savingRef.current) return;
