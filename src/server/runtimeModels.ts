@@ -13,6 +13,21 @@ export interface ModelOption {
   thinking?: { levels: { value: string; label: string; description?: string }[]; default?: string };
 }
 
+export const CODEX_FALLBACK_MODELS: ModelOption[] = [
+  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+  { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+  { id: "gpt-5.5", label: "GPT-5.5" },
+  { id: "gpt-5.4", label: "GPT-5.4" },
+  { id: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+  { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
+  { id: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
+  { id: "gpt-5.2", label: "GPT-5.2" },
+  { id: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
+  { id: "gpt-5.1-codex", label: "GPT-5.1 Codex" },
+  { id: "gpt-5-codex", label: "GPT-5 Codex" },
+];
+
 // Runtimes probed live on the machine: opencode/cursor/pi/hermes enumerate their model/profile list; claude/codex
 // keep a static catalog but probe each model's reasoning-effort levels; reasonix enumerates its resolved config
 // via `reasonix doctor --json`. The rest stay fully static.
