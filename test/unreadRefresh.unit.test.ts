@@ -31,11 +31,34 @@ test("overlapping badge refreshes run one trailing load", async () => {
   first.resolve({ channel: 1 });
   await nextTurn();
   assert.equal(loadCount, 2);
+  assert.deepEqual(commits, []);
 
   trailing.resolve({ channel: 4 });
   await Promise.all(requests);
-  assert.deepEqual(commits, [{ channel: 1 }, { channel: 4 }]);
+  assert.deepEqual(commits, [{ channel: 4 }]);
   assert.equal(loadCount, 2);
+});
+
+test("a failed trailing load does not expose its superseded snapshot", async () => {
+  const first = deferred<unknown>();
+  const trailing = deferred<unknown>();
+  const loads = [first, trailing];
+  const commits: unknown[] = [];
+  let loadCount = 0;
+  const refresh = createUnreadRefresh(
+    () => loads[loadCount++]!.promise,
+    (values) => commits.push(values),
+  );
+
+  const requests = [refresh.request()];
+  await nextTurn();
+  requests.push(refresh.request());
+  first.resolve({ stale: 8 });
+  await nextTurn();
+  trailing.reject(new Error("offline"));
+  await Promise.all(requests);
+
+  assert.deepEqual(commits, []);
 });
 
 test("badge snapshots keep only positive integer counts", () => {
