@@ -168,7 +168,7 @@ const count = (fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0) 
 fs.writeFileSync(file, String(count));
 if (count === 2) { console.error("accepted turn failed"); process.exit(1); }
 `;
-  for (const runtime of [copilotRuntime, opencodeRuntime, piRuntime]) {
+  for (const runtime of [copilotRuntime, cursorRuntime, opencodeRuntime, piRuntime]) {
     const adapter = adapters.find((candidate) => candidate.runtime === runtime)!;
     await t.test(runtime.name, () => assertAcceptedFailureKeepsSessionReusable(adapter, source));
   }
@@ -221,4 +221,15 @@ fs.writeFileSync(file, String(count));
 if (count === 2) console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "provider rejected" } }));
 `;
   return assertAcceptedFailureKeepsSessionReusable(adapters.find((adapter) => adapter.runtime === piRuntime)!, source);
+});
+
+test("Cursor reports an admitted exit-zero result error", () => {
+  const source = `
+const fs = require("node:fs");
+const file = process.env.OPEN_TAG_TEST_STATE;
+const count = (fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0) + 1;
+fs.writeFileSync(file, String(count));
+if (count === 2) console.log(JSON.stringify({ type: "result", is_error: true, result: "rate limited" }));
+`;
+  return assertAcceptedFailureKeepsSessionReusable(adapters.find((adapter) => adapter.runtime === cursorRuntime)!, source);
 });
