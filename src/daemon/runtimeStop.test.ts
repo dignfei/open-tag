@@ -160,7 +160,7 @@ test("one-shot runtime stop completes immediately after its turn process is alre
   });
 });
 
-test("Copilot reports an admitted non-zero turn failure and remains reusable", () => {
+test("one-shot runtimes report admitted non-zero turn failures and remain reusable", async (t) => {
   const source = `
 const fs = require("node:fs");
 const file = process.env.OPEN_TAG_TEST_STATE;
@@ -168,7 +168,10 @@ const count = (fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0) 
 fs.writeFileSync(file, String(count));
 if (count === 2) { console.error("accepted turn failed"); process.exit(1); }
 `;
-  return assertAcceptedFailureKeepsSessionReusable(adapters.find((adapter) => adapter.runtime === copilotRuntime)!, source);
+  for (const runtime of [copilotRuntime, opencodeRuntime]) {
+    const adapter = adapters.find((candidate) => candidate.runtime === runtime)!;
+    await t.test(runtime.name, () => assertAcceptedFailureKeepsSessionReusable(adapter, source));
+  }
 });
 
 for (const failure of [
@@ -196,4 +199,15 @@ if (count === 2) {
 }
 `;
   return assertAcceptedFailureKeepsSessionReusable(adapters.find((adapter) => adapter.runtime === copilotRuntime)!, source);
+});
+
+test("OpenCode reports an admitted exit-zero protocol error", () => {
+  const source = `
+const fs = require("node:fs");
+const file = process.env.OPEN_TAG_TEST_STATE;
+const count = (fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0) + 1;
+fs.writeFileSync(file, String(count));
+if (count === 2) console.log(JSON.stringify({ type: "error", error: { data: { message: "provider rejected" } } }));
+`;
+  return assertAcceptedFailureKeepsSessionReusable(adapters.find((adapter) => adapter.runtime === opencodeRuntime)!, source);
 });
