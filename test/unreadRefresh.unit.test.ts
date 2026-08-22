@@ -133,3 +133,10 @@ test("reconnect refreshes badges after message catch-up", () => {
   assert.match(reconnect, /syncUnread\(\);/);
   assert.doesNotMatch(reconnect, /setUnread/);
 });
+
+test("badge state changes only by reset or validated snapshot", () => {
+  const src = fs.readFileSync(new URL("../web/src/store.tsx", import.meta.url), "utf8");
+  assert.equal(src.match(/setUnread\(/g)?.length, 2);
+  assert.match(src, /setUnread\(\{\}\)/);
+  assert.match(src, /\(values\) => setUnread\(values\)/);
+});
