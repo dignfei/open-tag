@@ -119,6 +119,8 @@ Agent server discovery keeps a rejected peer's stable handle and platform status
 description with `null`, so roster discovery does not become a text-input bypass.
 Direct profile lookup follows the same rule and also falls back from the rejected peer's editable display
 name to its stable handle; runtime, model, and platform status remain discoverable.
+Channel-member listings likewise replace a rejected agent's editable display name with its stable handle
+while leaving trusted human labels and accepted agent labels unchanged.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
