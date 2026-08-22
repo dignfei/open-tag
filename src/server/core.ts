@@ -985,6 +985,27 @@ export async function wakeAgentForReplyCoordination(serverId: string, agentId: s
   return delivered;
 }
 
+/** Best-effort content-free wake for a persisted lifecycle notice. It creates no reply grant. */
+export async function wakeAgentForLifecycleNotice(
+  serverId: string,
+  agentId: string,
+  notice: { channelId: string; channelName: string; seq: number },
+): Promise<boolean> {
+  const target = await agentStartTarget(serverId, agentId);
+  if (!target.ok) return false;
+  const started = sendAgentStart(serverId, target, agentId);
+  const delivered = started && sendAgentDeliver(serverId, target, {
+    agentId,
+    seq: notice.seq,
+    from: "system",
+    target: notice.channelId,
+    targetName: `#${notice.channelName} (deleted)`,
+    attention: "lifecycle",
+  });
+  if (!delivered) await markAgentUnavailable(serverId, agentId, "machine offline");
+  return delivered;
+}
+
 function sendAgentControl(serverId: string, target: AgentControlTarget, msg: Record<string, unknown>): boolean {
   if (target.machineId) return sendToMachine(target.machineId, msg);
   if (daemonCount(serverId) === 0) return false;
