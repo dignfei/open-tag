@@ -9,6 +9,13 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.14.3] — 2026-08-22
+
+### Fixed
+
+- Kimi now clears an exact missing resume session locally and in persisted state, retries the same
+  admitted Turn once without `-r`, and releases later failed Turns without reporting them online.
+
 ## [0.14.2] — 2026-08-22
 
 ### Fixed
