@@ -93,7 +93,7 @@ class CodexClient {
 
   private handleNotification(method: string, params: any): void {
     if (method === "codex/event" || method.startsWith("codex/event/")) {
-      this.proto = "legacy"; if (params.msg) this.handleLegacy(params.msg); return;
+      this.proto = "legacy"; if (params.msg) this.handleLegacy(params.msg, params.id); return;
     }
     if (this.proto !== "legacy") {
       if (this.proto === "unknown" && (method === "turn/started" || method === "turn/completed" || method === "thread/started" || method === "error" || method.startsWith("item/"))) this.proto = "raw";
@@ -137,21 +137,21 @@ class CodexClient {
     }
   }
 
-  private handleLegacy(msg: any): void {
+  private handleLegacy(msg: any, envelopeTurnId?: unknown): void {
     switch (msg.type) {
       case "task_started": this.cb.onActivity("working", "running"); break;
       case "agent_message": if (msg.message) this.cb.onTrajectory([{ kind: "text", text: clip(msg.message) }]); break;
       case "exec_command_begin": this.cb.onActivity("working", "Running command…"); this.cb.onTrajectory([{ kind: "tool", toolName: "exec_command", toolInput: clip(msg.command).slice(0, 120) }]); break;
       case "patch_apply_begin": this.cb.onTrajectory([{ kind: "tool", toolName: "patch_apply" }]); break;
       case "task_complete": {
-        const turnId = typeof msg.turn_id === "string" ? msg.turn_id : null;
+        const turnId = typeof msg.turn_id === "string" ? msg.turn_id : (typeof envelopeTurnId === "string" ? envelopeTurnId : null);
         if (!turnId) break;
         const detail = msg?.error?.message || (typeof msg?.error === "string" ? msg.error : (msg?.error ? "codex turn failed" : undefined));
         this.onTurnDone?.({ failed: !!msg?.error, detail, turnId });
         break;
       }
       case "turn_aborted": {
-        const turnId = typeof msg.turn_id === "string" ? msg.turn_id : null;
+        const turnId = typeof msg.turn_id === "string" ? msg.turn_id : (typeof envelopeTurnId === "string" ? envelopeTurnId : null);
         if (turnId) this.onTurnDone?.({ failed: true, detail: "codex turn aborted", turnId });
         break;
       }
