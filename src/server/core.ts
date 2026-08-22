@@ -15,7 +15,7 @@ import { agentConfig } from "./agentConfig.js";
 import { attachMessageToConversationTurn, scheduleConversationTurn, type ConversationBoundaryKind } from "./conversationTurns.js";
 import { dispatchConversationTurn as dispatchConversationTurnWithDeps, dispatchLegacyMessage, prepareConversationTurnResponsibility, type ConversationTurnDispatchDeps } from "./conversationTurnDispatch.js";
 import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY } from "../daemonProtocol.js";
-import { inputSenderAllowed } from "./agentInputPolicy.js";
+import { type AgentInputPolicy, inputSenderAllowed } from "./agentInputPolicy.js";
 import { agentInputVisible } from "./agentInputView.js";
 
 const log = createLogger("server:core");
@@ -256,19 +256,22 @@ async function publishThreadUpdated(
 }
 
 /** Aggregate message reactions into grouped shape: one entry per emoji {emoji,count,reactorIds,reactorNames}. */
-export async function aggregateReactions(messageIds: string[]): Promise<Map<string, ReactionAgg[]>> {
+export async function aggregateReactions(messageIds: string[], target?: AgentInputPolicy & { serverId: string }): Promise<Map<string, ReactionAgg[]>> {
   const out = new Map<string, ReactionAgg[]>();
   if (!messageIds.length) return out;
   const rows = await db.select().from(schema.reactions).where(inArray(schema.reactions.messageId, messageIds));
   if (!rows.length) return out;
-  const uIds = [...new Set(rows.filter((r) => r.memberType === "user").map((r) => r.memberId))];
-  const aIds = [...new Set(rows.filter((r) => r.memberType === "agent").map((r) => r.memberId))];
+  const visibleRows = target?.incomingMode !== "sealed"
+    ? rows
+    : rows.filter((r) => inputSenderAllowed(target, r.memberType, r.memberId));
+  const uIds = [...new Set(visibleRows.filter((r) => r.memberType === "user").map((r) => r.memberId))];
+  const aIds = [...new Set(visibleRows.filter((r) => r.memberType === "agent").map((r) => r.memberId))];
   const users = uIds.length ? await db.select().from(schema.users).where(inArray(schema.users.id, uIds)) : [];
   const agents = aIds.length ? await db.select().from(schema.agents).where(inArray(schema.agents.id, aIds)) : [];
   const nameOf = (t: string, id: string) => t === "user"
     ? (users.find((u) => u.id === id)?.displayName || users.find((u) => u.id === id)?.name || "?")
     : (agents.find((a) => a.id === id)?.displayName || agents.find((a) => a.id === id)?.name || "?");
-  for (const r of rows) {
+  for (const r of visibleRows) {
     const list = out.get(r.messageId) ?? [];
     let e = list.find((x) => x.emoji === r.emoji);
     if (!e) { e = { emoji: r.emoji, count: 0, reactorIds: [], reactorNames: [] }; list.push(e); }
@@ -278,26 +281,40 @@ export async function aggregateReactions(messageIds: string[]): Promise<Map<stri
   return out;
 }
 
-async function serializeMessageById(messageId: string) {
+async function serializeMessageById(messageId: string, target?: AgentInputPolicy & { serverId: string }) {
   const msg = (await db.select().from(schema.messages).where(eq(schema.messages.id, messageId)))[0];
   if (!msg) return null;
   const mts = await db.select().from(schema.messageMentions).where(eq(schema.messageMentions.messageId, messageId));
   const mentions: Member[] = mts.map((x) => ({ type: x.mentionType as "user" | "agent", id: x.mentionId, name: x.mentionName, displayName: x.mentionName }));
   const atts = await db.select().from(schema.attachments).where(eq(schema.attachments.messageId, messageId));
-  const reactions = (await aggregateReactions([messageId])).get(messageId) ?? [];
+  const reactions = (await aggregateReactions([messageId], target)).get(messageId) ?? [];
   return serializeMsg(msg, mentions, atts, reactions);
 }
 
 /** Add reaction (add-or-noop): unique index deduplication, broadcast message:updated. */
-export async function addReaction(serverId: string, messageId: string, memberType: "user" | "agent", memberId: string, emoji: string) {
+export async function addReaction(
+  serverId: string,
+  messageId: string,
+  memberType: "user" | "agent",
+  memberId: string,
+  emoji: string,
+  reactionTarget?: AgentInputPolicy & { serverId: string },
+) {
   await db.insert(schema.reactions).values({ messageId, memberType, memberId, emoji }).onConflictDoNothing();
-  const m = await serializeMessageById(messageId);
+  const m = await serializeMessageById(messageId, reactionTarget);
   if (m) await publish(serverId, { type: "message:updated", message: m });
   return m;
 }
-export async function removeReaction(serverId: string, messageId: string, memberType: "user" | "agent", memberId: string, emoji: string) {
+export async function removeReaction(
+  serverId: string,
+  messageId: string,
+  memberType: "user" | "agent",
+  memberId: string,
+  emoji: string,
+  reactionTarget?: AgentInputPolicy & { serverId: string },
+) {
   await db.delete(schema.reactions).where(and(eq(schema.reactions.messageId, messageId), eq(schema.reactions.memberType, memberType), eq(schema.reactions.memberId, memberId), eq(schema.reactions.emoji, emoji)));
-  const m = await serializeMessageById(messageId);
+  const m = await serializeMessageById(messageId, reactionTarget);
   if (m) await publish(serverId, { type: "message:updated", message: m });
   return m;
 }

@@ -306,7 +306,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       capabilityPaused ||= visibility.capabilityPaused;
       topologyBlocked ||= visibility.topologyBlocked;
       const stable = await filterAgentInputView(agent, visibility.visible);
-      const stableForeign = stable.filter((message) => message.senderId !== agent.id);
+      const stableForeign = stable.filter((message) => message.senderType !== "agent" || message.senderId !== agent.id);
       const observedRows = stableForeign.length
         ? await db.select({ messageId: schema.agentMessageObservations.messageId }).from(schema.agentMessageObservations).where(and(
           eq(schema.agentMessageObservations.agentId, agent.id),
@@ -538,7 +538,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     if (!b.messageId || !emoji) return (sendErr(res, 400, "messageId + emoji required"), true);
     const mid = await resolveMessageId(serverId, b.messageId, agent.id); // Tolerates short id (agent reacts to the short id it sees); without this, querying uuid column with a short id → 500
     if (!mid) return (sendErr(res, 404, "message not found"), true);
-    const out = b.remove ? await removeReaction(serverId, mid, "agent", agent.id, emoji) : await addReaction(serverId, mid, "agent", agent.id, emoji);
+    const out = b.remove ? await removeReaction(serverId, mid, "agent", agent.id, emoji, agent) : await addReaction(serverId, mid, "agent", agent.id, emoji, agent);
     return (sendJson(res, 200, { ok: true, reactions: out?.reactions ?? [] }), true);
   }
   if (p === "/agent-api/message/read" && method === "GET") {
