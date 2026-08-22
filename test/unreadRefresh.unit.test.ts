@@ -106,3 +106,21 @@ test("read confirmation refreshes only its active workspace", () => {
   assert.match(markRead, /unreadRefreshRef\.current === unreadRefresh[\s\S]*unreadRefresh\.request\(\)/);
   assert.doesNotMatch(markRead, /r\.unread|setUnread/);
 });
+
+test("live unread events schedule server snapshots", () => {
+  const src = fs.readFileSync(new URL("../web/src/store.tsx", import.meta.url), "utf8");
+  const syncStart = src.indexOf("const syncUnread = () => {");
+  const syncUnread = src.slice(syncStart, src.indexOf("subscribedRef.current", syncStart));
+  assert.match(syncUnread, /if \(unreadTimer\) return;/);
+  assert.match(syncUnread, /unreadTimer = null;[\s\S]*unreadRefresh\.request\(\)/);
+  assert.doesNotMatch(syncUnread, /clearTimeout/);
+
+  const message = src.slice(src.indexOf('sock.on("message:new"'), src.indexOf('sock.on("agent:activity"'));
+  assert.match(message, /if \(delta > 0\) syncUnread\(\);/);
+  assert.doesNotMatch(message, /setUnread/);
+
+  const threadStart = src.indexOf('sock.on("thread:updated"');
+  const thread = src.slice(threadStart, src.indexOf("    })();", threadStart));
+  assert.match(thread, /p\?\.parentChannelId && delta > 0\) syncUnread\(\)/);
+  assert.doesNotMatch(thread, /setUnread/);
+});
