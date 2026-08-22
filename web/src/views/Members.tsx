@@ -250,7 +250,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
       </div>
       {tab === "workspace" ? <WorkspaceTab id={id} />
         : tab === "activity" ? <ActivityTab id={id} name={a.name} />
-        : tab === "permissions" ? <PermissionsTab id={id} />
+        : tab === "permissions" ? <PermissionsTab key={id} id={id} />
         : tab === "integrations" ? <AppsTab id={id} />
         : tab === "dms" ? <DmsTab id={id} name={a.name} />
         : tab === "reminders" ? <RemindersTab id={id} name={a.name} />
@@ -377,13 +377,16 @@ function PermissionsTab({ id }: { id: string }) {
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { (async () => { const d = await api("GET", `/api/agents/${id}/scopes`); setData(d); setGranted(new Set(d.granted || [])); })(); }, [id]);
+  useEffect(() => () => { if (savedTimerRef.current) clearTimeout(savedTimerRef.current); }, []);
   if (!data) return <div className="scroll"><div className="empty">{t("members.loading")}</div></div>;
   const toggle = (k: string) => setGranted((g) => { const n = new Set(g); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const save = async (scopes: string[]) => {
     if (!canManage || savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
+    if (savedTimerRef.current) { clearTimeout(savedTimerRef.current); savedTimerRef.current = null; }
     setSaved(false);
     try {
       const result = await api("PUT", `/api/agents/${id}/scopes`, { scopes });
@@ -392,7 +395,8 @@ function PermissionsTab({ id }: { id: string }) {
         || !Array.isArray(result?.granted) || !result.granted.every((scope: unknown) => typeof scope === "string")) {
         throw new Error("invalid permission response");
       }
-      setData({ ...data, ...result }); setGranted(new Set(result.granted)); setSaved(true); setTimeout(() => setSaved(false), 1500);
+      setData({ ...data, ...result }); setGranted(new Set(result.granted)); setSaved(true);
+      savedTimerRef.current = setTimeout(() => { setSaved(false); savedTimerRef.current = null; }, 1500);
     } catch {
       toast.error(t("members.permissionsSaveFailed"));
     } finally {
