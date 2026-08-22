@@ -46,3 +46,22 @@ test("malformed badge snapshots are rejected", () => {
     assert.equal(parseUnreadValues(value), null);
   }
 });
+
+test("a failed badge load preserves state and allows retry", async () => {
+  const commits: unknown[] = [];
+  let loadCount = 0;
+  const refresh = createUnreadRefresh(
+    async () => {
+      loadCount += 1;
+      if (loadCount === 1) throw new Error("offline");
+      return { channel: 2 };
+    },
+    (values) => commits.push(values),
+  );
+
+  await refresh.request();
+  assert.deepEqual(commits, []);
+
+  await refresh.request();
+  assert.deepEqual(commits, [{ channel: 2 }]);
+});
