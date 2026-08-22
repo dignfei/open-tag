@@ -87,6 +87,58 @@ test("initial admission rejects exactly once when Codex turn/start RPC rejects",
   }
 });
 
+test("Codex quarantines a turn/start response without a turn id", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-codex-turn-no-id-"));
+  const executable = path.join(root, "codex");
+  const turnCountFile = path.join(root, "turn-count");
+  const admissions: Array<Error | undefined> = [];
+  const activities: Array<{ activity: string; detail?: string }> = [];
+  let session: ReturnType<typeof codexRuntime.start> | undefined;
+  try {
+    writeFileSync(executable, [
+      `#!${process.execPath}`,
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      'const readline = require("node:readline");',
+      'let turns = 0;',
+      'const rl = readline.createInterface({ input: process.stdin });',
+      'rl.on("line", (line) => {',
+      '  const request = JSON.parse(line);',
+      '  if (request.id === undefined) return;',
+      '  if (request.method === "initialize") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }));',
+      '  else if (request.method === "thread/start") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { thread: { id: "thread-test" } } }));',
+      '  else if (request.method === "turn/start") {',
+      '    turns += 1;',
+      '    fs.writeFileSync(path.join(process.cwd(), "turn-count"), String(turns));',
+      '    console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { turn: {} } }));',
+      '  }',
+      '});',
+      '',
+    ].join("\n"));
+    chmodSync(executable, 0o755);
+    session = codexRuntime.start({ cwd: root, stateDir: root, env: { PATH: root }, systemPrompt: "system", initialPrompt: "start" }, {
+      onSession: () => {},
+      onInitialTurnAdmission: (error) => admissions.push(error),
+      onActivity: (activity, detail) => activities.push({ activity, detail }),
+      onTrajectory: () => {},
+      onExit: () => {},
+      log,
+    });
+    const queued = assert.rejects(session.deliver("queued"), /returned no turnId/);
+
+    await waitFor(() => admissions.length > 0);
+    await queued;
+    await waitFor(() => activities.some((event) => event.activity === "offline"));
+    assert.equal(admissions.length, 1);
+    assert.match(admissions[0]?.message ?? "", /returned no turnId/);
+    assert.equal(readFileSync(turnCountFile, "utf8"), "1", "the quarantined session must not pump another Turn");
+    assert.ok(activities.some((event) => event.activity === "offline" && event.detail === "codex invalid turn"));
+  } finally {
+    session?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const reasoningEffort of ["max", "ultra"] as const) test(`GPT-5.6 model and ${reasoningEffort} effort reach Codex thread/start and turn/start`, async () => {
   const root = mkdtempSync(path.join(tmpdir(), `open-tag-codex-gpt56-${reasoningEffort}-`));
   const executable = path.join(root, "codex");
