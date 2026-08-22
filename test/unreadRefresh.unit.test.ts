@@ -148,12 +148,13 @@ test("live unread events schedule server snapshots", () => {
   assert.doesNotMatch(thread, /setUnread/);
 });
 
-test("reconnect refreshes badges after message catch-up", () => {
+test("room readiness refreshes badges independently of message catch-up", () => {
   const src = fs.readFileSync(new URL("../web/src/store.tsx", import.meta.url), "utf8");
   const reconnect = src.slice(src.indexOf('sock.on("connect"'), src.indexOf('sock.on("message:new"'));
   assert.match(reconnect, /api\("GET", `\/api\/messages\/sync\?since=\$\{lastSeq\}`\)/);
   assert.match(reconnect, /dispatch\(\{ type: "message", channelId: msg\.channelId, message: msg \}\);/);
-  assert.match(reconnect, /syncUnread\(\);/);
+  assert.doesNotMatch(reconnect, /syncUnread\(\)/);
+  assert.match(reconnect, /sock\.on\("rooms:joined", syncUnread\);/);
   assert.doesNotMatch(reconnect, /setUnread/);
 });
 

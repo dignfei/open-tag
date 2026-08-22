@@ -334,10 +334,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           for (const msg of (r?.messages || [])) {
             dispatch({ type: "message", channelId: msg.channelId, message: msg });
           }
-          syncUnread(); // content catch-up and badges converge from their independent server sources
           if (r?.maxSeq) lastSeq = Math.max(lastSeq, r.maxSeq);
         } catch { /* */ }
       });
+      // The server emits this only after its asynchronous membership lookup and room joins finish. Refreshing here
+      // closes the initial/reconnect gap even when message catch-up fails or samples before room delivery is ready.
+      sock.on("rooms:joined", syncUnread);
       sock.on("message:new", (msg: any) => {
         if (msg?.seq) lastSeq = Math.max(lastSeq, msg.seq);
         if (msg?.channelId) {
