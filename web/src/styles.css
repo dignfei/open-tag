@@ -789,6 +789,7 @@ main.content-col>.scroll .msg-head>.msg-agent-state{padding-right:76px}
 /* Permissions facet */
 .perm-head{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
 .perm-head .ok{font-size:14px;color:var(--on-ink);background:var(--ink-2);border:0;padding:7px 18px;border-radius:9999px;cursor:pointer}
+.perm-head .ok:disabled{opacity:.5;cursor:default}
 .perm-head .saved{font-size:13px;color:var(--success)}
 .perm-group{margin-bottom:14px}
 .perm-row{display:flex;align-items:flex-start;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer}

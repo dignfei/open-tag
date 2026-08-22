@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { createLogger } from "../log.js";
 import { expectAgentDeliveryAck } from "./agentDeliveryAck.js";
@@ -19,6 +19,8 @@ import {
 import { publish } from "./realtime.js";
 import { ensureReplyRecipients, releaseUnavailableReplyGrant, reserveReplyRecipients, type ReplyRecipient } from "./replyCoordination.js";
 import { agentHasScope } from "./scopes.js";
+import { inputSenderAllowed } from "./agentInputPolicy.js";
+import { attributedInputSenderType } from "./agentInputView.js";
 
 type PersistedMessage = typeof schema.messages.$inferSelect;
 type PersistedChannel = typeof schema.channels.$inferSelect;
@@ -44,6 +46,25 @@ export interface ConversationTurnDispatchDeps<TTarget extends { ok: true }> {
 }
 
 const log = createLogger("server:turn-dispatch");
+
+async function allowedInputTargetIds(
+  turn: Pick<PersistedTurn, "serverId" | "senderType" | "senderId">,
+  targetIds: string[],
+): Promise<Set<string>> {
+  if (turn.senderType !== "agent" || !targetIds.length) return new Set(targetIds);
+  const targets = await db.select({
+    id: schema.agents.id,
+    incomingMode: schema.agents.incomingMode,
+    commandWhitelist: schema.agents.commandWhitelist,
+  }).from(schema.agents).where(and(
+    eq(schema.agents.serverId, turn.serverId),
+    isNull(schema.agents.deletedAt),
+    inArray(schema.agents.id, targetIds),
+  ));
+  return new Set(targets
+    .filter((target) => inputSenderAllowed(target, turn.senderType, turn.senderId))
+    .map((target) => target.id));
+}
 
 /** Reserve deterministic Turn responsibility before any early/manual inbox check can race for primary. */
 export async function prepareConversationTurnResponsibility(
@@ -82,6 +103,8 @@ export async function prepareConversationTurnResponsibility(
       if (candidates[0]) recipients = [{ agentId: candidates[0].id, attention: "assigned" }];
     }
   }
+  const allowed = await allowedInputTargetIds(turn, recipients.map((recipient) => recipient.agentId));
+  recipients = recipients.filter((recipient) => allowed.has(recipient.agentId));
   await reserveReplyRecipients({ serverId: turn.serverId, channelId: turn.channelId, messageId: turn.triggerMessageId, recipients });
   if (recipients[0]) {
     await db.update(schema.conversationTurns).set({
@@ -192,7 +215,23 @@ export async function dispatchLegacyMessage<TTarget extends { ok: true }>(input:
   const mentionedAgents = new Set(input.mentions.filter((member) => member.type === "agent").map((member) => member.id));
   const isDm = input.channel?.type === "dm";
   const targetName = isDm ? `dm:@${input.msg.senderName}` : `#${input.channel?.name ?? input.msg.channelId}`;
-  for (const member of input.members.filter((candidate) => candidate.type === "agent" && candidate.id !== input.msg.senderId)) {
+  const candidates = input.members.filter((candidate) => candidate.type === "agent"
+    && (input.msg.senderType === "system" || candidate.id !== input.msg.senderId));
+  const targetRows = candidates.length ? await db.select({
+    id: schema.agents.id,
+    serverId: schema.agents.serverId,
+    incomingMode: schema.agents.incomingMode,
+    commandWhitelist: schema.agents.commandWhitelist,
+  }).from(schema.agents).where(and(
+    eq(schema.agents.serverId, input.msg.serverId),
+    isNull(schema.agents.deletedAt),
+    inArray(schema.agents.id, candidates.map((candidate) => candidate.id)),
+  )) : [];
+  const targets = new Map(targetRows.map((target) => [target.id, target]));
+  const senderType = await attributedInputSenderType(input.msg.serverId, input.msg);
+  for (const member of candidates) {
+    const target = targets.get(member.id);
+    if (!target || !inputSenderAllowed(target, senderType, input.msg.senderId)) continue;
     const mentioned = mentionedAgents.has(member.id);
     if (!isDm && !mentioned) {
       const row = (await db.select({ scopes: schema.agents.scopes }).from(schema.agents).where(eq(schema.agents.id, member.id)))[0];
@@ -200,7 +239,7 @@ export async function dispatchLegacyMessage<TTarget extends { ok: true }>(input:
         channelType: input.channel?.type ?? "channel",
         mentioned,
         hasInboxScope: agentHasScope(row?.scopes, "inbox:receive"),
-        senderType: input.msg.senderType as "user" | "agent" | "system",
+        senderType,
       })) continue;
     }
     await deliverAgentResponsibility({
@@ -283,6 +322,14 @@ export async function dispatchConversationTurn<TTarget extends { ok: true }>(
       fallbackOwner = true;
       attention = "assigned";
     } else {
+      await finishConversationTurnDispatch(claimed.id, attempt, null, "completed");
+      return;
+    }
+    const allowed = await allowedInputTargetIds(claimed, candidates.map((candidate) => candidate.id));
+    const rejected = candidates.filter((candidate) => !allowed.has(candidate.id));
+    candidates = candidates.filter((candidate) => allowed.has(candidate.id));
+    for (const member of rejected) await releaseUnavailableReplyGrant(trigger.id, member.id);
+    if (rejected.length && !candidates.length) {
       await finishConversationTurnDispatch(claimed.id, attempt, null, "completed");
       return;
     }

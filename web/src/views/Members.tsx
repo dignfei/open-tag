@@ -19,6 +19,12 @@ import { CodeBlock, ColorSwatch, GithubAlertBlockquote, colorValueFromTag, markd
 import i18n from "../i18n";
 import { ProjectDirectoryField } from "./ProjectDirectoryPicker.tsx";
 import { copyText } from "../lib/clipboard.ts";
+import { isCurrentAgentProfileResponse } from "../lib/agentProfileLoad.ts";
+import {
+  filterAvailableAgentIds,
+  MAX_AGENT_INPUT_SOURCES,
+  toggleAgentInputSource,
+} from "../lib/agentInputPolicy.ts";
 
 // Unified agent status label: fine-grained activity (working/thinking/online) takes priority;
 // offline/absent falls back to lifecycle status (active/sleeping/inactive).
@@ -65,7 +71,7 @@ export function Members() {
         </div>
       </aside>
       <main className="content-col">
-        {userId ? <HumanProfile uid={userId} /> : agentId ? <AgentProfile id={agentId} onDeleted={() => nav(`/s/${slug}/agent`)} /> : <Roster agents={agents} humans={humans} onCreate={() => setModal(true)} canCreate={!!capabilities.manageAgents} />}
+        {userId ? <HumanProfile uid={userId} /> : agentId ? <AgentProfile key={agentId} id={agentId} onDeleted={() => nav(`/s/${slug}/agent`)} /> : <Roster agents={agents} humans={humans} onCreate={() => setModal(true)} canCreate={!!capabilities.manageAgents} />}
       </main>
       {modal && <CreateAgentModal onClose={() => setModal(false)} />}
       {inviteModal && <InviteHumanModal onClose={() => setInviteModal(false)} />}
@@ -152,7 +158,7 @@ function Roster({ agents, humans, onCreate, canCreate }: { agents: any[]; humans
 
 export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string; onDeleted: () => void; onClose?: () => void; onMessage?: () => void }) {
   const { t } = useTranslation();
-  const { api, machines, reload, onEvent, capabilities, openDM, slug, uploadAgentAvatar, attachmentUrl } = useStore();
+  const { api, machines, visibleAgents, reload, onEvent, capabilities, openDM, slug, uploadAgentAvatar, attachmentUrl } = useStore();
   const confirm = useConfirm();
   const toast = useToast();
   const nav = useNavigate();
@@ -165,8 +171,25 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
   const [showRestart, setShowRestart] = useState(false);
   const [avBusy, setAvBusy] = useState(false); const [avErr, setAvErr] = useState(""); const [signedAvatar, setSignedAvatar] = useState<string | null>(null);
   const [perContent, setPerContent] = useState<string | null>(null); const [perBusy, setPerBusy] = useState(false);
-  const refetch = async () => { const data = await api("GET", "/api/agents/" + id); setA(data); setSignedAvatar(resolveAvatar(data?.avatarUrl, attachmentUrl)); };
-  useEffect(() => { refetch(); }, [id]);
+  const profileLoadVersionRef = useRef(0);
+  const activeProfileIdRef = useRef(id);
+  activeProfileIdRef.current = id;
+  const refetch = async () => {
+    const requestedId = id;
+    const requestVersion = ++profileLoadVersionRef.current;
+    const data = await api("GET", "/api/agents/" + requestedId);
+    if (!isCurrentAgentProfileResponse(
+      requestedId, requestVersion, activeProfileIdRef.current, profileLoadVersionRef.current, data,
+    )) return;
+    setA(data);
+    setSignedAvatar(resolveAvatar((data as any).avatarUrl, attachmentUrl));
+  };
+  useEffect(() => {
+    setA(null);
+    setSignedAvatar(null);
+    void refetch();
+    return () => { profileLoadVersionRef.current++; };
+  }, [id]);
   useEffect(() => onEvent((e) => { if (e.type === "agent" && e.id === id) setA((p: any) => (p ? { ...p, status: e.status ?? p.status, activity: e.activity ?? p.activity } : p)); }), [id]);
   const onPickAvatar = async (f: File) => { setAvBusy(true); setAvErr(""); try { const url = await uploadAgentAvatar(id, f); setSignedAvatar(url); await refetch(); await reload(); } catch (err: any) { setAvErr(String(err?.message || err)); } finally { setAvBusy(false); } };
   const onPickSeed = async (scheme: string) => { setAvBusy(true); setAvErr(""); try { await api("PATCH", "/api/agents/" + id, { avatarUrl: scheme }); await refetch(); await reload(); } catch (err: any) { setAvErr(String(err?.message || err)); } finally { setAvBusy(false); } };
@@ -176,7 +199,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
   // branched on the body — the catch only sees network-level failures.
   const uploadPersonality = async (f: File) => { setPerBusy(true); try { const text = await f.text(); const r = await api("PUT", `/api/agents/${id}/personality`, { content: text }); if (r?.error) { toast.error(t("members.personalitySaveFailed", { error: r.error })); return; } toast.info(t("members.personalitySaved")); await fetchPersonality(); } catch (e: any) { toast.error(String(e?.message || e)); } finally { setPerBusy(false); } };
   const deletePersonality = async () => { if (!(await confirm({ title: t("members.personalityDeleteTitle"), message: t("members.personalityDeleteMessage"), confirmLabel: t("members.delete"), danger: true }))) return; setPerBusy(true); try { const r = await api("DELETE", `/api/agents/${id}/personality`); if (r?.error) { toast.error(t("members.personalityDeleteFailed", { error: r.error })); return; } toast.info(t("members.personalityDeleted")); setPerContent(null); } catch (e: any) { toast.error(String(e?.message || e)); } finally { setPerBusy(false); } };
-  if (!a) return <div className="scroll"><div className="empty">{t("members.loading")}</div></div>;
+  if (!a || a.id !== id) return <div className="scroll"><div className="empty">{t("members.loading")}</div></div>;
   // Surface the server's concrete 503 reason ("no daemon online" / "runtime X unavailable on selected machine" …);
   // the generic machine-may-be-offline guess alone made users blind-retry (live 2026-07-05: 3× restart → 503).
   // Known reasons render localized (startFailReasonKey); unknown ones fall back to the raw server string.
@@ -281,6 +304,12 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
                 </div>}
               </>)}
             </div>
+            {capabilities.manageAgents && a.creatorType !== "system" && <AgentInputPolicyCard
+              key={id}
+              agent={a}
+              candidates={visibleAgents.filter((candidate) => candidate.id !== id)}
+              onSaved={(policy) => setA((current: any) => current ? { ...current, ...policy } : current)}
+            />}
             <div className="card">
               <h3>{t("members.personalityTitle")} <small className="meta">{perContent ? "(personality.md)" : ""}</small></h3>
               {perContent ? <div className="meta" style={{ whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto", marginBottom: 8 }}>{perContent}</div> : <div className="meta" style={{ opacity: .6 }}>{t("members.personalityEmpty")}</div>}
@@ -294,6 +323,97 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
         )}
       {showRestart && <RestartModal name={a.displayName || a.name} onClose={() => setShowRestart(false)} onPick={doRestart} />}
     </>
+  );
+}
+
+function AgentInputPolicyCard({
+  agent,
+  candidates,
+  onSaved,
+}: {
+  agent: any;
+  candidates: any[];
+  onSaved: (policy: { incomingMode: "open" | "sealed"; commandWhitelist: string[] }) => void;
+}) {
+  const { t } = useTranslation();
+  const { api } = useStore();
+  const toast = useToast();
+  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+  const [mode, setMode] = useState<"open" | "sealed">(agent.incomingMode === "open" ? "open" : "sealed");
+  const [whitelist, setWhitelist] = useState<Set<string>>(() => new Set(filterAvailableAgentIds(
+    Array.isArray(agent.commandWhitelist)
+      ? agent.commandWhitelist.filter((id: unknown): id is string => typeof id === "string")
+      : [],
+    candidateIds,
+  )));
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const activeWhitelist = filterAvailableAgentIds(whitelist, candidateIds);
+  const whitelistFull = activeWhitelist.length >= MAX_AGENT_INPUT_SOURCES;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const toggleAgent = (id: string) => setWhitelist((current) => toggleAgentInputSource(
+    filterAvailableAgentIds(current, candidateIds),
+    id,
+  ));
+  const save = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    const submittedMode = mode;
+    const submittedWhitelist = filterAvailableAgentIds(whitelist, candidateIds);
+    try {
+      const result = await api("PATCH", `/api/agents/${agent.id}`, {
+        incomingMode: submittedMode,
+        commandWhitelist: submittedWhitelist,
+      });
+      if (!mountedRef.current) return;
+      const validMode = result?.incomingMode === "open" || result?.incomingMode === "sealed";
+      const validWhitelist = Array.isArray(result?.commandWhitelist)
+        && result.commandWhitelist.every((id: unknown) => typeof id === "string");
+      if (result?.error || result?.ok !== true || !validMode || !validWhitelist) throw new Error("invalid input policy response");
+      const policy = {
+        incomingMode: result.incomingMode as "open" | "sealed",
+        commandWhitelist: result.commandWhitelist as string[],
+      };
+      setMode(policy.incomingMode);
+      setWhitelist(new Set(policy.commandWhitelist));
+      onSaved(policy);
+      toast.info(t("members.inputPolicySaved"));
+    } catch {
+      if (mountedRef.current) toast.error(t("members.inputPolicySaveFailed"));
+    } finally {
+      if (mountedRef.current) {
+        savingRef.current = false;
+        setSaving(false);
+      }
+    }
+  };
+  const sealed = mode === "sealed";
+  return (
+    <div className="card" data-agent-input-policy>
+      <h3>{t("members.inputPolicyTitle")}</h3>
+      <div className="meta" style={{ marginBottom: 8 }}>{t("members.inputPolicyDescription")}</div>
+      <label className="perm-row">
+        <input type="checkbox" checked={sealed} disabled={saving} onChange={(event) => setMode(event.target.checked ? "sealed" : "open")} />
+        <span className="grow"><span className="who">{t("members.inputPolicySealed")}</span><div className="meta">{t("members.inputPolicySealedDescription")}</div></span>
+      </label>
+      {sealed && <>
+        <div className="sec sec-sub">{t("members.inputPolicyWhitelist")}</div>
+        <div className="meta">{t("members.inputPolicyWhitelistLimit", { count: MAX_AGENT_INPUT_SOURCES })}</div>
+        {candidates.length === 0 ? <div className="meta">{t("members.inputPolicyWhitelistEmpty")}</div>
+          : candidates.map((candidate) => <label key={candidate.id} className="perm-row">
+              <input type="checkbox" checked={whitelist.has(candidate.id)} disabled={saving || (!whitelist.has(candidate.id) && whitelistFull)} onChange={() => toggleAgent(candidate.id)} />
+              <span className="grow"><span className="who">{candidate.displayName || candidate.name}</span> <span className="meta">@{candidate.name}</span></span>
+            </label>)}
+      </>}
+      <div className="perm-head" style={{ marginTop: 12 }}>
+        <button className="ok" disabled={saving} onClick={save}>{t("members.save")}</button>
+      </div>
+    </div>
   );
 }
 

@@ -6,7 +6,7 @@ import { nextTaskNumber } from "../redis.js";
 import { agentControlBlockReason, broadcastToDaemons, conversationTurnDeliveryBlockReason, daemonCount, isMachineConnected, projectDirectoryBlockReason, requestDaemon, requestDaemonByMachine, sendToMachine } from "./daemonHub.js";
 import { createLogger } from "../log.js";
 import { canUserReadChannel } from "./channelAccess.js";
-import { canAutoJoinMentionedMembers } from "./agentWakePolicy.js";
+import { canAutoJoinMentionedMembers, type MessageSenderType } from "./agentWakePolicy.js";
 import { UUID_RE } from "./util.js";
 import { ensureReplyRecipients, releaseUnavailableReplyGrant } from "./replyCoordination.js";
 import type { ReplySlot } from "./replyCoordinationPolicy.js";
@@ -15,6 +15,8 @@ import { agentConfig } from "./agentConfig.js";
 import { attachMessageToConversationTurn, scheduleConversationTurn, type ConversationBoundaryKind } from "./conversationTurns.js";
 import { dispatchConversationTurn as dispatchConversationTurnWithDeps, dispatchLegacyMessage, prepareConversationTurnResponsibility, type ConversationTurnDispatchDeps } from "./conversationTurnDispatch.js";
 import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY } from "../daemonProtocol.js";
+import { inputSenderAllowed } from "./agentInputPolicy.js";
+import { agentInputVisible } from "./agentInputView.js";
 
 const log = createLogger("server:core");
 const ERROR_RECEIPT_WINDOW_MS = 10 * 60 * 1000;
@@ -176,6 +178,29 @@ async function mentionAutoJoinPool(serverId: string, ch: typeof schema.channels.
     else log.warn("thread parent channel unresolved; @-mention reach falls back to thread members", { channelId: ch.id, parentMessageId: ch.parentMessageId });
   }
   return target.type === "channel" ? await workspaceMembers(serverId) : await channelMembers(target.id);
+}
+
+async function allowedMentionAutoJoinPool(
+  serverId: string,
+  senderType: MessageSenderType,
+  senderId: string | null,
+  pool: Member[],
+): Promise<Member[]> {
+  if (senderType !== "agent") return pool;
+  const agentIds = pool.filter((member) => member.type === "agent").map((member) => member.id);
+  const targets = agentIds.length ? await db.select({
+    id: schema.agents.id,
+    incomingMode: schema.agents.incomingMode,
+    commandWhitelist: schema.agents.commandWhitelist,
+  }).from(schema.agents).where(and(
+    eq(schema.agents.serverId, serverId),
+    isNull(schema.agents.deletedAt),
+    inArray(schema.agents.id, agentIds),
+  )) : [];
+  const allowedAgents = new Set(targets
+    .filter((target) => inputSenderAllowed(target, senderType, senderId))
+    .map((target) => target.id));
+  return pool.filter((member) => member.type === "user" || allowedAgents.has(member.id));
 }
 
 /** Add @-mentioned non-members to a channel, drawn from `pool` (its @-reach — see mentionAutoJoinPool); returns
@@ -420,7 +445,13 @@ export async function createMessage(opts: {
   // A resolvable mention is an active work edge for human and agent senders. The reach pool still preserves
   // the channel boundary: public spaces may pull in workspace peers; private/DM spaces never pull outsiders.
   if (ch && canAutoJoinMentionedMembers(opts.senderType) && opts.content.includes("@")) {
-    const joined = await autoJoinMentioned(opts.serverId, opts.channelId, opts.content, members, await mentionAutoJoinPool(opts.serverId, ch), seq - 1);
+    const reach = await allowedMentionAutoJoinPool(
+      opts.serverId,
+      opts.senderType,
+      opts.senderId,
+      await mentionAutoJoinPool(opts.serverId, ch),
+    );
+    const joined = await autoJoinMentioned(opts.serverId, opts.channelId, opts.content, members, reach, seq - 1);
     if (joined.length) members = [...members, ...joined];
   }
   const mentions = parseMentions(opts.content, members);
@@ -768,11 +799,24 @@ export async function resolveIdOrPrefix(
 export async function resolveMessageId(serverId: string, idOrShort: string | undefined | null, agentId?: string): Promise<string | null> {
   const id = await resolveIdOrPrefix(schema.messages, serverId, idOrShort);
   if (!id) return null;
-  const m = (await db.select({ id: schema.messages.id, channelId: schema.messages.channelId }).from(schema.messages).where(eq(schema.messages.id, id)))[0];
+  const m = (await db.select().from(schema.messages).where(eq(schema.messages.id, id)))[0];
   if (!m) return null;
   // Agent ACL: on the agent plane (agentId passed), only resolve a message in a channel the agent can access —
   // otherwise an agent could probe/react/claim any message in the server by its (short) id.
   if (agentId && !(await canAgentReadChannel(serverId, m.channelId, agentId))) return null;
+  if (agentId) {
+    const target = (await db.select({
+      id: schema.agents.id,
+      serverId: schema.agents.serverId,
+      incomingMode: schema.agents.incomingMode,
+      commandWhitelist: schema.agents.commandWhitelist,
+    }).from(schema.agents).where(and(
+      eq(schema.agents.id, agentId),
+      eq(schema.agents.serverId, serverId),
+      isNull(schema.agents.deletedAt),
+    )))[0];
+    if (!target || !await agentInputVisible(target, m)) return null;
+  }
   return m.id;
 }
 
@@ -816,6 +860,7 @@ export async function assignTask(
     isNull(schema.agents.deletedAt),
   )))[0];
   if (!target) return null;
+  if (by?.type === "agent" && !inputSenderAllowed(target, by.type, by.id)) return null;
 
   const cur = (await db.select().from(schema.messages).where(and(
     eq(schema.messages.id, messageId),
@@ -902,8 +947,17 @@ export async function setTaskStatus(serverId: string, messageId: string, status:
   const label = STATUS_LABEL[status] ?? status;
   const emoji = STATUS_EMOJI[status] ? STATUS_EMOJI[status] + " " : ""; // confirmed for in_progress/in_review; others pending confirmation, no guessing
   const sysMsg = await sysTaskMsg(serverId, threadCh, `${emoji}${actor} moved #${upd.taskNumber} "${taskTitle(upd.content)}" to ${label}`, by);
+  let assigneeAcceptsSource = true;
+  if (by?.type === "agent" && upd.taskAssigneeId) {
+    const target = (await db.select().from(schema.agents).where(and(
+      eq(schema.agents.id, upd.taskAssigneeId),
+      eq(schema.agents.serverId, serverId),
+      isNull(schema.agents.deletedAt),
+    )))[0];
+    assigneeAcceptsSource = !!target && inputSenderAllowed(target, "agent", by.id);
+  }
   // Wake the assigned agent (only when changed by someone else). Verified: human changes status → assignee agent fires agent:activity working detail="Message received".
-  if (upd.taskAssigneeType === "agent" && upd.taskAssigneeId && by?.id !== upd.taskAssigneeId) {
+  if (upd.taskAssigneeType === "agent" && upd.taskAssigneeId && by?.id !== upd.taskAssigneeId && assigneeAcceptsSource) {
     await db.insert(schema.channelMembers).values({ channelId: threadCh, memberType: "agent", memberId: upd.taskAssigneeId }).onConflictDoNothing(); // ensure assignee is a thread member, otherwise message check cannot see this system message
     const target = await agentStartTarget(serverId, upd.taskAssigneeId);
     await ensureReplyRecipients({ serverId, channelId: threadCh, messageId: sysMsg.id, recipients: [{ agentId: upd.taskAssigneeId, attention: "assigned" }] });

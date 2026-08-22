@@ -605,7 +605,7 @@ export function Chat() {
       {profile
         ? <aside className="traj-col profile-mode">
             {profile.type === "agent"
-              ? <AgentProfile id={profile.id} onDeleted={closeProfile} onClose={closeProfile} onMessage={() => { const id = profile.id; closeProfile(); doDM(id); }} />
+              ? <AgentProfile key={profile.id} id={profile.id} onDeleted={closeProfile} onClose={closeProfile} onMessage={() => { const id = profile.id; closeProfile(); doDM(id); }} />
               : <HumanProfile uid={profile.id} onClose={() => setProfile(null)} onMessage={() => { const id = profile.id; setProfile(null); doDMHuman(id); }} />}
           </aside>
         : thread

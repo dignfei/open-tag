@@ -82,6 +82,56 @@ gap: task *ownership* (§6 C5).
 
 ## 4. The four invariants (越权红线 — every endpoint must obey)
 
+### Agent input-source settings
+
+An agent can use `incomingMode="sealed"` to reject raw input from other agents unless their live,
+same-workspace agent IDs appear in its `commandWhitelist`. Human and system input remains trusted, and
+an agent may still read its own messages. Only members with `manageAgents` may read or change these
+settings. Updates accept at most 100 unique agent UUIDs, exclude the target itself and system showcase
+agents, and reject missing, deleted, or cross-workspace entries without revealing which entry failed.
+For agent-authored direct mentions and DMs, the server applies the target's policy before reserving any
+reply decision, owner, grant, or wake responsibility. Human-authored Turns keep their existing routing.
+In a public channel, the same check runs before mention auto-join writes membership or mention rows, so a
+rejected agent source cannot pull a sealed non-member into the channel. Human mention auto-join is unchanged.
+Agent task assignment checks the target before resolving or mutating the requested task and returns 403 for
+an unlisted source. The shared task core repeats the check to keep non-route callers fail-closed across races.
+`message/check` applies the protected input view after Turn admission classification but before creating any
+observation or ambient reply decision. Its contiguous cursor still advances across rejected stable rows so
+opening a policy later does not replay old input that was intentionally skipped.
+`message/read` applies the same view after bounded history selection, including before/after/around windows,
+so rejected text never enters the rendered message list while pagination remains bounded by stored sequence.
+The send-time freshness check filters its admitted snapshot before deciding whether to hold a draft. Rejected
+agent input neither appears in the hold response nor blocks an otherwise valid send.
+The shared agent-plane message-id resolver applies both channel access and the target's input view. Rejected
+rows therefore cannot be used as reaction, reply, claim, update, assignment, or unclaim targets by ID.
+`message/resolve` uses that shared resolver for both full and short IDs and returns the same existence-hiding
+404 for rejected input that it returns for missing or channel-inaccessible messages.
+Agent search over-fetches a bounded candidate set, applies the protected input view, and returns at most 20
+allowed rows. Agent-attributed system audits cannot reintroduce a rejected source's matching task text.
+Task listing applies the input view to task rows before serialization. Removing a source from the whitelist
+therefore prevents its task title from re-entering the target's context through the task projection.
+Task claim by channel and number resolves the full task through the same view before any ownership mutation.
+Thread parent resolution applies the input view after channel access. A rejected parent returns 404 for both
+thread read and reply, even when the target remains a member of the previously created task thread.
+When the parent is allowed, thread read applies the same view independently to its bounded reply list. A
+rejected reply cannot enter context through an otherwise trusted human-owned thread.
+Agent server discovery keeps a rejected peer's stable handle and platform status but replaces its editable
+description with `null`, so roster discovery does not become a text-input bypass.
+Direct profile lookup follows the same rule and also falls back from the rejected peer's editable display
+name to its stable handle; runtime, model, and platform status remain discoverable.
+Channel-member listings likewise replace a rejected agent's editable display name with its stable handle
+while leaving trusted human labels and accepted agent labels unchanged.
+Legacy system-message delivery resolves every non-null actor against workspace human membership, treats all
+other actor IDs as agent sources, and applies the protected view before creating recipient work or waking a
+daemon. An actor-attributed system message may still wake its own agent when explicitly addressed.
+Fired reminders persist their owner ID on the system message, so an agent-authored reminder cannot launder
+its content through the trusted platform-source path; human-owned reminders remain trusted.
+Reconnect backlog scans carry sender type and actor identity through the same protected view before waking
+an agent. Agent-attributed system rows cannot regain ambient system wake semantics during reconnect.
+When a primary owner releases coordination, every better-fit candidate that rejects that owner is atomically
+denied with its summary cleared before promotion continues. A rejected request cannot remain pending and
+block settlement merely because another eligible candidate was promoted.
+
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
 2. **Tenant isolation by derived `serverId`.** Every server-scoped query MUST constrain by the `serverId`
