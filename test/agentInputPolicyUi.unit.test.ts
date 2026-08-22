@@ -24,6 +24,7 @@ test("agent input saves acquire one gate and lock every control", () => {
   const acquireUiAt = editor.indexOf("setSaving(true)", saveStart);
   assert.ok(guardAt >= 0 && acquireRefAt > guardAt && acquireUiAt > guardAt && requestAt > acquireUiAt);
   assert.equal(editor.match(/disabled=\{saving\}/g)?.length, 3, "mode, allowlist, and Save must all lock in flight");
+  assert.match(editor, /<div className="perm-head"[^>]*>\s*<button className="ok" disabled=\{saving\}/);
 });
 
 test("agent input saves validate the complete response before adopting it", () => {

@@ -382,7 +382,7 @@ function AgentInputPolicyCard({
               <span className="grow"><span className="who">{candidate.displayName || candidate.name}</span> <span className="meta">@{candidate.name}</span></span>
             </label>)}
       </>}
-      <div className="task-acts" style={{ marginTop: 12 }}>
+      <div className="perm-head" style={{ marginTop: 12 }}>
         <button className="ok" disabled={saving} onClick={save}>{t("members.save")}</button>
       </div>
     </div>
