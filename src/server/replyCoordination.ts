@@ -3,6 +3,7 @@ import { db, schema } from "../db/index.js";
 import { inputSenderAllowed } from "./agentInputPolicy.js";
 import { evaluateReplyIntent, type ReplyReason, type ReplySlot } from "./replyCoordinationPolicy.js";
 import { canonicalReplyTriggerMessageId, completeConversationTurnIfSettled } from "./conversationTurns.js";
+import { filterAgentInputView } from "./agentInputView.js";
 
 export type ReplyAttention = "direct" | "dm" | "assigned" | "ambient";
 export type ReplyRecipient = { agentId: string; attention: ReplyAttention };
@@ -151,7 +152,44 @@ export async function markReplyMessagesObserved(agentId: string, messageIds: str
 }
 
 export async function authorizePendingDmGrants(agentId: string): Promise<number> {
+  const target = (await db.select({
+    id: schema.agents.id,
+    serverId: schema.agents.serverId,
+    incomingMode: schema.agents.incomingMode,
+    commandWhitelist: schema.agents.commandWhitelist,
+  }).from(schema.agents).where(and(
+    eq(schema.agents.id, agentId),
+    isNull(schema.agents.deletedAt),
+  )).limit(1))[0];
+  if (!target) return 0;
   const now = new Date();
+  const pendingRows = await db.select({
+    messageId: schema.agentMessageDecisions.messageId,
+    senderType: schema.messages.senderType,
+    senderId: schema.messages.senderId,
+  }).from(schema.agentMessageDecisions)
+    .innerJoin(schema.messages, eq(schema.messages.id, schema.agentMessageDecisions.messageId))
+    .where(and(
+      eq(schema.agentMessageDecisions.agentId, agentId),
+      eq(schema.agentMessageDecisions.attention, "dm"),
+      eq(schema.agentMessageDecisions.decision, "pending"),
+      eq(schema.agentMessageDecisions.grantStatus, "active"),
+    ));
+  const systemActorIds = [...new Set(pendingRows
+    .filter((row) => row.senderType === "system" && !!row.senderId)
+    .map((row) => row.senderId!))];
+  const systemActors = systemActorIds.length ? await db.select({ id: schema.serverMembers.userId }).from(schema.serverMembers).where(and(
+    eq(schema.serverMembers.serverId, target.serverId),
+    inArray(schema.serverMembers.userId, systemActorIds),
+  )) : [];
+  const humanSystemActors = new Set(systemActors.map((actor) => actor.id));
+  const allowedMessageIds = pendingRows.filter((row) => {
+    const senderType = row.senderType === "system" && row.senderId && !humanSystemActors.has(row.senderId)
+      ? "agent"
+      : row.senderType;
+    return inputSenderAllowed(target, senderType, row.senderId);
+  }).map((row) => row.messageId);
+  if (!allowedMessageIds.length) return 0;
   const upgraded = await db.update(schema.agentMessageDecisions).set({
     decision: "accepted",
     reasonCode: "dm_auto_authorized",
@@ -162,6 +200,7 @@ export async function authorizePendingDmGrants(agentId: string): Promise<number>
     eq(schema.agentMessageDecisions.attention, "dm"),
     eq(schema.agentMessageDecisions.decision, "pending"),
     eq(schema.agentMessageDecisions.grantStatus, "active"),
+    inArray(schema.agentMessageDecisions.messageId, allowedMessageIds),
   )).returning({ messageId: schema.agentMessageDecisions.messageId });
   return upgraded.length;
 }
@@ -625,20 +664,33 @@ export async function releaseReplyReservation(messageId: string, agentId: string
 }
 
 export async function hasOutstandingReplyDecision(agentId: string, channelId: string): Promise<boolean> {
-  const row = (await db.select({ messageId: schema.agentMessageDecisions.messageId }).from(schema.agentMessageDecisions)
+  const target = (await db.select({
+    id: schema.agents.id,
+    serverId: schema.agents.serverId,
+    incomingMode: schema.agents.incomingMode,
+    commandWhitelist: schema.agents.commandWhitelist,
+  }).from(schema.agents).where(and(eq(schema.agents.id, agentId), isNull(schema.agents.deletedAt))).limit(1))[0];
+  if (!target) return false;
+  const rows = (await db.select({
+    messageId: schema.agentMessageDecisions.messageId,
+    senderType: schema.messages.senderType,
+    senderId: schema.messages.senderId,
+  }).from(schema.agentMessageDecisions)
     .innerJoin(schema.messages, eq(schema.messages.id, schema.agentMessageDecisions.messageId)).where(and(
-    eq(schema.agentMessageDecisions.agentId, agentId),
-    or(
-      eq(schema.agentMessageDecisions.channelId, channelId),
-      and(isNotNull(schema.messages.taskStatus), eq(schema.messages.threadId, channelId)),
-    ),
-    ne(schema.agentMessageDecisions.grantStatus, "consumed"),
-    or(
-      inArray(schema.agentMessageDecisions.grantStatus, ["active", "publishing"]),
-      inArray(schema.agentMessageDecisions.decision, ["pending", "requested", "accepted"]),
-    ),
-  )).limit(1))[0];
-  return !!row;
+      eq(schema.agentMessageDecisions.agentId, agentId),
+      or(
+        eq(schema.agentMessageDecisions.channelId, channelId),
+        and(isNotNull(schema.messages.taskStatus), eq(schema.messages.threadId, channelId)),
+      ),
+      ne(schema.agentMessageDecisions.grantStatus, "consumed"),
+      or(
+        inArray(schema.agentMessageDecisions.grantStatus, ["active", "publishing"]),
+        inArray(schema.agentMessageDecisions.decision, ["pending", "requested", "accepted"]),
+      ),
+    )).limit(10));
+  if (!rows.length) return false;
+  const visible = await filterAgentInputView(target, rows);
+  return visible.length > 0;
 }
 
 async function canonicalReplyChannelId(messageId: string): Promise<string | null> {
