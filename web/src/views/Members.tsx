@@ -370,6 +370,7 @@ function SkillsSection({ id, projectBound }: { id: string; projectBound: boolean
 function PermissionsTab({ id }: { id: string }) {
   const { t } = useTranslation();
   const { api, capabilities } = useStore();
+  const toast = useToast();
   const canManage = !!capabilities.manageAgents;
   const [data, setData] = useState<any>(null);
   const [granted, setGranted] = useState<Set<string>>(new Set());
@@ -385,8 +386,11 @@ function PermissionsTab({ id }: { id: string }) {
     setSaving(true);
     setSaved(false);
     try {
-      const d = await api("PUT", `/api/agents/${id}/scopes`, { scopes });
-      setData({ ...data, ...d }); setGranted(new Set(d.granted || [])); setSaved(true); setTimeout(() => setSaved(false), 1500);
+      const result = await api("PUT", `/api/agents/${id}/scopes`, { scopes });
+      if (result?.error) throw new Error(result.error);
+      setData({ ...data, ...result }); setGranted(new Set(result.granted || [])); setSaved(true); setTimeout(() => setSaved(false), 1500);
+    } catch {
+      toast.error(t("members.permissionsSaveFailed"));
     } finally {
       savingRef.current = false;
       setSaving(false);
