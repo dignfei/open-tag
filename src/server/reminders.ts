@@ -1,6 +1,6 @@
 // Reminder scheduler (reminders are author-owned, persistent, observable, re-schedulable wake signals).
 // A tick scans due reminders → posts a system reminder in the anchor channel (@author → @mention wakes the author agent) → marks one-shot done / reschedules recurring.
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, isNull, lte } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { createMessage } from "./core.js";
 import { createLogger } from "../log.js";
@@ -35,10 +35,12 @@ export async function fireReminder(r: typeof schema.reminders.$inferSelect): Pro
     .where(and(eq(schema.reminders.id, r.id), eq(schema.reminders.status, "scheduled"), lte(schema.reminders.remindAt, now)))
     .returning();
   if (!won.length) return; // already claimed by another tick/instance
-  const owner = r.ownerType === "agent"
-    ? (await db.select().from(schema.agents).where(eq(schema.agents.id, r.ownerId)))[0]
-    : (await db.select().from(schema.users).where(eq(schema.users.id, r.ownerId)))[0];
-  const ownerName = (owner as { name?: string } | undefined)?.name;
+  const ownerRows = r.ownerType === "agent"
+    ? await db.select().from(schema.agents).where(and(eq(schema.agents.id, r.ownerId), isNull(schema.agents.deletedAt)))
+    : await db.select().from(schema.users).where(eq(schema.users.id, r.ownerId));
+  const owner = (ownerRows as Array<{ name?: string }>)[0];
+  const ownerName = owner?.name;
+  if (!owner) return;
   // Anchor channel: the anchor message's channel > reminder.channelId > #all
   let channelId = r.channelId ?? null;
   if (r.anchorMessageId) {
