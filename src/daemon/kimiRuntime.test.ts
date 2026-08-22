@@ -153,3 +153,61 @@ test("Kimi clears a stale resume id and retries the same admitted turn before qu
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Kimi stop during stale-session clearing cannot start the fresh retry", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-kimi-stale-stop-"));
+  const binDir = path.join(root, "bin");
+  const attemptsFile = path.join(root, "attempts.json");
+  mkdirSync(binDir);
+  fakeKimi(binDir, [
+    'const fs = require("node:fs");',
+    "const file = process.env.OPEN_TAG_TEST_ATTEMPTS;",
+    'const attempts = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];',
+    "attempts.push(process.argv.slice(2));",
+    "fs.writeFileSync(file, JSON.stringify(attempts));",
+    'console.error(\'Session "session_stale" not found\');',
+    "process.exit(1);",
+  ].join("\n"));
+
+  const sessions: Array<string | null> = [];
+  const failures: number[] = [];
+  const activities: string[] = [];
+  const exits: Array<number | null> = [];
+  let session: ReturnType<typeof kimiRuntime.start> | undefined;
+  try {
+    session = kimiRuntime.start({
+      cwd: root,
+      stateDir: root,
+      env: { [PATH_KEY]: binDir, HOME: root, OPEN_TAG_TEST_ATTEMPTS: attemptsFile },
+      sessionId: "session_stale",
+      systemPrompt: "standing instructions",
+      initialPrompt: "current turn",
+    }, {
+      onSession: (sessionId) => {
+        sessions.push(sessionId);
+        if (sessionId === null) session?.stop();
+      },
+      onInitialTurnAdmission: () => {},
+      onAcceptedTurnFailure: () => failures.push(failures.length + 1),
+      onActivity: (activity) => activities.push(activity),
+      onTrajectory: () => {},
+      onExit: (code) => exits.push(code),
+      log: noLog,
+    });
+    const queuedError = session.deliver("queued turn").then(() => null, (error) => error as Error);
+    await waitFor(() => sessions.includes(null), "stale session clearing");
+    const error = await queuedError;
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /stopped before input admission/);
+    await waitFor(() => exits.length === 1, "single stop exit");
+    assert.equal(JSON.parse(readFileSync(attemptsFile, "utf8")).length, 1);
+    assert.deepEqual(sessions, ["session_stale", null]);
+    assert.deepEqual(failures, []);
+    assert.deepEqual(exits, [0]);
+    assert.equal(activities.includes("online"), false);
+    assert.equal(activities.includes("error"), false);
+  } finally {
+    session?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
