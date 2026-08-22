@@ -131,6 +131,7 @@ class PiRun {
     this.proc = proc;
     proc.once("spawn", () => { input.admission.accept(); if (input.initial) this.admission.accept(); });
     let buf = "";
+    let turnFailed = false;
     const errTail: string[] = [];
     let errLen = 0;
     const processLine = (ln: string) => {
@@ -140,6 +141,7 @@ class PiRun {
       if (emit.sessionId && emit.sessionId !== this.sessionId) { this.sessionId = emit.sessionId; this.cb.onSession(emit.sessionId); }
       if (emit.trajectory.length) this.cb.onTrajectory(emit.trajectory);
       if (emit.error) { // model/turn error reported in-message (pi still exits 0) — surface it, don't silently no-op
+        turnFailed = true;
         this.cb.onTrajectory([{ kind: "text", text: "[pi error] " + clip(emit.error).slice(0, 500) }]);
         this.cb.onActivity("error", emit.error.slice(0, 200));
       }
@@ -166,12 +168,19 @@ class PiRun {
       if (buf.trim()) processLine(buf); buf = "";
       this.proc = null; this.turnBusy = false; if (this.stopped) { this.reportExit(code); return; }
       if (this.currentInput === input) this.currentInput = null;
-      if (code === 0) { this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return; }
+      if (code === 0) {
+        if (turnFailed) {
+          if (!this.everSucceeded) { this.rejectQueue(new Error("pi initial turn failed")); this.reportExit(1); return; }
+          this.cb.onAcceptedTurnFailure?.(input); this.pump(); return;
+        }
+        this.everSucceeded = true; this.cb.onActivity("online", ""); this.pump(); return;
+      }
       const tail = errTail.join("").trim();
       const last = tail.split("\n").filter(Boolean).pop() || `pi exited ${code ?? "signal"}`;
       this.cb.onTrajectory([{ kind: "text", text: "[pi error] " + clip(tail).slice(0, 500) }]);
       this.cb.onActivity("error", last.slice(0, 200));
       if (!this.everSucceeded) { this.rejectQueue(new Error(last)); this.reportExit(code ?? 1); return; } // first-turn hard failure (bad provider/key) → crashed
+      this.cb.onAcceptedTurnFailure?.(input);
       this.pump();
     });
   }

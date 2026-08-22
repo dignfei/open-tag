@@ -309,7 +309,7 @@ test("a delivery arriving during the startup nudge waits for that runtime turn t
   }
 });
 
-test("a runtime error waits for the terminal online transition before advancing FIFO", async () => {
+test("an admitted terminal failure advances FIFO without treating every runtime error as terminal", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "open-tag-agent-manager-"));
   const delivered: string[] = [];
   let callbacks: RuntimeCallbacks | undefined;
@@ -329,15 +329,23 @@ test("a runtime error waits for the terminal online transition before advancing 
     await mgr.start("agent-error-fifo", baseConfig("agent-error-fifo"));
     const first = mgr.deliver("agent-error-fifo", "Alice", "channel-1", false, { turnId: "turn-error-a" });
     const second = mgr.deliver("agent-error-fifo", "Bob", "channel-1", false, { turnId: "turn-error-b" });
+    const third = mgr.deliver("agent-error-fifo", "Carol", "channel-1", false, { turnId: "turn-error-c" });
     await first;
     assert.equal(delivered.length, 1);
 
     callbacks!.onActivity("error", "turn failed");
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(delivered.length, 1, "non-terminal runtime error must not start the next Turn early");
-    callbacks!.onActivity("online");
+    const failedTurn = {};
+    callbacks!.onAcceptedTurnFailure!(failedTurn);
     await second;
-    assert.equal(delivered.length, 2, "the terminal online transition advances queued work once");
+    assert.equal(delivered.length, 2, "the dedicated failure terminal advances queued work once");
+    callbacks!.onAcceptedTurnFailure!(failedTurn);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(delivered.length, 2, "a repeated failure terminal cannot complete the next Turn");
+    callbacks!.onActivity("online");
+    await third;
+    assert.equal(delivered.length, 3, "the next Turn advances only on its own terminal");
     mgr.stopAll();
   } finally {
     rmSync(root, { recursive: true, force: true });
