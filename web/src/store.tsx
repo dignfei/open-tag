@@ -283,11 +283,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // switch) before the socket connects, the flag ensures the late connection is closed immediately.
     let cancelled = false;
     const dispatch = (d: Ev) => listeners.current.forEach((cb) => cb(d));
-    // Unread badge correction: optimistic ++ gives instant feedback; after each incoming message a debounced
-    // re-fetch of /channels/unread overwrites store.unread with the DB truth, fixing badge drift caused by
-    // cross-view messages or reconnect catch-up double-counting.
-    let unreadTimer: ReturnType<typeof setTimeout> | null = null;
-    const syncUnread = () => { if (unreadTimer) clearTimeout(unreadTimer); unreadTimer = setTimeout(async () => { try { setUnread((await api("GET", "/api/channels/unread")) || {}); } catch { /* keep stale value on error */ } }, 400); };
     const myId = meIdRef.current;
     // Point at the active workspace + clear the previous one's state so a switch starts from a clean slate; the
     // ready=false → workspace skeleton shows while it reloads.
@@ -301,6 +296,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     );
     unreadRefreshRef.current?.dispose();
     unreadRefreshRef.current = unreadRefresh;
+    // Schedule one bounded-latency server refresh for a burst of realtime events. Do not move the timer forward on
+    // every event: a steady stream must not starve badge convergence. The coordinator adds one trailing load when
+    // another event arrives during an in-flight request.
+    let unreadTimer: ReturnType<typeof setTimeout> | null = null;
+    const syncUnread = () => {
+      if (unreadTimer) return;
+      unreadTimer = setTimeout(() => {
+        unreadTimer = null;
+        void unreadRefresh.request();
+      }, 400);
+    };
     subscribedRef.current = new Set(); // the previous workspace's view-subscriptions don't carry over
     sockRef.current = null; // the previous socket is closed by this effect's cleanup; drop the stale ref until the new one connects
     let lastSeq = 0;
@@ -338,7 +344,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (msg?.channelId) {
           // Own messages don't increment unread; thread-channel messages are aggregated by thread:updated onto their parent channel.
           const delta = messageUnreadDelta(msg.senderId, myId, msg.channelType);
-          if (delta > 0) { setUnread((u) => ({ ...u, [msg.channelId]: (u[msg.channelId] || 0) + delta })); syncUnread(); } // optimistic ++ for instant feedback; debounced re-fetch corrects stale counts
+          if (delta > 0) syncUnread();
           setChannels((cs) => cs.map((c) => (c.id === msg.channelId ? { ...c, lastMessageAt: msg.createdAt } : c)));
           setDms((ds) => ds.map((d) => (d.id === msg.channelId ? { ...d, lastMessageAt: msg.createdAt } : d)));
         }
@@ -372,7 +378,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       sock.on("message:updated", (m: any) => dispatch({ type: "message:updated", message: m }));
       sock.on("thread:updated", (p: any) => {
         const delta = threadUnreadDelta(1, p?.senderId, myId);
-        if (p?.parentChannelId && delta > 0) { setUnread((u) => ({ ...u, [p.parentChannelId]: (u[p.parentChannelId] || 0) + delta })); syncUnread(); }
+        if (p?.parentChannelId && delta > 0) syncUnread();
         dispatch({ type: "thread:updated", ...p });
       });
     })();
