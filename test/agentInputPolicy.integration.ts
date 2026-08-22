@@ -348,6 +348,20 @@ async function main() {
       method: "PATCH", path: endpoint, token: ownerToken, serverId: server.id,
       body: { commandWhitelist: [peer.id] },
     });
+    const auditsBeforeDeniedClaim = (await db.select().from(schema.messages).where(and(
+      eq(schema.messages.channelId, task.threadId!),
+      eq(schema.messages.senderType, "system"),
+    ))).length;
+    const deniedClaimByNumber = await agentApi({
+      method: "POST", path: "/agent-api/task/claim", token: targetToken, agentId: target.id,
+      body: { channel: `#${channel!.name}`, number: task.taskNumber },
+    });
+    const auditsAfterDeniedClaim = (await db.select().from(schema.messages).where(and(
+      eq(schema.messages.channelId, task.threadId!),
+      eq(schema.messages.senderType, "system"),
+    ))).length;
+    check("task claim by number hides rejected input", deniedClaimByNumber.status === 404
+      && auditsAfterDeniedClaim === auditsBeforeDeniedClaim);
     const deniedThread = await agentApi({
       method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
       token: targetToken, agentId: target.id,

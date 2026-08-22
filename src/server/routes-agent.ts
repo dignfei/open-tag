@@ -611,6 +611,16 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const cur = (await db.select({ s: schema.messages.taskStatus }).from(schema.messages).where(eq(schema.messages.id, mid)))[0];
     if (cur && !cur.s) await convertMessageToTask(serverId, mid, { type: "agent", id: agent.id });
   };
+  const resolveTaskNumberForAgent = async (channel: unknown, number: unknown): Promise<string | null> => {
+    const tgt = await resolveTarget(serverId, String(channel), agent.id);
+    if (!tgt) return null;
+    const task = (await db.select().from(schema.messages).where(and(
+      eq(schema.messages.channelId, tgt.channelId),
+      eq(schema.messages.taskNumber, Number(number)),
+      isNotNull(schema.messages.taskStatus),
+    )))[0];
+    return task && await agentInputVisible(agent, task) ? task.id : null;
+  };
   if (p === "/agent-api/task/list" && method === "GET") {
     const tgt = await resolveTarget(serverId, url.searchParams.get("channel") ?? "", agent.id);
     if (!tgt) return (sendErr(res, 404, "channel not found"), true);
@@ -623,8 +633,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     // Supports --channel "#ch" --number N (agent sees task as #N), or --message-id (short/full id)
     let mid: string | null = null;
     if (b.number != null && b.channel) {
-      const tgt = await resolveTarget(serverId, String(b.channel), agent.id);
-      if (tgt) mid = (await db.select({ id: schema.messages.id }).from(schema.messages).where(and(eq(schema.messages.channelId, tgt.channelId), eq(schema.messages.taskNumber, Number(b.number)))))[0]?.id ?? null;
+      mid = await resolveTaskNumberForAgent(b.channel, b.number);
     } else {
       mid = await resolveMessageId(serverId, b.messageId, agent.id); // Tolerates 8-character short id
     }

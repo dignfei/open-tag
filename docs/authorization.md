@@ -110,6 +110,7 @@ Agent search over-fetches a bounded candidate set, applies the protected input v
 allowed rows. Agent-attributed system audits cannot reintroduce a rejected source's matching task text.
 Task listing applies the input view to task rows before serialization. Removing a source from the whitelist
 therefore prevents its task title from re-entering the target's context through the task projection.
+Task claim by channel and number resolves the full task through the same view before any ownership mutation.
 Thread parent resolution applies the input view after channel access. A rejected parent returns 404 for both
 thread read and reply, even when the target remains a member of the previously created task thread.
 When the parent is allowed, thread read applies the same view independently to its bounded reply list. A
