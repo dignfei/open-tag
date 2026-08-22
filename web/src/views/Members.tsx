@@ -388,7 +388,11 @@ function PermissionsTab({ id }: { id: string }) {
     try {
       const result = await api("PUT", `/api/agents/${id}/scopes`, { scopes });
       if (result?.error) throw new Error(result.error);
-      setData({ ...data, ...result }); setGranted(new Set(result.granted || [])); setSaved(true); setTimeout(() => setSaved(false), 1500);
+      if (result?.agentId !== id || result?.mode !== "custom" || !Number.isInteger(result?.revision)
+        || !Array.isArray(result?.granted) || !result.granted.every((scope: unknown) => typeof scope === "string")) {
+        throw new Error("invalid permission response");
+      }
+      setData({ ...data, ...result }); setGranted(new Set(result.granted)); setSaved(true); setTimeout(() => setSaved(false), 1500);
     } catch {
       toast.error(t("members.permissionsSaveFailed"));
     } finally {
