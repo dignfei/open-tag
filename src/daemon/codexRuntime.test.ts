@@ -225,3 +225,146 @@ test("running Codex turn/start rejection NACKs, clears the fence, and executes t
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const terminal of ["raw-error", "legacy-error", "legacy-abort"] as const) test(`Codex ${terminal} releases only its matching admitted turn`, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), `open-tag-codex-${terminal}-`));
+  const executable = path.join(root, "codex");
+  const agentId = `codex-${terminal}`;
+  const turnCountFile = path.join(root, agentId, "turn-count");
+  const errorGateFile = path.join(root, agentId, "release-error");
+  const completionGateFile = path.join(root, agentId, "release-completion");
+  const config: AgentConfig = {
+    agentId,
+    name: "codex",
+    displayName: "Codex",
+    description: "test",
+    runtime: "codex",
+    model: "default",
+    serverUrl: "http://localhost:7777",
+    serverId: "server-1",
+    agentToken: "test-token",
+  };
+  const sent: any[] = [];
+  const mgr = new AgentManager((message) => sent.push(message), {
+    dataDir: root,
+    binDir: root,
+    deliverDebounceMs: 0,
+    budget: new ResourceBudget({ availableMemMB: () => 999999 }),
+    runtimeResolver: () => codexRuntime,
+  });
+  try {
+    writeFileSync(executable, [
+      `#!${process.execPath}`,
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      'const readline = require("node:readline");',
+      "let turns = 0;",
+      `const terminal = ${JSON.stringify(terminal)};`,
+      'const errorGate = path.join(process.cwd(), "release-error");',
+      'const completionGate = path.join(process.cwd(), "release-completion");',
+      'const response = (request, turnId) => console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { turn: { id: turnId } } }));',
+      'const complete = (turnId, status, error) => console.log(JSON.stringify({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-test", turn: { ...(turnId ? { id: turnId } : {}), status, ...(error ? { error: { message: error } } : {}) } } }));',
+      'const diagnostic = (turnId, message) => console.log(JSON.stringify({ jsonrpc: "2.0", method: "error", params: { threadId: "thread-test", ...(turnId ? { turnId } : {}), willRetry: false, error: { message } } }));',
+      'const legacy = (type, turnId, error) => console.log(JSON.stringify({ jsonrpc: "2.0", method: "codex/event", params: { msg: { type, ...(turnId ? { turn_id: turnId } : {}), ...(error ? { error: { message: error } } : {}) } } }));',
+      'const afterGate = (gate, fn) => { const timer = setInterval(() => { if (fs.existsSync(gate)) { clearInterval(timer); fn(); } }, 2); };',
+      'const rl = readline.createInterface({ input: process.stdin });',
+      'rl.on("line", (line) => {',
+      "  const request = JSON.parse(line);",
+      "  if (request.id === undefined) return;",
+      '  if (request.method === "initialize") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }));',
+      '  else if (request.method === "thread/start") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { thread: { id: "thread-test" } } }));',
+      '  else if (request.method === "turn/start") {',
+      "    turns += 1;",
+      '    fs.writeFileSync(path.join(process.cwd(), "turn-count"), String(turns));',
+      '    const turnId = "turn-" + turns;',
+      '    if (turns === 2 && terminal === "raw-error") {',
+      "      response(request, turnId);",
+      "      afterGate(errorGate, () => {",
+      '        complete("stale-" + turnId, "failed", "stale failure");',
+      '        complete(null, "failed", "idless failure");',
+      '        diagnostic("stale-" + turnId, "stale diagnostic");',
+      '        diagnostic(null, "idless diagnostic");',
+      '        diagnostic(turnId, "provider rejected");',
+      '        diagnostic(turnId, "duplicate diagnostic");',
+      '        complete(turnId, "inProgress");',
+      '        complete(turnId, undefined);',
+      '        complete(turnId, "unknown");',
+      '        afterGate(completionGate, () => { complete(turnId, "failed", "provider rejected"); complete(turnId, "failed", "duplicate terminal"); });',
+      "      });",
+      '    } else if (turns === 2 && terminal === "legacy-abort") {',
+      '      legacy("turn_aborted", "stale-" + turnId);',
+      '      legacy("turn_aborted", null);',
+      '      legacy("turn_aborted", turnId);',
+      '      legacy("turn_aborted", turnId);',
+      "      response(request, turnId);",
+      '    } else if (turns === 2 && terminal === "legacy-error") {',
+      '      legacy("task_complete", "stale-" + turnId, "stale failure");',
+      '      legacy("task_complete", null, "idless failure");',
+      '      legacy("task_complete", turnId, "provider rejected");',
+      '      legacy("task_complete", turnId, "duplicate terminal");',
+      "      response(request, turnId);",
+      '    } else if (terminal === "raw-error") {',
+      '      if (turns === 3) complete("turn-2", "failed", "late prior failure");',
+      '      complete(turnId, "completed");',
+      '      complete(turnId, "completed");',
+      "      response(request, turnId);",
+      "    } else {",
+      '      if (turns === 3) legacy("turn_aborted", "turn-2");',
+      '      legacy("task_complete", turnId);',
+      '      legacy("task_complete", turnId);',
+      "      response(request, turnId);",
+      "    }",
+      "  }",
+      "});",
+      "",
+    ].join("\n"));
+    chmodSync(executable, 0o755);
+    await mgr.start(agentId, config);
+    await waitFor(() => {
+      try { return Number(readFileSync(turnCountFile, "utf8")) >= 1; } catch { return false; }
+    });
+
+    const failed = mgr.deliver(agentId, "Alice", "channel-1", false, { turnId: `turn-${terminal}-failed` });
+    const queued = mgr.deliver(agentId, "Bob", "channel-1", false, { turnId: `turn-${terminal}-queued` });
+    let queuedSettled = false;
+    void queued.then(() => { queuedSettled = true; }, () => { queuedSettled = true; });
+    await failed;
+    if (terminal === "raw-error") {
+      const replyStartsBeforeError = sent.filter((message) => message.type === "agent:reply" && message.op === "start").length;
+      writeFileSync(errorGateFile, "go");
+      await waitFor(() => sent.some((message) => message.type === "agent:trajectory"
+        && message.entries?.some((entry: any) => entry.text === "[codex error] provider rejected")));
+      assert.equal(
+        sent.filter((message) => message.type === "agent:reply" && message.op === "start").length,
+        replyStartsBeforeError,
+        "a raw diagnostic must not start the queued Turn preview",
+      );
+      assert.equal(Number(readFileSync(turnCountFile, "utf8")), 2, "a raw diagnostic alone must not start the queued Turn");
+      assert.equal(queuedSettled, false, "diagnostic and nonterminal statuses are not admission boundaries");
+      writeFileSync(completionGateFile, "go");
+    }
+    await waitFor(() => {
+      try { return Number(readFileSync(turnCountFile, "utf8")) >= 3; } catch { return false; }
+    });
+    await queued;
+    const after = mgr.deliver(agentId, "Carol", "channel-1", false, { turnId: `turn-${terminal}-after` });
+    await waitFor(() => {
+      try { return Number(readFileSync(turnCountFile, "utf8")) >= 4; } catch { return false; }
+    });
+    await after;
+
+    const activities = sent.filter((message) => message.type === "agent:activity");
+    const errors = sent.flatMap((message) => message.type === "agent:trajectory" ? (message.entries ?? []) : [])
+      .filter((entry: any) => entry.kind === "text" && entry.text?.startsWith("[codex error]"));
+    assert.equal(activities.filter((message) => message.activity === "error").length, 1, "the failed Turn has one visible terminal error");
+    assert.equal(errors.length, 1, "diagnostic and terminal events produce one error trajectory");
+    assert.doesNotMatch(errors[0].text, /stale|idless|duplicate/);
+    assert.equal(activities.at(-1)?.activity, "online", "later successful Turns restore online readiness");
+    if (terminal !== "raw-error") {
+      assert.equal(activities.some((message) => message.detail === "starting"), false, "a terminal initial Turn is not overwritten by late startup Activity");
+    }
+  } finally {
+    mgr.stopAll();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
