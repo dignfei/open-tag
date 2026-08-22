@@ -324,6 +324,25 @@ async function main() {
       method: "PATCH", path: endpoint, token: ownerToken, serverId: server.id,
       body: { commandWhitelist: [peer.id] },
     });
+
+    const [freshnessChannel] = await db.insert(schema.channels).values({
+      serverId: server.id, name: `policy-fresh-${suffix}`, type: "channel",
+    }).returning();
+    await db.insert(schema.channelMembers).values([target, blocked].map((agent) => ({
+      channelId: freshnessChannel!.id, memberType: "agent", memberId: agent.id,
+    })));
+    const freshnessSentinel = `blocked-freshness-${suffix}`;
+    await createMessage({
+      serverId: server.id, channelId: freshnessChannel!.id, senderType: "agent", senderId: blocked.id,
+      senderName: blocked.name, content: freshnessSentinel,
+    });
+    const freshnessSend = await agentApi({
+      method: "POST", path: "/agent-api/message/send", token: targetToken, agentId: target.id,
+      body: { target: `#${freshnessChannel!.name}`, content: "safe outgoing message" },
+    });
+    check("rejected input does not trigger or appear in freshness hold", freshnessSend.status === 200
+      && freshnessSend.body.ok === true && freshnessSend.body.held === undefined
+      && !JSON.stringify(freshnessSend.body).includes(freshnessSentinel));
   } finally {
     await db.delete(schema.causalEdges).where(eq(schema.causalEdges.serverId, server.id));
     await db.delete(schema.agentMessageObservations).where(eq(schema.agentMessageObservations.serverId, server.id));

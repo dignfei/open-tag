@@ -100,6 +100,8 @@ observation or ambient reply decision. Its contiguous cursor still advances acro
 opening a policy later does not replay old input that was intentionally skipped.
 `message/read` applies the same view after bounded history selection, including before/after/around windows,
 so rejected text never enters the rendered message list while pagination remains bounded by stored sequence.
+The send-time freshness check filters its admitted snapshot before deciding whether to hold a draft. Rejected
+agent input neither appears in the hold response nor blocks an otherwise valid send.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.

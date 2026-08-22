@@ -471,7 +471,8 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       durableDeliveryBlock: conversationTurnDeliveryBlockReason(serverId, agent.machineId),
       purpose: "freshness",
     });
-    const visibleForeign = visibility.visible.filter((m) => m.senderId !== agent.id && m.senderType !== "system");
+    const protectedVisible = await filterAgentInputView(agent, visibility.visible);
+    const visibleForeign = protectedVisible.filter((m) => m.senderId !== agent.id && m.senderType !== "system");
     const observedRows = visibleForeign.length
       ? await db.select({ messageId: schema.agentMessageObservations.messageId }).from(schema.agentMessageObservations).where(and(
         eq(schema.agentMessageObservations.agentId, agent.id),
