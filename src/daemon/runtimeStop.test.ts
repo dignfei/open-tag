@@ -168,7 +168,7 @@ const count = (fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0) 
 fs.writeFileSync(file, String(count));
 if (count === 2) { console.error("accepted turn failed"); process.exit(1); }
 `;
-  for (const runtime of [copilotRuntime, cursorRuntime, opencodeRuntime, piRuntime]) {
+  for (const runtime of [copilotRuntime, cursorRuntime, hermesRuntime, opencodeRuntime, piRuntime]) {
     const adapter = adapters.find((candidate) => candidate.runtime === runtime)!;
     await t.test(runtime.name, () => assertAcceptedFailureKeepsSessionReusable(adapter, source));
   }
@@ -232,4 +232,18 @@ fs.writeFileSync(file, String(count));
 if (count === 2) console.log(JSON.stringify({ type: "result", is_error: true, result: "rate limited" }));
 `;
   return assertAcceptedFailureKeepsSessionReusable(adapters.find((adapter) => adapter.runtime === cursorRuntime)!, source);
+});
+
+test("Hermes reports an admitted unbridgeable response", () => {
+  const source = `
+const fs = require("node:fs");
+const file = process.env.OPEN_TAG_TEST_STATE;
+const count = (fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0) + 1;
+fs.writeFileSync(file, String(count));
+if (count === 2) {
+  fs.appendFileSync(process.env.OPEN_TAG_TURN_FILE, JSON.stringify({ type: "check", target: "dm:@User", count: 1, messageId: "1234abcd", grant: "primary" }) + "\\n");
+  console.log("Error: provider rejected the request");
+}
+`;
+  return assertAcceptedFailureKeepsSessionReusable(adapters.find((adapter) => adapter.runtime === hermesRuntime)!, source);
 });
