@@ -1,6 +1,6 @@
 // Agent-side REST: /agent-api/*  (Bearer per-agent token sk_agent_* + x-agent-id; NOT a machine/bootstrap key — see docs/authorization.md §1)
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { and, eq, ne, gt, lt, inArray, asc, desc, ilike, like, sql, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, ne, gt, lt, inArray, asc, desc, ilike, like, max, sql, isNull, isNotNull } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { sendJson, sendErr, readJson, bearer, agentIdHeader } from "./util.js";
 import { resolveAgent } from "./auth.js";
@@ -14,6 +14,7 @@ import { validateDecisionInput } from "./replyCoordinationPolicy.js";
 import { canonicalReplyTriggerMessageId } from "./conversationTurns.js";
 import { conversationTurnDeliveryBlockReason } from "./daemonHub.js";
 import { isConversationTurnCapabilityPaused } from "./conversationTurnRecovery.js";
+import { CHANNEL_DELETED_NOTICE_KIND, channelDeletedNoticeForAgent, type ChannelDeletedNoticeMetadata } from "./channelDeletionNotice.js";
 
 // Freshness-hold draft buffer (prevents agent↔agent duplicate replies): when the agent sends
 // and new messages have arrived since last read → save as draft + surface bounded context, do not post immediately.
@@ -131,6 +132,74 @@ export const fmt = (m: typeof schema.messages.$inferSelect, target: string, atts
 
 type InboxMessage = typeof schema.messages.$inferSelect;
 
+type ClaimedChannelDeletionNotice = {
+  message: InboxMessage;
+  metadata: ChannelDeletedNoticeMetadata;
+};
+
+async function claimChannelDeletionNotices(
+  serverId: string,
+  agentId: string,
+): Promise<ClaimedChannelDeletionNotice[]> {
+  return db.transaction(async (tx) => {
+    const candidates = await tx.select({
+      message: schema.messages,
+    }).from(schema.messages)
+      .innerJoin(schema.channels, eq(schema.channels.id, schema.messages.channelId))
+      .leftJoin(schema.agentMessageObservations, and(
+        eq(schema.agentMessageObservations.messageId, schema.messages.id),
+        eq(schema.agentMessageObservations.agentId, agentId),
+      ))
+      .where(and(
+        eq(schema.messages.serverId, serverId),
+        eq(schema.channels.serverId, serverId),
+        isNotNull(schema.channels.deletedAt),
+        eq(schema.messages.senderType, "system"),
+        eq(schema.messages.messageType, "system"),
+        isNull(schema.agentMessageObservations.messageId),
+        sql<boolean>`${schema.messages.actionMetadata} @> ${JSON.stringify({
+          kind: CHANNEL_DELETED_NOTICE_KIND,
+          recipientAgentIds: [agentId],
+        })}::jsonb`,
+        sql<boolean>`${schema.messages.actionMetadata}->>'channelId' = ${schema.messages.channelId}::text`,
+      ))
+      .orderBy(asc(schema.messages.seq))
+      .limit(100);
+    const valid = candidates.flatMap(({ message }) => {
+      const metadata = channelDeletedNoticeForAgent(message.actionMetadata, message.channelId, agentId);
+      return metadata ? [{ message, metadata }] : [];
+    });
+    if (!valid.length) return [];
+
+    const inserted = await tx.insert(schema.agentMessageObservations).values(valid.map(({ message }) => ({
+      messageId: message.id,
+      agentId,
+      serverId,
+    }))).onConflictDoNothing().returning({ messageId: schema.agentMessageObservations.messageId });
+    const claimedIds = new Set(inserted.map(({ messageId }) => messageId));
+    const claimed = valid.filter(({ message }) => claimedIds.has(message.id));
+    if (!claimed.length) return [];
+
+    const channelIds = [...new Set(claimed.map(({ message }) => message.channelId))];
+    const watermarks = await tx.select({
+      channelId: schema.messages.channelId,
+      seq: max(schema.messages.seq),
+    }).from(schema.messages)
+      .where(and(eq(schema.messages.serverId, serverId), inArray(schema.messages.channelId, channelIds)))
+      .groupBy(schema.messages.channelId);
+    for (const watermark of watermarks) {
+      await tx.update(schema.channelMembers).set({
+        lastReadSeq: sql<number>`greatest(${schema.channelMembers.lastReadSeq}, ${Number(watermark.seq ?? 0)})`,
+      }).where(and(
+        eq(schema.channelMembers.channelId, watermark.channelId),
+        eq(schema.channelMembers.memberType, "agent"),
+        eq(schema.channelMembers.memberId, agentId),
+      ));
+    }
+    return claimed;
+  });
+}
+
 async function classifyInboxVisibility(opts: {
   agentId: string;
   messages: InboxMessage[];
@@ -219,8 +288,14 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     let capabilityPaused = await agentHasCapabilityPausedTurn(agent.id);
     let topologyBlocked = false;
     if (!durableDeliveryBlock) await authorizePendingDmGrants(agent.id);
-    const cms = await agentChannels(agent.id);
     const out: any[] = [];
+    const deletionNotices = await claimChannelDeletionNotices(serverId, agent.id);
+    out.push(...deletionNotices.map(({ message, metadata }) => ({
+      ...serialize(message),
+      coordination: null,
+      text: fmt(message, `#${metadata.channelName}`),
+    })));
+    const cms = await agentChannels(agent.id);
     for (const cm of cms) {
       const ch = (await db.select().from(schema.channels).where(eq(schema.channels.id, cm.channelId)))[0];
       if (!ch || ch.deletedAt) continue;

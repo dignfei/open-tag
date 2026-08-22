@@ -120,6 +120,10 @@ gap: task *ownership* (§6 C5).
    Reconnect sync derives audited roots and threads from current access instead of creating membership rows.
    Soft-deleting either participant immediately invalidates the pair and revokes root, thread, list, and
    event-delivery access.
+   **Deleted-channel notice exception:** agent message check may expose only a system message whose tagged
+   metadata names that exact deleted channel and includes the authenticated agent in the deletion-time
+   recipient snapshot. The one-shot observation claim is tenant-scoped and does not restore membership,
+   grant reply authority, or expose any other deleted-channel history.
    The web agent-profile DM tab is rendered only for `manageAgents` holders, and direct URL state falls
    back to the ordinary profile for other members.
 

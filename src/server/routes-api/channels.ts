@@ -3,11 +3,11 @@ import type { ServerCtx } from "./ctx.js";
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { db, schema } from "../../db/index.js";
 import { requireCap } from "../capabilities.js";
-import { addChannelMembers, getOrCreateDM, getOrCreateThread } from "../core.js";
+import { addChannelMembers, getOrCreateDM, getOrCreateThread, wakeAgentForLifecycleNotice } from "../core.js";
 import { publish } from "../realtime.js";
 import { isUuid, readJson, sendErr, sendJson } from "../util.js";
 import { canonicalDmParticipantIds, canUserReadChannel, canUserWriteChannel, classifyAgentDm, isAgentDmAuditChannel } from "../channelAccess.js";
-import { softDeleteChannelOnce } from "../channelDeletion.js";
+import { deleteChannelWithAgentNotice } from "../channelDeletion.js";
 import { userChannels } from "./shared.js";
 
 const notSentBy = (userId: string) => or(isNull(schema.messages.senderId), ne(schema.messages.senderId, userId));
@@ -378,8 +378,17 @@ export async function handleChannels(ctx: ServerCtx): Promise<boolean> {
     if (targetCh?.type === "thread") return (sendErr(res, 403, "thread channels cannot be modified directly"), true);
     if (await isAgentDmAuditChannel(serverId, cone[1]!)) return (sendErr(res, 403, "audited conversations are read-only"), true);
     if (method === "DELETE") {
-      if (await softDeleteChannelOnce(serverId, cone[1]!)) {
-        await publish(serverId, { type: "channel:deleted", channelId: cone[1]! });
+      const deletion = await deleteChannelWithAgentNotice(serverId, cone[1]!);
+      if (deletion.deleted) {
+        const noticeSeq = deletion.noticeSeq;
+        await Promise.allSettled([
+          publish(serverId, { type: "channel:deleted", channelId: deletion.channelId }),
+          ...(noticeSeq === null ? [] : deletion.recipientAgentIds.map((agentId) => wakeAgentForLifecycleNotice(
+            serverId,
+            agentId,
+            { channelId: deletion.channelId, channelName: deletion.channelName, seq: noticeSeq },
+          ))),
+        ]);
       }
       return (sendJson(res, 200, { ok: true }), true);
     }
