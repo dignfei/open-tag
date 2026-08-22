@@ -3,6 +3,7 @@ import type { ServerCtx } from "./ctx.js";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "../../db/index.js";
 import { requireCap } from "../capabilities.js";
+import { parseAgentInputPolicyPatch } from "../agentInputPolicy.js";
 import { canonicalDmParticipantIds, classifyAgentDm } from "../channelAccess.js";
 import { DESC_TOO_LONG, INVALID_AGENT_NAME, addChannelMembers, descTooLong, invalidAgentName, normalizeAgentHandle, dequeueAgent, resetAgent, startAgent, stopAgent, syncAgentProfile } from "../core.js";
 import { PROJECT_DIRECTORY_CAPABILITY, projectDirectoryBlockReason, requestDaemon, requestDaemonByMachine } from "../daemonHub.js";
@@ -93,6 +94,7 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
       creatorType: a.creatorType, creatorId: a.creatorId, createdAt: a.createdAt,
       projectBound: Boolean(a.projectPath),
       projectPath: canManage ? a.projectPath : null,
+      ...(canManage ? { incomingMode: a.incomingMode, commandWhitelist: a.commandWhitelist } : {}),
     }), true);
   }
   if (am && method === "PATCH") {
@@ -101,6 +103,18 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
     if (descTooLong(b.description)) return (sendErr(res, 400, DESC_TOO_LONG), true);
     const current = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt))))[0];
     if (!current) return (sendErr(res, 404, "agent not found"), true);
+    const policy = parseAgentInputPolicyPatch(b);
+    if ("error" in policy) return (sendErr(res, 400, policy.error), true);
+    if (policy.patch.commandWhitelist !== undefined) {
+      const ids = policy.patch.commandWhitelist;
+      const listed = ids.length ? await db.select({ id: schema.agents.id, creatorType: schema.agents.creatorType })
+        .from(schema.agents)
+        .where(and(eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt), inArray(schema.agents.id, ids))) : [];
+      if (ids.includes(current.id) || listed.length !== ids.length || listed.some((agent) => agent.creatorType === "system")) {
+        return (sendErr(res, 400, "commandWhitelist contains unavailable agents"), true);
+      }
+    }
+    Object.assign(patch, policy.patch);
     for (const k of ["displayName", "description", "model", "runtime", "avatarUrl"]) if (b[k] !== undefined) patch[k] = b[k];
     if (b.envVars !== undefined) patch.envVars = b.envVars;
     let projectPathChanged = false;
@@ -121,7 +135,13 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
     if (patch.displayName !== undefined || patch.description !== undefined) {
       await syncAgentProfile(serverId, am[1]!, updated.displayName, updated.description);
     }
-    return (sendJson(res, 200, { ok: true, projectPath: updated.projectPath, sessionCleared: projectPathChanged }), true);
+    return (sendJson(res, 200, {
+      ok: true,
+      projectPath: updated.projectPath,
+      sessionCleared: projectPathChanged,
+      incomingMode: updated.incomingMode,
+      commandWhitelist: updated.commandWhitelist,
+    }), true);
   }
   if (am && method === "DELETE") {
     if (!await requireCap(serverId, userId, "manageAgents")) return (sendErr(res, 403, "need manageAgents capability"), true);

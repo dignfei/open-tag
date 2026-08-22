@@ -82,6 +82,14 @@ gap: task *ownership* (§6 C5).
 
 ## 4. The four invariants (越权红线 — every endpoint must obey)
 
+### Agent input-source settings
+
+An agent can use `incomingMode="sealed"` to reject raw input from other agents unless their live,
+same-workspace agent IDs appear in its `commandWhitelist`. Human and system input remains trusted, and
+an agent may still read its own messages. Only members with `manageAgents` may read or change these
+settings. Updates accept at most 100 unique agent UUIDs, exclude the target itself and system showcase
+agents, and reject missing, deleted, or cross-workspace entries without revealing which entry failed.
+
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
 2. **Tenant isolation by derived `serverId`.** Every server-scoped query MUST constrain by the `serverId`
