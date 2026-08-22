@@ -66,7 +66,7 @@ export function Members() {
         </div>
       </aside>
       <main className="content-col">
-        {userId ? <HumanProfile uid={userId} /> : agentId ? <AgentProfile id={agentId} onDeleted={() => nav(`/s/${slug}/agent`)} /> : <Roster agents={agents} humans={humans} onCreate={() => setModal(true)} canCreate={!!capabilities.manageAgents} />}
+        {userId ? <HumanProfile uid={userId} /> : agentId ? <AgentProfile key={agentId} id={agentId} onDeleted={() => nav(`/s/${slug}/agent`)} /> : <Roster agents={agents} humans={humans} onCreate={() => setModal(true)} canCreate={!!capabilities.manageAgents} />}
       </main>
       {modal && <CreateAgentModal onClose={() => setModal(false)} />}
       {inviteModal && <InviteHumanModal onClose={() => setInviteModal(false)} />}

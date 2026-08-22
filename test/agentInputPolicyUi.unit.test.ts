@@ -4,6 +4,7 @@ import test from "node:test";
 import { isCurrentAgentProfileResponse } from "../web/src/lib/agentProfileLoad.ts";
 
 const src = fs.readFileSync(new URL("../web/src/views/Members.tsx", import.meta.url), "utf8");
+const chat = fs.readFileSync(new URL("../web/src/views/Chat.tsx", import.meta.url), "utf8");
 const start = src.indexOf("function AgentInputPolicyCard");
 const end = src.indexOf("// Profile tab SKILLS", start);
 assert.ok(start >= 0 && end > start, "AgentInputPolicyCard implementation must exist");
@@ -24,6 +25,8 @@ test("agent profile responses stay bound to their request identity", () => {
   assert.equal(isCurrentAgentProfileResponse("a", 1, "a", 1, { id: "b" }), false);
   assert.match(src, /if \(!a \|\| a\.id !== id\) return <div className="scroll">/);
   assert.match(src, /return \(\) => \{ profileLoadVersionRef\.current\+\+; \}/);
+  assert.match(src, /<AgentProfile key=\{agentId\} id=\{agentId\}/);
+  assert.match(chat, /<AgentProfile key=\{profile\.id\} id=\{profile\.id\}/);
 });
 
 test("agent input saves acquire one gate and lock every control", () => {
