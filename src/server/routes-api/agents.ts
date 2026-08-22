@@ -84,7 +84,9 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
   const am = /^\/api\/agents\/([^/]+)$/.exec(p);
   if (am && !isUuid(am[1]!)) return (sendErr(res, 404, "agent not found"), true); // covers GET/PATCH/DELETE — non-uuid would throw casting into the uuid column
   if (am && method === "GET") {
-    const a = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId))))[0];
+    const a = (await db.select().from(schema.agents).where(and(
+      eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt),
+    )))[0];
     if (!a) return (sendErr(res, 404, "agent not found"), true);
     const canManage = await requireCap(serverId, userId, "manageAgents");
     return (sendJson(res, 200, {

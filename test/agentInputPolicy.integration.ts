@@ -112,6 +112,11 @@ async function main() {
     check("ordinary member cannot inspect input settings", hidden.status === 200
       && !("incomingMode" in hidden.body) && !("commandWhitelist" in hidden.body));
 
+    const deletedTarget = await api({
+      method: "GET", path: `/api/agents/${deleted.id}`, token: ownerToken, serverId: server.id,
+    });
+    check("deleted agent settings are not readable", deletedTarget.status === 404);
+
     const forbidden = await api({
       method: "PATCH", path: endpoint, token: memberToken, serverId: server.id,
       body: { incomingMode: "sealed" },
