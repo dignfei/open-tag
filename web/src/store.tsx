@@ -157,14 +157,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const openDM = async (memberType: string, memberId: string) => { const body = memberType === "user" ? { userId: memberId } : { agentId: memberId }; const r = await api("POST", "/api/channels/dm", body); if (r?.id) { await reload(); sockRef.current?.emit("join:channel", r.id); } return r?.id ?? null; };
   const joinChannel = async (id: string) => { await api("POST", `/api/channels/${id}/join`); await reload(); sockRef.current?.emit("join:channel", id); };
   const leaveChannel = async (id: string) => { await api("POST", `/api/channels/${id}/leave`); await reload(); };
-  // A channel's badge = its own-timeline unread + its followed threads' unread. Reading a container (channel OR
-  // thread) clears only that container's portion; the server returns the affected sidebar channel's authoritative
-  // remaining (a thread read rolls onto its parent). We set the badge to that exact value instead of blind-zeroing
-  // it — blind-zeroing hid still-unopened thread replies, which then "resurrected" on the next unread refetch.
+  // A channel's badge = its own-timeline unread + its followed threads' unread. A successful read confirms that
+  // server state changed, then refreshes the full badge map so overlapping channel/thread reads cannot apply
+  // per-response counts out of order. Keep the captured activation owner: late responses from an old workspace
+  // must not schedule work on the newly active workspace.
   const markRead = (id: string) => {
+    const unreadRefresh = unreadRefreshRef.current;
     api("POST", `/api/channels/${id}/read`, {}).then((r) => {
-      const key = r?.channelId; if (!key) return;
-      setUnread((u) => { const n = { ...u }; if (Number(r.unread) > 0) n[key] = Number(r.unread); else delete n[key]; return n; });
+      if (r?.ok !== true || typeof r?.channelId !== "string") return;
+      if (unreadRefresh && unreadRefreshRef.current === unreadRefresh) void unreadRefresh.request();
     }).catch(() => {});
   };
   const uploadFiles = async (channelId: string, files: FileList | File[]) => {
