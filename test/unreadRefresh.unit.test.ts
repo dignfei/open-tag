@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { createUnreadRefresh, parseUnreadValues } from "../web/src/unreadRefresh.ts";
 
 function deferred<T>() {
@@ -84,4 +85,13 @@ test("disposed badge refreshes ignore late responses", async () => {
 
   assert.deepEqual(commits, []);
   assert.equal(loadCount, 1);
+});
+
+test("workspace activation owns its badge refresh lifecycle", () => {
+  const src = fs.readFileSync(new URL("../web/src/store.tsx", import.meta.url), "utf8");
+  const reload = src.slice(src.indexOf("const reload = async"), src.indexOf("const onEvent"));
+  assert.match(reload, /const unreadRefresh = unreadRefreshRef\.current;[\s\S]*await unreadRefresh\?\.request\(\);/);
+  assert.doesNotMatch(reload, /api\("GET", "\/api\/channels\/unread"\)/);
+  assert.match(src, /const unreadRefresh = createUnreadRefresh\([\s\S]*api\("GET", "\/api\/channels\/unread"\)[\s\S]*setUnread\(values\)/);
+  assert.match(src, /unreadRefresh\.dispose\(\);[\s\S]*unreadRefreshRef\.current === unreadRefresh/);
 });
