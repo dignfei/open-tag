@@ -807,7 +807,18 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
         isNull(schema.agents.deletedAt),
       )))[0]
       : (await db.select().from(schema.agents).where(eq(schema.agents.id, agent.id)))[0];
-    if (a) return (sendJson(res, 200, { type: "agent", name: a.name, displayName: a.displayName, description: a.description, runtime: a.runtime, model: a.model, status: a.status }), true);
+    if (a) {
+      const profileTextAllowed = inputSenderAllowed(agent, "agent", a.id);
+      return (sendJson(res, 200, {
+        type: "agent",
+        name: a.name,
+        displayName: profileTextAllowed ? a.displayName : a.name,
+        description: profileTextAllowed ? a.description : null,
+        runtime: a.runtime,
+        model: a.model,
+        status: a.status,
+      }), true);
+    }
     const uRow = who ? (await db.select().from(schema.users).where(eq(schema.users.name, who)))[0] : null;
     const u = uRow && (await db.select({ userId: schema.serverMembers.userId }).from(schema.serverMembers).where(and(
       eq(schema.serverMembers.serverId, serverId),

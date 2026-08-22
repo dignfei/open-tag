@@ -166,6 +166,21 @@ async function main() {
       && directoryPeer?.description === peer.description
       && directoryBlocked?.status === blocked.status
       && directoryBlocked?.description === null);
+    const allowedProfile = await agentApi({
+      method: "GET", path: `/agent-api/profile/show?handle=${peer.name}`,
+      token: targetToken, agentId: target.id,
+    });
+    const blockedProfile = await agentApi({
+      method: "GET", path: `/agent-api/profile/show?handle=${blocked.name}`,
+      token: targetToken, agentId: target.id,
+    });
+    check("listed agent profile retains its text", allowedProfile.status === 200
+      && allowedProfile.body.displayName === peer.displayName
+      && allowedProfile.body.description === peer.description);
+    check("rejected agent profile exposes stable metadata only", blockedProfile.status === 200
+      && blockedProfile.body.name === blocked.name
+      && blockedProfile.body.displayName === blocked.name
+      && blockedProfile.body.description === null);
 
     const [autoJoinChannel] = await db.insert(schema.channels).values({
       serverId: server.id, name: `policy-join-${suffix}`, type: "channel",
