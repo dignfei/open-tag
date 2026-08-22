@@ -12,7 +12,7 @@ import { hashToken, signUser } from "../src/server/auth.ts";
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
 const { createMessage, getOrCreateThread, parseMentions, resolveMessageId, setTaskStatus } = await import("../src/server/core.ts");
 const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
-const { decideReply } = await import("../src/server/replyCoordination.ts");
+const { claimReplyCoordination, decideReply } = await import("../src/server/replyCoordination.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
 const { handleAgentApi } = await import("../src/server/routes-agent.ts");
 
@@ -502,6 +502,52 @@ async function main() {
       && blockedPromotion.grantStatus === "none"
       && allowedPromotion.grantStatus === "active"
       && allowedPromotion.delegatedByAgentId === target.id);
+    await db.update(schema.agentMessageDecisions).set({ grantStatus: "released" }).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
+      eq(schema.agentMessageDecisions.agentId, peer.id),
+    ));
+    await db.update(schema.agentMessageDecisions).set({
+      decision: "pending", reasonCode: null, summary: null,
+      grantSlot: "primary", grantStatus: "active", delegatedByAgentId: null,
+    }).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
+      eq(schema.agentMessageDecisions.agentId, target.id),
+    ));
+    const blockedCoordinationSummary = `legacy-blocked-${suffix}`;
+    await db.update(schema.agentMessageDecisions).set({
+      decision: "requested", reasonCode: "better_fit", summary: blockedCoordinationSummary,
+      decidedAt: new Date(), ownerNotifiedAt: null,
+    }).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
+      eq(schema.agentMessageDecisions.agentId, blocked.id),
+    ));
+    const protectedCoordinationInbox = await claimReplyCoordination(target.id);
+    const cleanedRequest = (await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
+      eq(schema.agentMessageDecisions.agentId, blocked.id),
+    )))[0]!;
+    check("coordination inbox removes a newly rejected request", protectedCoordinationInbox.length === 0
+      && cleanedRequest.decision === "denied"
+      && cleanedRequest.summary === null
+      && cleanedRequest.ownerNotifiedAt === null);
+
+    await db.update(schema.agentMessageDecisions).set({
+      decision: "requested", reasonCode: "better_fit", summary: blockedCoordinationSummary,
+      grantStatus: "active", delegatedByAgentId: blocked.id, grantNotifiedAt: null,
+    }).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
+      eq(schema.agentMessageDecisions.agentId, target.id),
+    ));
+    const protectedGrantInbox = await claimReplyCoordination(target.id);
+    const cleanedGrant = (await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
+      eq(schema.agentMessageDecisions.agentId, target.id),
+    )))[0]!;
+    check("coordination inbox releases a newly rejected grant", protectedGrantInbox.length === 0
+      && cleanedGrant.decision === "denied"
+      && cleanedGrant.summary === null
+      && cleanedGrant.grantStatus === "released"
+      && cleanedGrant.grantNotifiedAt === null);
     const deniedThread = await agentApi({
       method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
       token: targetToken, agentId: target.id,

@@ -389,25 +389,96 @@ export async function claimReplyCoordination(agentId: string): Promise<Array<{
     eq(schema.agentMessageDecisions.grantSlot, "primary"),
     eq(schema.agentMessageDecisions.grantStatus, "active"),
   ));
-  const now = new Date();
-  const requests = owned.length ? await db.update(schema.agentMessageDecisions).set({ ownerNotifiedAt: now, updatedAt: now }).where(and(
-      inArray(schema.agentMessageDecisions.messageId, owned.map((r) => r.messageId)),
-      ne(schema.agentMessageDecisions.agentId, agentId),
-      eq(schema.agentMessageDecisions.decision, "requested"),
-      or(eq(schema.agentMessageDecisions.reasonCode, "better_fit"), eq(schema.agentMessageDecisions.reasonCode, "handoff")),
-      isNull(schema.agentMessageDecisions.ownerNotifiedAt),
-    )).returning() : [];
-  const grants = await db.update(schema.agentMessageDecisions).set({ grantNotifiedAt: now, updatedAt: now }).where(and(
+  const pendingGrants = await db.select({ messageId: schema.agentMessageDecisions.messageId }).from(schema.agentMessageDecisions).where(and(
     eq(schema.agentMessageDecisions.agentId, agentId),
     eq(schema.agentMessageDecisions.grantSlot, "primary"),
     eq(schema.agentMessageDecisions.grantStatus, "active"),
     eq(schema.agentMessageDecisions.decision, "requested"),
     isNull(schema.agentMessageDecisions.grantNotifiedAt),
-  )).returning();
-  return [
-    ...requests.sort((a, b) => (a.decidedAt?.getTime() ?? 0) - (b.decidedAt?.getTime() ?? 0)).map((r) => ({ kind: "request" as const, messageId: r.messageId, requesterAgentId: r.agentId, reasonCode: r.reasonCode!, summary: r.summary, channelId: r.channelId })),
-    ...grants.sort((a, b) => (a.grantedAt?.getTime() ?? 0) - (b.grantedAt?.getTime() ?? 0)).map((r) => ({ kind: "grant" as const, messageId: r.messageId, requesterAgentId: r.agentId, reasonCode: r.reasonCode!, summary: r.summary, channelId: r.channelId })),
-  ];
+  ));
+  const messageIds = [...new Set([...owned, ...pendingGrants].map((row) => row.messageId))];
+  if (!messageIds.length) return [];
+  const now = new Date();
+  const claimed = await db.transaction(async (tx) => {
+    const rows = await tx.select().from(schema.agentMessageDecisions)
+      .where(inArray(schema.agentMessageDecisions.messageId, messageIds))
+      .orderBy(asc(schema.agentMessageDecisions.messageId), asc(schema.agentMessageDecisions.agentId))
+      .for("update");
+    const target = (await tx.select().from(schema.agents).where(and(
+      eq(schema.agents.id, agentId),
+      isNull(schema.agents.deletedAt),
+    )).for("update"))[0];
+    if (!target) return { updates: [], settledMessageIds: [] as string[] };
+
+    const activeOwned = new Set(rows.filter((row) => row.agentId === agentId
+      && row.grantSlot === "primary" && row.grantStatus === "active").map((row) => row.messageId));
+    const requests = rows.filter((row) => activeOwned.has(row.messageId)
+      && row.agentId !== agentId
+      && row.decision === "requested"
+      && (row.reasonCode === "better_fit" || row.reasonCode === "handoff")
+      && !row.ownerNotifiedAt)
+      .sort((left, right) => (left.decidedAt?.getTime() ?? 0) - (right.decidedAt?.getTime() ?? 0));
+    const grants = rows.filter((row) => row.agentId === agentId
+      && row.grantSlot === "primary"
+      && row.grantStatus === "active"
+      && row.decision === "requested"
+      && !row.grantNotifiedAt)
+      .sort((left, right) => (left.grantedAt?.getTime() ?? 0) - (right.grantedAt?.getTime() ?? 0));
+    const updates: Array<{
+      kind: "request" | "grant"; messageId: string; requesterAgentId: string; reasonCode: string; summary: string | null; channelId: string;
+    }> = [];
+    const settledMessageIds = new Set<string>();
+
+    for (const request of requests) {
+      if (!inputSenderAllowed(target, "agent", request.agentId)) {
+        await tx.update(schema.agentMessageDecisions).set({
+          decision: "denied", reasonCode: "input_source_rejected", summary: null, updatedAt: now,
+        }).where(and(
+          eq(schema.agentMessageDecisions.messageId, request.messageId),
+          eq(schema.agentMessageDecisions.agentId, request.agentId),
+        ));
+        settledMessageIds.add(request.messageId);
+        continue;
+      }
+      await tx.update(schema.agentMessageDecisions).set({ ownerNotifiedAt: now, updatedAt: now }).where(and(
+        eq(schema.agentMessageDecisions.messageId, request.messageId),
+        eq(schema.agentMessageDecisions.agentId, request.agentId),
+        isNull(schema.agentMessageDecisions.ownerNotifiedAt),
+      ));
+      updates.push({
+        kind: "request", messageId: request.messageId, requesterAgentId: request.agentId,
+        reasonCode: request.reasonCode!, summary: request.summary, channelId: request.channelId,
+      });
+    }
+
+    for (const grant of grants) {
+      const sourceAgentId = grant.delegatedByAgentId ?? grant.agentId;
+      if (!inputSenderAllowed(target, "agent", sourceAgentId)) {
+        await tx.update(schema.agentMessageDecisions).set({
+          decision: "denied", reasonCode: "input_source_rejected", summary: null,
+          grantStatus: "released", updatedAt: now,
+        }).where(and(
+          eq(schema.agentMessageDecisions.messageId, grant.messageId),
+          eq(schema.agentMessageDecisions.agentId, grant.agentId),
+          eq(schema.agentMessageDecisions.grantStatus, "active"),
+        ));
+        settledMessageIds.add(grant.messageId);
+        continue;
+      }
+      await tx.update(schema.agentMessageDecisions).set({ grantNotifiedAt: now, updatedAt: now }).where(and(
+        eq(schema.agentMessageDecisions.messageId, grant.messageId),
+        eq(schema.agentMessageDecisions.agentId, grant.agentId),
+        isNull(schema.agentMessageDecisions.grantNotifiedAt),
+      ));
+      updates.push({
+        kind: "grant", messageId: grant.messageId, requesterAgentId: sourceAgentId,
+        reasonCode: grant.reasonCode!, summary: grant.summary, channelId: grant.channelId,
+      });
+    }
+    return { updates, settledMessageIds: [...settledMessageIds] };
+  });
+  for (const messageId of claimed.settledMessageIds) await completeConversationTurnIfSettled(messageId);
+  return claimed.updates;
 }
 
 async function waitForReplySettlement(messageId: string, ownerAgentId: string): Promise<"settled" | "coordination_required"> {
