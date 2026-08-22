@@ -521,7 +521,7 @@ async function main() {
       eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
       eq(schema.agentMessageDecisions.agentId, blocked.id),
     ));
-    const protectedCoordinationInbox = await claimReplyCoordination(target.id);
+    const protectedCoordinationInbox = await claimReplyCoordination(server.id, target.id);
     const cleanedRequest = (await db.select().from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
       eq(schema.agentMessageDecisions.agentId, blocked.id),
@@ -538,7 +538,7 @@ async function main() {
       eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
       eq(schema.agentMessageDecisions.agentId, target.id),
     ));
-    const protectedGrantInbox = await claimReplyCoordination(target.id);
+    const protectedGrantInbox = await claimReplyCoordination(server.id, target.id);
     const cleanedGrant = (await db.select().from(schema.agentMessageDecisions).where(and(
       eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
       eq(schema.agentMessageDecisions.agentId, target.id),

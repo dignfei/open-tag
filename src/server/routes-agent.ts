@@ -348,7 +348,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
         .where(and(eq(schema.channelMembers.channelId, cm.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id)));
     }
     const coordination: any[] = [];
-    for (const update of durableDeliveryBlock ? [] : await claimReplyCoordination(agent.id)) {
+    for (const update of durableDeliveryBlock ? [] : await claimReplyCoordination(serverId, agent.id)) {
       const requester = (await db.select({ name: schema.agents.name }).from(schema.agents).where(and(
         eq(schema.agents.id, update.requesterAgentId), eq(schema.agents.serverId, serverId),
       )))[0];

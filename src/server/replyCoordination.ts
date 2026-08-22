@@ -381,15 +381,17 @@ export async function decideReply(o: {
   }
 }
 
-export async function claimReplyCoordination(agentId: string): Promise<Array<{
+export async function claimReplyCoordination(serverId: string, agentId: string): Promise<Array<{
   kind: "request" | "grant"; messageId: string; requesterAgentId: string; reasonCode: string; summary: string | null; channelId: string;
 }>> {
   const owned = await db.select({ messageId: schema.agentMessageDecisions.messageId }).from(schema.agentMessageDecisions).where(and(
+    eq(schema.agentMessageDecisions.serverId, serverId),
     eq(schema.agentMessageDecisions.agentId, agentId),
     eq(schema.agentMessageDecisions.grantSlot, "primary"),
     eq(schema.agentMessageDecisions.grantStatus, "active"),
   ));
   const pendingGrants = await db.select({ messageId: schema.agentMessageDecisions.messageId }).from(schema.agentMessageDecisions).where(and(
+    eq(schema.agentMessageDecisions.serverId, serverId),
     eq(schema.agentMessageDecisions.agentId, agentId),
     eq(schema.agentMessageDecisions.grantSlot, "primary"),
     eq(schema.agentMessageDecisions.grantStatus, "active"),
@@ -401,11 +403,15 @@ export async function claimReplyCoordination(agentId: string): Promise<Array<{
   const now = new Date();
   const claimed = await db.transaction(async (tx) => {
     const rows = await tx.select().from(schema.agentMessageDecisions)
-      .where(inArray(schema.agentMessageDecisions.messageId, messageIds))
+      .where(and(
+        eq(schema.agentMessageDecisions.serverId, serverId),
+        inArray(schema.agentMessageDecisions.messageId, messageIds),
+      ))
       .orderBy(asc(schema.agentMessageDecisions.messageId), asc(schema.agentMessageDecisions.agentId))
       .for("update");
     const target = (await tx.select().from(schema.agents).where(and(
       eq(schema.agents.id, agentId),
+      eq(schema.agents.serverId, serverId),
       isNull(schema.agents.deletedAt),
     )).for("update"))[0];
     if (!target) return { updates: [], settledMessageIds: [] as string[] };

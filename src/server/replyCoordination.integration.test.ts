@@ -217,16 +217,16 @@ test("mistaken mention transfers primary only after better_fit request", async (
       assert.equal(request.notifyAgentId, codex!.id);
     }
     const ownerUpdates = (await Promise.all([
-      claimReplyCoordination(codex!.id),
-      claimReplyCoordination(codex!.id),
+      claimReplyCoordination(f.server.id, codex!.id),
+      claimReplyCoordination(f.server.id, codex!.id),
     ])).flat();
     assert.deepEqual(ownerUpdates.map((u) => [u.kind, u.requesterAgentId, u.reasonCode]), [["request", codex2!.id, "better_fit"]]);
-    assert.equal((await claimReplyCoordination(codex!.id)).length, 0);
+    assert.equal((await claimReplyCoordination(f.server.id, codex!.id)).length, 0);
     assert.deepEqual(await reserveReplyGrant({ serverId: f.server.id, agentId: codex2!.id, messageId: message.id, channelId: f.channel.id }), { ok: false, code: "REPLY_NOT_GRANTED" });
     const delegated = await decideReply({ serverId: f.server.id, agentId: codex!.id, messageId: message.id, decision: "delegate", delegateToAgentId: codex2!.id });
     assert.equal(delegated.ok, true);
     if (delegated.ok) assert.equal(delegated.promotedAgentId, codex2!.id);
-    const granteeUpdates = await claimReplyCoordination(codex2!.id);
+    const granteeUpdates = await claimReplyCoordination(f.server.id, codex2!.id);
     assert.deepEqual(granteeUpdates.map((u) => [u.kind, u.messageId]), [["grant", message.id]]);
     const rows = await db.select().from(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, message.id));
     assert.equal(rows.find((r) => r.agentId === codex!.id)?.grantStatus, "released");
