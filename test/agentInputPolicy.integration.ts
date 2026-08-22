@@ -13,6 +13,7 @@ process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
 const { createMessage, getOrCreateThread, parseMentions, resolveMessageId, setTaskStatus } = await import("../src/server/core.ts");
 const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
 const { fireReminder } = await import("../src/server/reminders.ts");
+const { computeBacklog } = await import("../src/server/reconnectCatchup.ts");
 const { claimReplyCoordination, decideReply } = await import("../src/server/replyCoordination.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
 const { handleAgentApi } = await import("../src/server/routes-agent.ts");
@@ -277,6 +278,11 @@ async function main() {
     check("attributed system delivery rejects blocked targets but keeps an explicit self reminder",
       !reminderDecisions.some((decision) => decision.agentId === target.id)
       && reminderDecisions.some((decision) => decision.agentId === blocked.id));
+    const targetPolicy = (await db.select().from(schema.agents).where(eq(schema.agents.id, target.id)))[0]!;
+    const blockedPolicy = (await db.select().from(schema.agents).where(eq(schema.agents.id, blocked.id)))[0]!;
+    check("reconnect backlog keeps the same reminder policy",
+      await computeBacklog(targetPolicy, false) === null
+      && await computeBacklog(blockedPolicy, false) !== null);
     await dispatchConversationTurn(persistedBlocked.conversationTurnId!, {
       channelMembers: async () => dispatchMembers,
       parseMentions,

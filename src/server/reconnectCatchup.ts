@@ -18,6 +18,7 @@ import { conversationTurnDeliveryBlockReason, sendToMachine } from "./daemonHub.
 import { agentConfig } from "./agentConfig.js";
 import { createLogger } from "../log.js";
 import { isWakeable } from "./agentWakePolicy.js";
+import { filterAgentInputView } from "./agentInputView.js";
 
 export { isWakeable } from "./agentWakePolicy.js";
 
@@ -29,11 +30,14 @@ const COOLDOWN_MS = Number(process.env.OPEN_TAG_CATCHUP_COOLDOWN_MS ?? 30_000);
 const lastRun = new Map<string, number>(); // machineId → last catch-up start ts
 
 interface Backlog { count: number; from: string; targetName: string; }
+type BacklogAgent = Pick<typeof schema.agents.$inferSelect,
+  "id" | "serverId" | "scopes" | "incomingMode" | "commandWhitelist">;
+type BacklogRow = { seq: number; from: string; senderType: string; senderId: string | null };
 
 /** Does this agent have a wakeable backlog (unread messages that would have woken it)? Returns a small
  *  summary used to build the soft-offline inbox notice, or null when there is nothing wakeable. */
-async function computeBacklog(agentId: string, scopes: Parameters<typeof agentHasScope>[0], includeDurableTurns: boolean): Promise<Backlog | null> {
-  const hasInbox = agentHasScope(scopes, "inbox:receive");
+export async function computeBacklog(agent: BacklogAgent, includeDurableTurns: boolean): Promise<Backlog | null> {
+  const hasInbox = agentHasScope(agent.scopes, "inbox:receive");
   const memberships = await db.select({
     channelId: schema.channelMembers.channelId,
     lastReadSeq: schema.channelMembers.lastReadSeq,
@@ -41,12 +45,17 @@ async function computeBacklog(agentId: string, scopes: Parameters<typeof agentHa
     name: schema.channels.name,
   }).from(schema.channelMembers)
     .innerJoin(schema.channels, eq(schema.channels.id, schema.channelMembers.channelId))
-    .where(and(eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agentId)));
+    .where(and(eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id)));
 
   let count = 0;
   let latest: { seq: number; from: string; targetName: string } | null = null;
-  // Exclude the agent's own messages; keep system (senderId null) — matches createMessage's `mem.id === senderId` skip.
-  const notSelf = or(isNull(schema.messages.senderId), ne(schema.messages.senderId, agentId));
+  // Exclude the agent's own agent messages. Keep system rows so an owner-attributed reminder can wake its
+  // author; the protected view below still rejects system rows attributed to an unlisted agent source.
+  const notSelf = or(
+    isNull(schema.messages.senderId),
+    ne(schema.messages.senderId, agent.id),
+    eq(schema.messages.senderType, "system"),
+  );
 
   for (const m of memberships) {
     const unread = and(eq(schema.messages.channelId, m.channelId), gt(schema.messages.seq, m.lastReadSeq), notSelf);
@@ -59,50 +68,68 @@ async function computeBacklog(agentId: string, scopes: Parameters<typeof agentHa
         ),
       )
       : isNull(schema.messages.conversationTurnId);
-    const rowsBySeq = new Map<number, { seq: number; from: string }>();
+    const rowsBySeq = new Map<number, BacklogRow>();
     if (m.type === "dm") {
-      const rows = await db.select({ seq: schema.messages.seq, from: schema.messages.senderName })
+      const rows = await db.select({
+        seq: schema.messages.seq,
+        from: schema.messages.senderName,
+        senderType: schema.messages.senderType,
+        senderId: schema.messages.senderId,
+      })
         .from(schema.messages)
         .leftJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
         .leftJoin(schema.agentMessageDecisions, and(
           eq(schema.agentMessageDecisions.messageId, schema.conversationTurns.triggerMessageId),
-          eq(schema.agentMessageDecisions.agentId, agentId),
+          eq(schema.agentMessageDecisions.agentId, agent.id),
         ))
         .where(and(unread, turnGrantEligible)).orderBy(desc(schema.messages.seq));
       for (const row of rows) rowsBySeq.set(row.seq, row);
     } else {
-      const mentionedRows = await db.select({ seq: schema.messages.seq, from: schema.messages.senderName })
+      const mentionedRows = await db.select({
+        seq: schema.messages.seq,
+        from: schema.messages.senderName,
+        senderType: schema.messages.senderType,
+        senderId: schema.messages.senderId,
+      })
         .from(schema.messages)
         .innerJoin(schema.messageMentions, eq(schema.messageMentions.messageId, schema.messages.id))
         .leftJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
         .leftJoin(schema.agentMessageDecisions, and(
           eq(schema.agentMessageDecisions.messageId, schema.conversationTurns.triggerMessageId),
-          eq(schema.agentMessageDecisions.agentId, agentId),
+          eq(schema.agentMessageDecisions.agentId, agent.id),
         ))
-        .where(and(unread, eq(schema.messageMentions.mentionType, "agent"), eq(schema.messageMentions.mentionId, agentId), turnGrantEligible))
+        .where(and(unread, eq(schema.messageMentions.mentionType, "agent"), eq(schema.messageMentions.mentionId, agent.id), turnGrantEligible))
         .orderBy(desc(schema.messages.seq));
       for (const row of mentionedRows) rowsBySeq.set(row.seq, row);
       if (isWakeable({ channelType: m.type, mentioned: false, hasInboxScope: hasInbox, senderType: "user" })) {
-        const ambientRows = await db.select({ seq: schema.messages.seq, from: schema.messages.senderName })
+        const ambientRows = await db.select({
+          seq: schema.messages.seq,
+          from: schema.messages.senderName,
+          senderType: schema.messages.senderType,
+          senderId: schema.messages.senderId,
+        })
           .from(schema.messages)
           .leftJoin(schema.conversationTurns, eq(schema.conversationTurns.id, schema.messages.conversationTurnId))
           .leftJoin(schema.agentMessageDecisions, and(
             eq(schema.agentMessageDecisions.messageId, schema.conversationTurns.triggerMessageId),
-            eq(schema.agentMessageDecisions.agentId, agentId),
+            eq(schema.agentMessageDecisions.agentId, agent.id),
           ))
           .where(and(
             unread,
-            ne(schema.messages.senderType, "agent"),
+            or(
+              eq(schema.messages.senderType, "user"),
+              and(eq(schema.messages.senderType, "system"), isNull(schema.messages.senderId)),
+            ),
             or(
               isNull(schema.messages.conversationTurnId),
-              and(eq(schema.conversationTurns.ownerAgentId, agentId), turnGrantEligible),
+              and(eq(schema.conversationTurns.ownerAgentId, agent.id), turnGrantEligible),
             ),
           ))
           .orderBy(desc(schema.messages.seq));
         for (const row of ambientRows) rowsBySeq.set(row.seq, row);
       }
     }
-    const rows = [...rowsBySeq.values()].sort((a, b) => b.seq - a.seq);
+    const rows = await filterAgentInputView(agent, [...rowsBySeq.values()].sort((a, b) => b.seq - a.seq));
     if (rows.length) {
       count += rows.length;
       const top = rows[0]!; // highest seq in this channel
@@ -131,7 +158,14 @@ export async function catchUpAgentsOnMachine(serverId: string, machineId: string
   const availableRuntimes = new Set(machine?.runtimes ?? []);
   if (durableDeliveryBlock) log.warn("durable Turn catch-up disabled", { machineId, reason: durableDeliveryBlock });
 
-  const list = await db.select({ id: schema.agents.id, runtime: schema.agents.runtime, scopes: schema.agents.scopes })
+  const list = await db.select({
+    id: schema.agents.id,
+    serverId: schema.agents.serverId,
+    runtime: schema.agents.runtime,
+    scopes: schema.agents.scopes,
+    incomingMode: schema.agents.incomingMode,
+    commandWhitelist: schema.agents.commandWhitelist,
+  })
     .from(schema.agents)
     .where(and(eq(schema.agents.machineId, machineId), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt)));
 
@@ -141,7 +175,7 @@ export async function catchUpAgentsOnMachine(serverId: string, machineId: string
     // Running agents receive durable work only through the canonical Turn dispatcher. A legacy
     // body-free notice here would bypass the v2 commit barrier and duplicate the dispatcher wake.
     // Dead agents may still need a startup nudge for already-admitted durable backlog.
-    try { backlog = await computeBacklog(a.id, a.scopes, !durableDeliveryBlock && !runningIds.includes(a.id)); }
+    try { backlog = await computeBacklog(a, !durableDeliveryBlock && !runningIds.includes(a.id)); }
     catch (e: any) { log.warn("backlog scan failed", { agentId: a.id, detail: String(e?.message ?? e) }); continue; }
     if (!backlog) continue;
     if (!availableRuntimes.has(a.runtime)) {

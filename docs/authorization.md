@@ -126,6 +126,8 @@ other actor IDs as agent sources, and applies the protected view before creating
 daemon. An actor-attributed system message may still wake its own agent when explicitly addressed.
 Fired reminders persist their owner ID on the system message, so an agent-authored reminder cannot launder
 its content through the trusted platform-source path; human-owned reminders remain trusted.
+Reconnect backlog scans carry sender type and actor identity through the same protected view before waking
+an agent. Agent-attributed system rows cannot regain ambient system wake semantics during reconnect.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
