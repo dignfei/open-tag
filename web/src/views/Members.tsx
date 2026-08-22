@@ -19,6 +19,7 @@ import { CodeBlock, ColorSwatch, GithubAlertBlockquote, colorValueFromTag, markd
 import i18n from "../i18n";
 import { ProjectDirectoryField } from "./ProjectDirectoryPicker.tsx";
 import { copyText } from "../lib/clipboard.ts";
+import { isCurrentAgentProfileResponse } from "../lib/agentProfileLoad.ts";
 
 // Unified agent status label: fine-grained activity (working/thinking/online) takes priority;
 // offline/absent falls back to lifecycle status (active/sleeping/inactive).
@@ -165,8 +166,25 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
   const [showRestart, setShowRestart] = useState(false);
   const [avBusy, setAvBusy] = useState(false); const [avErr, setAvErr] = useState(""); const [signedAvatar, setSignedAvatar] = useState<string | null>(null);
   const [perContent, setPerContent] = useState<string | null>(null); const [perBusy, setPerBusy] = useState(false);
-  const refetch = async () => { const data = await api("GET", "/api/agents/" + id); setA(data); setSignedAvatar(resolveAvatar(data?.avatarUrl, attachmentUrl)); };
-  useEffect(() => { refetch(); }, [id]);
+  const profileLoadVersionRef = useRef(0);
+  const activeProfileIdRef = useRef(id);
+  activeProfileIdRef.current = id;
+  const refetch = async () => {
+    const requestedId = id;
+    const requestVersion = ++profileLoadVersionRef.current;
+    const data = await api("GET", "/api/agents/" + requestedId);
+    if (!isCurrentAgentProfileResponse(
+      requestedId, requestVersion, activeProfileIdRef.current, profileLoadVersionRef.current, data,
+    )) return;
+    setA(data);
+    setSignedAvatar(resolveAvatar((data as any).avatarUrl, attachmentUrl));
+  };
+  useEffect(() => {
+    setA(null);
+    setSignedAvatar(null);
+    void refetch();
+    return () => { profileLoadVersionRef.current++; };
+  }, [id]);
   useEffect(() => onEvent((e) => { if (e.type === "agent" && e.id === id) setA((p: any) => (p ? { ...p, status: e.status ?? p.status, activity: e.activity ?? p.activity } : p)); }), [id]);
   const onPickAvatar = async (f: File) => { setAvBusy(true); setAvErr(""); try { const url = await uploadAgentAvatar(id, f); setSignedAvatar(url); await refetch(); await reload(); } catch (err: any) { setAvErr(String(err?.message || err)); } finally { setAvBusy(false); } };
   const onPickSeed = async (scheme: string) => { setAvBusy(true); setAvErr(""); try { await api("PATCH", "/api/agents/" + id, { avatarUrl: scheme }); await refetch(); await reload(); } catch (err: any) { setAvErr(String(err?.message || err)); } finally { setAvBusy(false); } };
@@ -176,7 +194,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
   // branched on the body — the catch only sees network-level failures.
   const uploadPersonality = async (f: File) => { setPerBusy(true); try { const text = await f.text(); const r = await api("PUT", `/api/agents/${id}/personality`, { content: text }); if (r?.error) { toast.error(t("members.personalitySaveFailed", { error: r.error })); return; } toast.info(t("members.personalitySaved")); await fetchPersonality(); } catch (e: any) { toast.error(String(e?.message || e)); } finally { setPerBusy(false); } };
   const deletePersonality = async () => { if (!(await confirm({ title: t("members.personalityDeleteTitle"), message: t("members.personalityDeleteMessage"), confirmLabel: t("members.delete"), danger: true }))) return; setPerBusy(true); try { const r = await api("DELETE", `/api/agents/${id}/personality`); if (r?.error) { toast.error(t("members.personalityDeleteFailed", { error: r.error })); return; } toast.info(t("members.personalityDeleted")); setPerContent(null); } catch (e: any) { toast.error(String(e?.message || e)); } finally { setPerBusy(false); } };
-  if (!a) return <div className="scroll"><div className="empty">{t("members.loading")}</div></div>;
+  if (!a || a.id !== id) return <div className="scroll"><div className="empty">{t("members.loading")}</div></div>;
   // Surface the server's concrete 503 reason ("no daemon online" / "runtime X unavailable on selected machine" …);
   // the generic machine-may-be-offline guess alone made users blind-retry (live 2026-07-05: 3× restart → 503).
   // Known reasons render localized (startFailReasonKey); unknown ones fall back to the raw server string.

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import { isCurrentAgentProfileResponse } from "../web/src/lib/agentProfileLoad.ts";
 
 const src = fs.readFileSync(new URL("../web/src/views/Members.tsx", import.meta.url), "utf8");
 const start = src.indexOf("function AgentInputPolicyCard");
@@ -14,6 +15,15 @@ test("agent input settings render only for managers and live peer candidates", (
   assert.match(src, /capabilities\.manageAgents\s*&&\s*a\.creatorType\s*!==\s*"system"\s*&&\s*<AgentInputPolicyCard/);
   assert.match(src, /candidates=\{visibleAgents\.filter\(\(candidate\)\s*=>\s*candidate\.id\s*!==\s*id\)\}/);
   assert.match(editor, /candidateIds\.has\(id\)/, "stale unavailable ids must not become invisible saved selections");
+});
+
+test("agent profile responses stay bound to their request identity", () => {
+  assert.equal(isCurrentAgentProfileResponse("a", 1, "a", 1, { id: "a" }), true);
+  assert.equal(isCurrentAgentProfileResponse("a", 1, "b", 1, { id: "a" }), false);
+  assert.equal(isCurrentAgentProfileResponse("a", 1, "a", 2, { id: "a" }), false);
+  assert.equal(isCurrentAgentProfileResponse("a", 1, "a", 1, { id: "b" }), false);
+  assert.match(src, /if \(!a \|\| a\.id !== id\) return <div className="scroll">/);
+  assert.match(src, /return \(\) => \{ profileLoadVersionRef\.current\+\+; \}/);
 });
 
 test("agent input saves acquire one gate and lock every control", () => {
