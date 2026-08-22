@@ -285,6 +285,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
               key={id}
               agent={a}
               candidates={visibleAgents.filter((candidate) => candidate.id !== id)}
+              onSaved={(policy) => setA((current: any) => current ? { ...current, ...policy } : current)}
             />}
             <div className="card">
               <h3>{t("members.personalityTitle")} <small className="meta">{perContent ? "(personality.md)" : ""}</small></h3>
@@ -302,28 +303,85 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
   );
 }
 
-function AgentInputPolicyCard({ agent, candidates }: { agent: any; candidates: any[] }) {
+function AgentInputPolicyCard({
+  agent,
+  candidates,
+  onSaved,
+}: {
+  agent: any;
+  candidates: any[];
+  onSaved: (policy: { incomingMode: "open" | "sealed"; commandWhitelist: string[] }) => void;
+}) {
   const { t } = useTranslation();
-  const sealed = agent.incomingMode !== "open";
-  const whitelist = new Set(Array.isArray(agent.commandWhitelist)
-    ? agent.commandWhitelist.filter((id: unknown): id is string => typeof id === "string")
-    : []);
+  const { api } = useStore();
+  const toast = useToast();
+  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+  const [mode, setMode] = useState<"open" | "sealed">(agent.incomingMode === "open" ? "open" : "sealed");
+  const [whitelist, setWhitelist] = useState<Set<string>>(() => new Set(Array.isArray(agent.commandWhitelist)
+    ? agent.commandWhitelist.filter((id: unknown): id is string => typeof id === "string" && candidateIds.has(id))
+    : []));
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+  const toggleAgent = (id: string) => setWhitelist((current) => {
+    const next = new Set(current);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const save = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    const submittedMode = mode;
+    const submittedWhitelist = [...whitelist];
+    try {
+      const result = await api("PATCH", `/api/agents/${agent.id}`, {
+        incomingMode: submittedMode,
+        commandWhitelist: submittedWhitelist,
+      });
+      if (!mountedRef.current) return;
+      const validMode = result?.incomingMode === "open" || result?.incomingMode === "sealed";
+      const validWhitelist = Array.isArray(result?.commandWhitelist)
+        && result.commandWhitelist.every((id: unknown) => typeof id === "string");
+      if (result?.error || result?.ok !== true || !validMode || !validWhitelist) throw new Error("invalid input policy response");
+      const policy = {
+        incomingMode: result.incomingMode as "open" | "sealed",
+        commandWhitelist: result.commandWhitelist as string[],
+      };
+      setMode(policy.incomingMode);
+      setWhitelist(new Set(policy.commandWhitelist));
+      onSaved(policy);
+      toast.info(t("members.inputPolicySaved"));
+    } catch {
+      if (mountedRef.current) toast.error(t("members.inputPolicySaveFailed"));
+    } finally {
+      if (mountedRef.current) {
+        savingRef.current = false;
+        setSaving(false);
+      }
+    }
+  };
+  const sealed = mode === "sealed";
   return (
     <div className="card" data-agent-input-policy>
       <h3>{t("members.inputPolicyTitle")}</h3>
       <div className="meta" style={{ marginBottom: 8 }}>{t("members.inputPolicyDescription")}</div>
       <label className="perm-row">
-        <input type="checkbox" checked={sealed} disabled readOnly />
+        <input type="checkbox" checked={sealed} disabled={saving} onChange={(event) => setMode(event.target.checked ? "sealed" : "open")} />
         <span className="grow"><span className="who">{t("members.inputPolicySealed")}</span><div className="meta">{t("members.inputPolicySealedDescription")}</div></span>
       </label>
       {sealed && <>
         <div className="sec sec-sub">{t("members.inputPolicyWhitelist")}</div>
         {candidates.length === 0 ? <div className="meta">{t("members.inputPolicyWhitelistEmpty")}</div>
           : candidates.map((candidate) => <label key={candidate.id} className="perm-row">
-              <input type="checkbox" checked={whitelist.has(candidate.id)} disabled readOnly />
+              <input type="checkbox" checked={whitelist.has(candidate.id)} disabled={saving} onChange={() => toggleAgent(candidate.id)} />
               <span className="grow"><span className="who">{candidate.displayName || candidate.name}</span> <span className="meta">@{candidate.name}</span></span>
             </label>)}
       </>}
+      <div className="task-acts" style={{ marginTop: 12 }}>
+        <button className="ok" disabled={saving} onClick={save}>{t("members.save")}</button>
+      </div>
     </div>
   );
 }
