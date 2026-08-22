@@ -96,6 +96,7 @@
     "save": "Save",
     "cancel": "Cancel",
     "editProfile": "Edit profile",
+    "permissionsSaveFailed": "Couldn't save agent permissions. Try again.",
     "projectDirectoryLabel": "Project directory",
     "projectDirectoryPlaceholder": "/absolute/path/to/project (optional)",
     "projectDirectoryHint": "Validated on the selected computer. Existing project instructions and runtime config are reused without being overwritten.",
