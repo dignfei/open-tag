@@ -99,7 +99,9 @@ export async function handleAgents(ctx: ServerCtx): Promise<boolean> {
   }
   if (am && method === "PATCH") {
     if (!await requireCap(serverId, userId, "manageAgents")) return (sendErr(res, 403, "need manageAgents capability"), true);
-    const b = await readJson(req); const patch: Record<string, unknown> = {};
+    const b = await readJson(req);
+    if (!b || typeof b !== "object" || Array.isArray(b)) return (sendErr(res, 400, "invalid request body"), true);
+    const patch: Record<string, unknown> = {};
     if (descTooLong(b.description)) return (sendErr(res, 400, DESC_TOO_LONG), true);
     const current = (await db.select().from(schema.agents).where(and(eq(schema.agents.id, am[1]!), eq(schema.agents.serverId, serverId), isNull(schema.agents.deletedAt))))[0];
     if (!current) return (sendErr(res, 404, "agent not found"), true);

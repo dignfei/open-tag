@@ -22,7 +22,7 @@ const check = (label: string, condition: boolean) => {
   if (!condition) failures++;
 };
 
-function request(options: { method: string; path: string; token: string; serverId?: string; agentId?: string; body?: object }): IncomingMessage {
+function request(options: { method: string; path: string; token: string; serverId?: string; agentId?: string; body?: unknown }): IncomingMessage {
   const encoded = options.body === undefined ? "" : JSON.stringify(options.body);
   const stream = Readable.from(encoded ? [Buffer.from(encoded)] : ([] as Buffer[]));
   const headers: Record<string, string> = {
@@ -52,13 +52,13 @@ function response(): { res: ServerResponse; status: () => number; body: () => an
   return { res, status: () => status, body: () => body ? JSON.parse(body) : null };
 }
 
-async function api(options: { method: string; path: string; token: string; serverId: string; body?: object }) {
+async function api(options: { method: string; path: string; token: string; serverId: string; body?: unknown }) {
   const output = response();
   await handleApi(request(options), output.res, new URL(options.path, "http://localhost"), options.method);
   return { status: output.status(), body: output.body() };
 }
 
-async function agentApi(options: { method: string; path: string; token: string; agentId: string; body?: object }) {
+async function agentApi(options: { method: string; path: string; token: string; agentId: string; body?: unknown }) {
   const output = response();
   await handleAgentApi(request(options), output.res, new URL(options.path, "http://localhost"), options.method);
   return { status: output.status(), body: output.body() };
@@ -117,6 +117,11 @@ async function main() {
       body: { incomingMode: "sealed" },
     });
     check("ordinary member cannot change input settings", forbidden.status === 403);
+
+    const nullPatch = await api({
+      method: "PATCH", path: endpoint, token: ownerToken, serverId: server.id, body: null,
+    });
+    check("null settings body fails with 400", nullPatch.status === 400);
 
     const invalidBodies = [
       { incomingMode: "sanitized" },
