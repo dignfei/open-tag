@@ -10,6 +10,7 @@ import { isCurrentAgentProfileResponse } from "../web/src/lib/agentProfileLoad.t
 
 const src = fs.readFileSync(new URL("../web/src/views/Members.tsx", import.meta.url), "utf8");
 const chat = fs.readFileSync(new URL("../web/src/views/Chat.tsx", import.meta.url), "utf8");
+const styles = fs.readFileSync(new URL("../web/src/styles.css", import.meta.url), "utf8");
 const start = src.indexOf("function AgentInputPolicyCard");
 const end = src.indexOf("// Profile tab SKILLS", start);
 assert.ok(start >= 0 && end > start, "AgentInputPolicyCard implementation must exist");
@@ -51,6 +52,7 @@ test("agent input saves acquire one gate and lock every control", () => {
   assert.equal(editor.match(/disabled=\{saving\}/g)?.length, 2, "mode and Save must lock in flight");
   assert.match(editor, /disabled=\{saving \|\| \(!whitelist\.has\(candidate\.id\) && whitelistFull\)\}/);
   assert.match(editor, /<div className="perm-head"[^>]*>\s*<button className="ok" disabled=\{saving\}/);
+  assert.match(styles, /\.perm-head \.ok:disabled\{opacity:\.5;cursor:default\}/);
   assert.match(editor, /inputPolicyWhitelistLimit", \{ count: MAX_AGENT_INPUT_SOURCES \}/);
   assert.equal(en.members.inputPolicyWhitelistLimit, "Select up to {{count}} agents.");
   assert.equal(zh.members.inputPolicyWhitelistLimit, "最多选择 {{count}} 个 agent。");
