@@ -61,6 +61,32 @@ test("a failed trailing load does not expose its superseded snapshot", async () 
   assert.deepEqual(commits, []);
 });
 
+test("a completed request resolves while a trailing load remains pending", async () => {
+  const first = deferred<unknown>();
+  const trailing = deferred<unknown>();
+  const loads = [first, trailing];
+  let loadCount = 0;
+  const refresh = createUnreadRefresh(
+    () => loads[loadCount++]!.promise,
+    () => {},
+  );
+
+  const firstRequest = refresh.request();
+  await nextTurn();
+  const trailingRequest = refresh.request();
+  let trailingDone = false;
+  void trailingRequest.then(() => { trailingDone = true; });
+
+  first.resolve({ stale: 1 });
+  await firstRequest;
+  await nextTurn();
+  assert.equal(loadCount, 2);
+  assert.equal(trailingDone, false);
+
+  trailing.resolve({ current: 2 });
+  await trailingRequest;
+});
+
 test("badge snapshots keep only positive integer counts", () => {
   assert.deepEqual(parseUnreadValues({ active: 3, cleared: 0 }), { active: 3 });
 });

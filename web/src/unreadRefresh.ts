@@ -19,34 +19,52 @@ export function createUnreadRefresh(load: () => Promise<unknown>, commit: (value
   let active = true;
   let requested = 0;
   let completed = 0;
-  let running: Promise<void> | null = null;
+  let running = false;
+  let waiters: Array<{ target: number; resolve: () => void }> = [];
+
+  const settleWaiters = () => {
+    const pending: typeof waiters = [];
+    for (const waiter of waiters) {
+      if (!active || waiter.target <= completed) waiter.resolve();
+      else pending.push(waiter);
+    }
+    waiters = pending;
+  };
 
   const drain = async () => {
-    while (active && completed < requested) {
-      const target = requested;
-      try {
-        const values = parseUnreadValues(await load());
-        if (active && values && target === requested) commit(values);
-      } catch { /* keep the current badge map */ }
-      completed = target;
+    try {
+      while (active && completed < requested) {
+        const target = requested;
+        try {
+          const values = parseUnreadValues(await load());
+          if (active && values && target === requested) commit(values);
+        } catch { /* keep the current badge map */ }
+        completed = target;
+        settleWaiters();
+      }
+    } finally {
+      running = false;
+      if (active && completed < requested) start();
     }
   };
 
-  const waitFor = async (target: number) => {
-    while (active && completed < target) {
-      if (!running) running = drain().finally(() => { running = null; });
-      await running;
-    }
+  const start = () => {
+    if (running || !active) return;
+    running = true;
+    void drain();
   };
 
   return {
     request() {
       if (!active) return Promise.resolve();
       const target = ++requested;
-      return waitFor(target);
+      const done = new Promise<void>((resolve) => waiters.push({ target, resolve }));
+      start();
+      return done;
     },
     dispose() {
       active = false;
+      settleWaiters();
     },
   };
 }
