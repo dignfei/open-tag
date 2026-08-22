@@ -296,7 +296,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     );
     unreadRefreshRef.current?.dispose();
     unreadRefreshRef.current = unreadRefresh;
-    // Schedule one bounded-latency server refresh for a burst of realtime events. Do not move the timer forward on
+    // Schedule one fixed-delay server refresh for a burst of realtime events. Do not move the timer forward on
     // every event: a steady stream must not starve badge convergence. The coordinator adds one trailing load when
     // another event arrives during an in-flight request.
     let unreadTimer: ReturnType<typeof setTimeout> | null = null;
