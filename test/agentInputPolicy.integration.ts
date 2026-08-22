@@ -370,6 +370,14 @@ async function main() {
       .where(eq(schema.messages.id, task.id)))[0]!;
     check("task update by number hides rejected input", deniedUpdateByNumber.status === 404
       && taskAfterDeniedUpdate.taskStatus === "in_progress");
+    const deniedAssignmentByNumber = await agentApi({
+      method: "POST", path: "/agent-api/task/assign", token: targetToken, agentId: target.id,
+      body: { channel: `#${channel!.name}`, number: task.taskNumber, to: peer.name },
+    });
+    const taskAfterDeniedAssignment = (await db.select().from(schema.messages)
+      .where(eq(schema.messages.id, task.id)))[0]!;
+    check("task assignment by number hides rejected input", deniedAssignmentByNumber.status === 404
+      && taskAfterDeniedAssignment.taskAssigneeId === target.id);
     const deniedThread = await agentApi({
       method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
       token: targetToken, agentId: target.id,

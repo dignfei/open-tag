@@ -689,12 +689,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
 
     let mid: string | null = null;
     if (b.number != null && b.channel) {
-      const tgt = await resolveTarget(serverId, String(b.channel), agent.id);
-      if (tgt) mid = (await db.select({ id: schema.messages.id }).from(schema.messages).where(and(
-        eq(schema.messages.channelId, tgt.channelId),
-        eq(schema.messages.taskNumber, Number(b.number)),
-        isNotNull(schema.messages.taskStatus),
-      )))[0]?.id ?? null;
+      mid = await resolveTaskNumberForAgent(b.channel, b.number);
     } else {
       mid = await resolveMessageId(serverId, b.messageId, agent.id);
     }
