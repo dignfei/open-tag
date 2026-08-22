@@ -138,3 +138,37 @@ test("permission state and confirmation timers stay with the selected agent", ()
   assert.ok(clearAt >= 0 && clearAt < requestAt, "a new save must clear the previous confirmation timer");
   assert.ok(scheduleAt > requestAt, "a successful save must retain its confirmation timer for cleanup");
 });
+
+test("permission loads fail closed and remain retryable", () => {
+  const loadStart = permissions.indexOf("useEffect(() => {");
+  const loadEnd = permissions.indexOf("useEffect(() => ()", loadStart);
+  const load = permissions.slice(loadStart, loadEnd);
+  const requestAt = load.indexOf('await api("GET"');
+  const errorAt = load.indexOf("result?.error", requestAt);
+  const agentAt = load.indexOf("result?.agentId !== id", requestAt);
+  const modeAt = load.indexOf('result?.mode !== "default"', requestAt);
+  const revisionAt = load.indexOf("Number.isInteger(result?.revision)", requestAt);
+  const grantedAt = load.indexOf("Array.isArray(result?.granted)", requestAt);
+  const catalogAt = load.indexOf("Array.isArray(result?.catalog)", requestAt);
+  const cancelledAt = load.indexOf("if (cancelled) return", requestAt);
+  const setDataAt = load.indexOf("setData(result)", requestAt);
+
+  assert.ok(
+    requestAt >= 0 && errorAt > requestAt && agentAt > requestAt && modeAt > requestAt
+      && revisionAt > requestAt && grantedAt > requestAt && catalogAt > requestAt
+      && cancelledAt > requestAt && setDataAt > errorAt && setDataAt > agentAt
+      && setDataAt > modeAt && setDataAt > revisionAt && setDataAt > grantedAt
+      && setDataAt > catalogAt && setDataAt > cancelledAt,
+    "the panel must validate the complete GET envelope and reject stale responses before rendering data",
+  );
+  assert.match(load, /catch\s*\{\s*if\s*\(!cancelled\)\s*setLoadFailed\(true\)/);
+  assert.match(load, /return \(\) => \{ cancelled = true; \}/);
+  assert.match(
+    permissions,
+    /loadFailed[\s\S]*t\("members\.permissionsLoadFailed"\)[\s\S]*setLoadAttempt[\s\S]*t\("members\.permissionsRetry"\)/,
+  );
+  assert.equal(en.members.permissionsLoadFailed, "Couldn't load agent permissions.");
+  assert.equal(en.members.permissionsRetry, "Retry");
+  assert.equal(zh.members.permissionsLoadFailed, "加载 agent 权限失败。");
+  assert.equal(zh.members.permissionsRetry, "重试");
+});
