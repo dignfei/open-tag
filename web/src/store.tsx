@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { io, type Socket } from "socket.io-client";
 import { messageUnreadDelta, threadUnreadDelta } from "./threadUnread";
 import { initialAuthState, TOKEN_KEY, type AuthState } from "./routing.ts";
+import { createUnreadRefresh, type UnreadRefresh } from "./unreadRefresh";
 
 export interface Channel { id: string; name: string; description?: string; type: string; joined?: boolean; lastMessageAt?: string; archivedAt?: string | null }
 export interface Dm { id: string; name: string; type: string; description?: string; lastMessageAt?: string; audit?: boolean; peerId?: string | null; peerName?: string | null; peerDisplayName?: string | null; peerType?: string | null; peerAvatarUrl?: string | null }
@@ -104,6 +105,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const meIdRef = useRef<string | undefined>(undefined); // current user id; read by socket handlers (own-message unread suppression) and stable across workspace switches
   const sockRef = useRef<Socket | null>(null); // active socket connection; emits join:channel when joining/creating a channel mid-session for room isolation
   const subscribedRef = useRef<Set<string>>(new Set()); // channels/threads explicitly subscribed by the active view; re-emitted on every (re)connect so a reconnect re-joins them
+  const unreadRefreshRef = useRef<UnreadRefresh | null>(null);
   const listeners = useRef(new Set<(e: Ev) => void>());
 
   const api = async (method: string, path: string, body?: unknown) => {
@@ -118,10 +120,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // turns false, so this (now-stale) reload's results are dropped instead of landing mixed with the new
     // workspace's data — guards rapid A→B→C switches (the sequential awaits below each read the shared sidRef).
     const sid = sidRef.current;
+    const unreadRefresh = unreadRefreshRef.current;
     const fresh = () => sidRef.current === sid;
     const ch = await api("GET", "/api/channels"); if (fresh()) setChannels(ch);
     try { const dm = await api("GET", "/api/channels/dm"); if (fresh()) setDms(dm); } catch { if (fresh()) setDms([]); }
-    try { const un = (await api("GET", "/api/channels/unread")) || {}; if (fresh()) setUnread(un); } catch { if (fresh()) setUnread({}); }
+    await unreadRefresh?.request();
     const ag = await api("GET", "/api/agents"); if (fresh()) setAgents(ag);
     try { const mc = await api("GET", `/api/servers/${sid}/machines`); if (fresh()) { setMachines(mc.machines || []); setLatestDaemonVersion(mc.latestDaemonVersion || ""); } } catch { if (fresh()) setMachines([]); }
     try { const hm = await api("GET", `/api/servers/${sid}/members`); if (fresh()) setHumans(hm); } catch { if (fresh()) setHumans([]); }
@@ -291,6 +294,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     sidRef.current = cur.id; setServerId(cur.id); setSlug(cur.slug || "open-tag"); setMyRole(cur.role || "member"); setCapabilities(cur.capabilities || {});
     setServerAvatar(cur.avatarUrl ? `${cur.avatarUrl}?token=${encodeURIComponent(tokenRef.current)}` : null);
     setChannels([]); setDms([]); setUnread({}); setAgents([]); setMachines([]); setHumans([]); setSavedIds(new Set()); setAgentPanelReq(null);
+    const unreadRefresh = createUnreadRefresh(
+      () => api("GET", "/api/channels/unread"),
+      (values) => setUnread(values),
+    );
+    unreadRefreshRef.current?.dispose();
+    unreadRefreshRef.current = unreadRefresh;
     subscribedRef.current = new Set(); // the previous workspace's view-subscriptions don't carry over
     sockRef.current = null; // the previous socket is closed by this effect's cleanup; drop the stale ref until the new one connects
     let lastSeq = 0;
@@ -366,7 +375,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         dispatch({ type: "thread:updated", ...p });
       });
     })();
-    return () => { cancelled = true; sock?.close(); sockRef.current = null; if (unreadTimer) clearTimeout(unreadTimer); };
+    return () => {
+      cancelled = true;
+      sock?.close();
+      sockRef.current = null;
+      if (unreadTimer) clearTimeout(unreadTimer);
+      unreadRefresh.dispose();
+      if (unreadRefreshRef.current === unreadRefresh) unreadRefreshRef.current = null;
+    };
   }, [activeId]);
 
   // Showcase demo agents (creatorType="system") stay in `agents` so #showcase history still resolves their
