@@ -12,6 +12,7 @@ import { hashToken, signUser } from "../src/server/auth.ts";
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
 const { createMessage, getOrCreateThread, parseMentions, resolveMessageId, setTaskStatus } = await import("../src/server/core.ts");
 const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
+const { decideReply } = await import("../src/server/replyCoordination.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
 const { handleAgentApi } = await import("../src/server/routes-agent.ts");
 
@@ -416,6 +417,39 @@ async function main() {
     ));
     check("blocked task status source cannot wake the assignee", statusUpdate?.taskStatus === "in_review"
       && blockedStatusMembers.length === 0 && blockedStatusDecisions.length === 0);
+
+    const coordinationMessage = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "user", senderId: owner.id,
+      senderName: owner.name, content: "coordination policy check",
+    });
+    await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, coordinationMessage.id));
+    await db.insert(schema.agentMessageDecisions).values([
+      {
+        serverId: server.id, channelId: channel!.id, messageId: coordinationMessage.id,
+        agentId: target.id, attention: "direct", observedAt: new Date(), grantSlot: "primary", grantStatus: "active",
+      },
+      {
+        serverId: server.id, channelId: channel!.id, messageId: coordinationMessage.id,
+        agentId: blocked.id, attention: "direct", observedAt: new Date(),
+      },
+    ]);
+    const rejectedCoordination = await decideReply({
+      serverId: server.id,
+      agentId: blocked.id,
+      messageId: coordinationMessage.id,
+      decision: "request_reply",
+      reason: "better_fit",
+      summary: `blocked-coordination-${suffix}`,
+    });
+    const rejectedCoordinationRow = (await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
+      eq(schema.agentMessageDecisions.agentId, blocked.id),
+    )))[0]!;
+    check("sealed primary rejects a coordination request before persistence", !rejectedCoordination.ok
+      && rejectedCoordination.code === "INPUT_SOURCE_REJECTED"
+      && rejectedCoordinationRow.decision === "pending"
+      && rejectedCoordinationRow.reasonCode === null
+      && rejectedCoordinationRow.summary === null);
     const deniedThread = await agentApi({
       method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
       token: targetToken, agentId: target.id,

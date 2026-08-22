@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
+import { inputSenderAllowed } from "./agentInputPolicy.js";
 import { evaluateReplyIntent, type ReplyReason, type ReplySlot } from "./replyCoordinationPolicy.js";
 import { canonicalReplyTriggerMessageId, completeConversationTurnIfSettled } from "./conversationTurns.js";
 
@@ -316,33 +317,68 @@ export async function decideReply(o: {
   }
 
   const reason = o.reason!;
-  await db.update(schema.agentMessageDecisions).set({
-    decision: "requested", reasonCode: reason, summary: o.summary?.slice(0, 500) || null,
-    decidedAt: now, updatedAt: now,
-  }).where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId)));
-  const state = await slotState(o.messageId);
-  const outcome = evaluateReplyIntent({ reason, ...state });
-  if (outcome.outcome === "grant") {
-    const granted = await grantRequestedSlot(o.messageId, o.agentId, outcome.slot);
-    if (!granted) return { ok: false, code: "REPLY_SLOT_TAKEN" };
-  } else if (outcome.outcome === "deny") {
-    const [denied] = await db.update(schema.agentMessageDecisions).set({ decision: "denied", updatedAt: new Date() })
-      .where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId))).returning();
-    return { ok: false, code: outcome.code };
+  try {
+    return await db.transaction(async (tx): Promise<DecideResult> => {
+      const rows = await tx.select().from(schema.agentMessageDecisions).where(and(
+        eq(schema.agentMessageDecisions.serverId, o.serverId),
+        eq(schema.agentMessageDecisions.messageId, o.messageId),
+      )).orderBy(asc(schema.agentMessageDecisions.agentId)).for("update");
+      const current = rows.find((candidate) => candidate.agentId === o.agentId);
+      if (!current) return { ok: false, code: "MESSAGE_NOT_DELIVERED" };
+      if (!current.observedAt) return { ok: false, code: "MESSAGE_NOT_OBSERVED" };
+      if (current.grantStatus === "consumed") return { ok: false, code: "REPLY_GRANT_CONSUMED" };
+
+      const primary = rows.find((candidate) => candidate.grantSlot === "primary" && SLOT_STATUSES.includes(candidate.grantStatus));
+      const state = {
+        primaryState: primary?.grantStatus === "consumed" || primary?.grantStatus === "publishing"
+          ? "consumed" as const
+          : primary ? "active" as const : "none" as const,
+        supplementalTaken: rows.some((candidate) => candidate.grantSlot === "supplemental" && SLOT_STATUSES.includes(candidate.grantStatus)),
+      };
+      const outcome = evaluateReplyIntent({ reason, ...state });
+      const owner = outcome.outcome === "pending"
+        ? rows.find((candidate) => candidate.grantSlot === "primary" && candidate.grantStatus === "active" && candidate.agentId !== o.agentId)
+        : undefined;
+      if (owner) {
+        const target = (await tx.select().from(schema.agents).where(and(
+          eq(schema.agents.id, owner.agentId),
+          eq(schema.agents.serverId, o.serverId),
+          isNull(schema.agents.deletedAt),
+        )).for("update"))[0];
+        if (!target || !inputSenderAllowed(target, "agent", o.agentId)) {
+          return { ok: false, code: "INPUT_SOURCE_REJECTED" };
+        }
+      }
+
+      const [requested] = await tx.update(schema.agentMessageDecisions).set({
+        decision: "requested", reasonCode: reason, summary: o.summary?.slice(0, 500) || null,
+        decidedAt: now, updatedAt: now,
+      }).where(and(
+        eq(schema.agentMessageDecisions.messageId, o.messageId),
+        eq(schema.agentMessageDecisions.agentId, o.agentId),
+      )).returning();
+      if (outcome.outcome === "grant") {
+        const [granted] = await tx.update(schema.agentMessageDecisions).set({
+          grantSlot: outcome.slot, grantStatus: "active", grantedAt: now, updatedAt: now,
+        }).where(and(
+          eq(schema.agentMessageDecisions.messageId, o.messageId),
+          eq(schema.agentMessageDecisions.agentId, o.agentId),
+          inArray(schema.agentMessageDecisions.grantStatus, ["none", "released"]),
+        )).returning();
+        if (!granted) return { ok: false, code: "REPLY_SLOT_TAKEN" };
+        return { ok: true, row: granted };
+      }
+      if (outcome.outcome === "deny") {
+        const [denied] = await tx.update(schema.agentMessageDecisions).set({ decision: "denied", updatedAt: now })
+          .where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId))).returning();
+        return { ok: false, code: outcome.code };
+      }
+      return { ok: true, row: requested!, notifyAgentId: owner?.agentId };
+    });
+  } catch (e) {
+    if (conflictCode(e) === "23505") return { ok: false, code: "REPLY_SLOT_TAKEN" };
+    throw e;
   }
-  const updated = (await db.select().from(schema.agentMessageDecisions).where(and(
-    eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId),
-  )))[0]!;
-  if (outcome.outcome === "pending") {
-    const owner = (await db.select({ agentId: schema.agentMessageDecisions.agentId }).from(schema.agentMessageDecisions).where(and(
-      eq(schema.agentMessageDecisions.messageId, o.messageId),
-      eq(schema.agentMessageDecisions.grantSlot, "primary"),
-      eq(schema.agentMessageDecisions.grantStatus, "active"),
-      ne(schema.agentMessageDecisions.agentId, o.agentId),
-    )))[0];
-    return { ok: true, row: updated, notifyAgentId: owner?.agentId };
-  }
-  return { ok: true, row: updated };
 }
 
 export async function claimReplyCoordination(agentId: string): Promise<Array<{
