@@ -20,6 +20,7 @@ import { publish } from "./realtime.js";
 import { ensureReplyRecipients, releaseUnavailableReplyGrant, reserveReplyRecipients, type ReplyRecipient } from "./replyCoordination.js";
 import { agentHasScope } from "./scopes.js";
 import { inputSenderAllowed } from "./agentInputPolicy.js";
+import { agentInputVisible, attributedInputSenderType } from "./agentInputView.js";
 
 type PersistedMessage = typeof schema.messages.$inferSelect;
 type PersistedChannel = typeof schema.channels.$inferSelect;
@@ -214,7 +215,23 @@ export async function dispatchLegacyMessage<TTarget extends { ok: true }>(input:
   const mentionedAgents = new Set(input.mentions.filter((member) => member.type === "agent").map((member) => member.id));
   const isDm = input.channel?.type === "dm";
   const targetName = isDm ? `dm:@${input.msg.senderName}` : `#${input.channel?.name ?? input.msg.channelId}`;
-  for (const member of input.members.filter((candidate) => candidate.type === "agent" && candidate.id !== input.msg.senderId)) {
+  const candidates = input.members.filter((candidate) => candidate.type === "agent"
+    && (input.msg.senderType === "system" || candidate.id !== input.msg.senderId));
+  const targetRows = candidates.length ? await db.select({
+    id: schema.agents.id,
+    serverId: schema.agents.serverId,
+    incomingMode: schema.agents.incomingMode,
+    commandWhitelist: schema.agents.commandWhitelist,
+  }).from(schema.agents).where(and(
+    eq(schema.agents.serverId, input.msg.serverId),
+    isNull(schema.agents.deletedAt),
+    inArray(schema.agents.id, candidates.map((candidate) => candidate.id)),
+  )) : [];
+  const targets = new Map(targetRows.map((target) => [target.id, target]));
+  const senderType = await attributedInputSenderType(input.msg.serverId, input.msg);
+  for (const member of candidates) {
+    const target = targets.get(member.id);
+    if (!target || !await agentInputVisible(target, input.msg)) continue;
     const mentioned = mentionedAgents.has(member.id);
     if (!isDm && !mentioned) {
       const row = (await db.select({ scopes: schema.agents.scopes }).from(schema.agents).where(eq(schema.agents.id, member.id)))[0];
@@ -222,7 +239,7 @@ export async function dispatchLegacyMessage<TTarget extends { ok: true }>(input:
         channelType: input.channel?.type ?? "channel",
         mentioned,
         hasInboxScope: agentHasScope(row?.scopes, "inbox:receive"),
-        senderType: input.msg.senderType as "user" | "agent" | "system",
+        senderType,
       })) continue;
     }
     await deliverAgentResponsibility({

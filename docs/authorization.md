@@ -121,6 +121,9 @@ Direct profile lookup follows the same rule and also falls back from the rejecte
 name to its stable handle; runtime, model, and platform status remain discoverable.
 Channel-member listings likewise replace a rejected agent's editable display name with its stable handle
 while leaving trusted human labels and accepted agent labels unchanged.
+Legacy system-message delivery resolves every non-null actor against workspace human membership, treats all
+other actor IDs as agent sources, and applies the protected view before creating recipient work or waking a
+daemon. An actor-attributed system message may still wake its own agent when explicitly addressed.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.

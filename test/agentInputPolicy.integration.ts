@@ -11,7 +11,7 @@ import { hashToken, signUser } from "../src/server/auth.ts";
 
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
 const { createMessage, getOrCreateThread, parseMentions, resolveMessageId, setTaskStatus } = await import("../src/server/core.ts");
-const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
+const { dispatchConversationTurn, dispatchLegacyMessage } = await import("../src/server/conversationTurnDispatch.ts");
 const { claimReplyCoordination, decideReply } = await import("../src/server/replyCoordination.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
 const { handleAgentApi } = await import("../src/server/routes-agent.ts");
@@ -254,6 +254,35 @@ async function main() {
     const dispatchMembers = [target, peer, blocked].map((agent) => ({
       type: "agent" as const, id: agent.id, name: agent.name, displayName: agent.displayName,
     }));
+    const attributedSystemMessage = await createMessage({
+      serverId: server.id,
+      channelId: channel!.id,
+      senderType: "system",
+      senderId: blocked.id,
+      senderName: "reminder",
+      content: `@${target.name} @${blocked.name} attributed reminder`,
+    });
+    const legacyRecipients: string[] = [];
+    await dispatchLegacyMessage({
+      msg: attributedSystemMessage,
+      channel: channel!,
+      members: dispatchMembers,
+      mentions: parseMentions(attributedSystemMessage.content, dispatchMembers),
+      asTask: false,
+    }, {
+      channelMembers: async () => dispatchMembers,
+      parseMentions,
+      agentStartTarget: async () => ({ ok: true as const }),
+      sendAgentStart: () => true,
+      sendAgentDeliver: (_serverId, _target, payload) => {
+        legacyRecipients.push(String(payload.agentId));
+        return true;
+      },
+      markAgentUnavailable: async () => {},
+      finalizeAgentActivityRun: async () => {},
+    });
+    check("attributed system delivery rejects blocked targets but keeps an explicit self reminder",
+      legacyRecipients.length === 1 && legacyRecipients[0] === blocked.id);
     await dispatchConversationTurn(persistedBlocked.conversationTurnId!, {
       channelMembers: async () => dispatchMembers,
       parseMentions,

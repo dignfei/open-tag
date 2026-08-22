@@ -4,6 +4,20 @@ import { filterAgentInput, type AgentInputPolicy } from "./agentInputPolicy.js";
 
 type InputMessage = { senderType: string; senderId: string | null };
 
+export async function attributedInputSenderType(
+  serverId: string,
+  message: InputMessage,
+): Promise<"user" | "agent" | "system"> {
+  if (message.senderType !== "system" || !message.senderId) return message.senderType as "user" | "agent" | "system";
+  const human = (await db.select({ id: schema.serverMembers.userId })
+    .from(schema.serverMembers)
+    .where(and(
+      eq(schema.serverMembers.serverId, serverId),
+      eq(schema.serverMembers.userId, message.senderId),
+    )).limit(1))[0];
+  return human ? "user" : "agent";
+}
+
 export async function filterAgentInputView<T extends InputMessage>(
   target: AgentInputPolicy & { serverId: string },
   messages: T[],
