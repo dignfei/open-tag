@@ -379,6 +379,7 @@ function PermissionsTab({ id }: { id: string }) {
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const mountedRef = useRef(true);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -404,6 +405,10 @@ function PermissionsTab({ id }: { id: string }) {
     })();
     return () => { cancelled = true; };
   }, [id, loadAttempt]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   useEffect(() => () => { if (savedTimerRef.current) clearTimeout(savedTimerRef.current); }, []);
   if (!data) return <div className="scroll"><div className="empty">{loadFailed
     ? <>{t("members.permissionsLoadFailed")} <button type="button" className="joinbtn" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>{t("members.permissionsRetry")}</button></>
@@ -417,6 +422,7 @@ function PermissionsTab({ id }: { id: string }) {
     setSaved(false);
     try {
       const result = await api("PUT", `/api/agents/${id}/scopes`, { scopes });
+      if (!mountedRef.current) return;
       if (result?.error) throw new Error(result.error);
       if (result?.agentId !== id || result?.mode !== "custom" || !Number.isInteger(result?.revision)
         || !Array.isArray(result?.granted) || !result.granted.every((scope: unknown) => typeof scope === "string")) {
@@ -425,10 +431,12 @@ function PermissionsTab({ id }: { id: string }) {
       setData({ ...data, ...result }); setGranted(new Set(result.granted)); setSaved(true);
       savedTimerRef.current = setTimeout(() => { setSaved(false); savedTimerRef.current = null; }, 1500);
     } catch {
-      toast.error(t("members.permissionsSaveFailed"));
+      if (mountedRef.current) toast.error(t("members.permissionsSaveFailed"));
     } finally {
-      savingRef.current = false;
-      setSaving(false);
+      if (mountedRef.current) {
+        savingRef.current = false;
+        setSaving(false);
+      }
     }
   };
   const groups: Record<string, any[]> = {};
