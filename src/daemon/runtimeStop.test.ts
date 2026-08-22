@@ -201,6 +201,40 @@ if (count === 2) {
   return assertAcceptedFailureKeepsSessionReusable(adapters.find((adapter) => adapter.runtime === copilotRuntime)!, source);
 });
 
+test("Copilot reports an initial session error as a non-zero exit", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "open-tag-copilot-initial-error-"));
+  const binDir = path.join(root, "bin");
+  const stateDir = path.join(root, "state");
+  mkdirSync(binDir); mkdirSync(stateDir);
+  fakeNodeCommand(binDir, "copilot", `
+console.log(JSON.stringify({ type: "session.error", data: { message: "provider rejected" } }));
+console.log(JSON.stringify({ type: "result", sessionId: "session-test", exitCode: 0 }));
+`);
+  const admissions: Array<Error | undefined> = [];
+  const activities: string[] = [];
+  const exits: Array<number | null> = [];
+  const acceptedFailures: number[] = [];
+  let session: ReturnType<Runtime["start"]> | undefined;
+  try {
+    session = copilotRuntime.start({
+      cwd: root,
+      stateDir,
+      env: { PATH: binDir, HOME: root },
+      systemPrompt: "system",
+      initialPrompt: "start",
+    }, callbacks(admissions, activities, exits, acceptedFailures));
+
+    await waitFor(() => exits.length === 1, "copilot initial protocol failure exit");
+    assert.deepEqual(admissions, [undefined], "the spawned Turn was admitted before the protocol failure");
+    assert.deepEqual(exits, [1]);
+    assert.equal(activities.at(-1), "error");
+    assert.deepEqual(acceptedFailures, [], "an initial hard failure exits instead of reusing the session");
+  } finally {
+    session?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("OpenCode reports an admitted exit-zero protocol error", () => {
   const source = `
 const fs = require("node:fs");
