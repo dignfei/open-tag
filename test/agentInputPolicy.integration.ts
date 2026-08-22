@@ -594,6 +594,9 @@ async function main() {
     check("primary release skips protected coordination candidates", promotedCoordination.ok
       && promotedCoordination.promotedAgentId === peer.id
       && blockedPromotion.grantStatus === "none"
+      && blockedPromotion.decision === "denied"
+      && blockedPromotion.reasonCode === "input_source_rejected"
+      && blockedPromotion.summary === null
       && allowedPromotion.grantStatus === "active"
       && allowedPromotion.delegatedByAgentId === target.id);
     await db.update(schema.agentMessageDecisions).set({ grantStatus: "released" }).where(and(

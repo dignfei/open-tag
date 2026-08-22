@@ -201,7 +201,20 @@ async function promoteBetterFit(messageId: string, sourceAgentId: string): Promi
         eq(schema.agents.serverId, current.serverId),
         isNull(schema.agents.deletedAt),
       )).for("update"))[0];
-      if (!target || !inputSenderAllowed(target, "agent", sourceAgentId)) return null;
+      if (!target || !inputSenderAllowed(target, "agent", sourceAgentId)) {
+        await tx.update(schema.agentMessageDecisions).set({
+          decision: "denied",
+          reasonCode: "input_source_rejected",
+          summary: null,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(schema.agentMessageDecisions.messageId, messageId),
+          eq(schema.agentMessageDecisions.agentId, current.agentId),
+          eq(schema.agentMessageDecisions.decision, "requested"),
+          eq(schema.agentMessageDecisions.grantStatus, "none"),
+        ));
+        return null;
+      }
       const [granted] = await tx.update(schema.agentMessageDecisions).set({
         grantSlot: "primary",
         grantStatus: "active",

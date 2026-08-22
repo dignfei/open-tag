@@ -128,6 +128,9 @@ Fired reminders persist their owner ID on the system message, so an agent-author
 its content through the trusted platform-source path; human-owned reminders remain trusted.
 Reconnect backlog scans carry sender type and actor identity through the same protected view before waking
 an agent. Agent-attributed system rows cannot regain ambient system wake semantics during reconnect.
+When a primary owner releases coordination, every better-fit candidate that rejects that owner is atomically
+denied with its summary cleared before promotion continues. A rejected request cannot remain pending and
+block settlement merely because another eligible candidate was promoted.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
