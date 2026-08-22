@@ -277,15 +277,27 @@ export async function decideReply(o: {
   if (o.decision === "delegate") {
     if (row.grantSlot !== "primary" || row.grantStatus !== "active") return { ok: false, code: "NOT_PRIMARY_OWNER" };
     if (!o.delegateToAgentId || o.delegateToAgentId === o.agentId) return { ok: false, code: "INVALID_DELEGATE_TARGET" };
-    const target = (await db.select().from(schema.agentMessageDecisions).where(and(
-      eq(schema.agentMessageDecisions.serverId, o.serverId),
-      eq(schema.agentMessageDecisions.messageId, o.messageId),
-      eq(schema.agentMessageDecisions.agentId, o.delegateToAgentId),
-      eq(schema.agentMessageDecisions.decision, "requested"),
-      or(eq(schema.agentMessageDecisions.reasonCode, "better_fit"), eq(schema.agentMessageDecisions.reasonCode, "handoff")),
-    )))[0];
-    if (!target?.observedAt) return { ok: false, code: "DELEGATE_NOT_REQUESTED" };
     return db.transaction(async (tx) => {
+      const rows = await tx.select().from(schema.agentMessageDecisions).where(and(
+        eq(schema.agentMessageDecisions.serverId, o.serverId),
+        eq(schema.agentMessageDecisions.messageId, o.messageId),
+      )).orderBy(asc(schema.agentMessageDecisions.agentId)).for("update");
+      const owner = rows.find((candidate) => candidate.agentId === o.agentId);
+      if (owner?.grantSlot !== "primary" || owner.grantStatus !== "active") {
+        return { ok: false as const, code: "NOT_PRIMARY_OWNER" };
+      }
+      const target = rows.find((candidate) => candidate.agentId === o.delegateToAgentId
+        && candidate.decision === "requested"
+        && (candidate.reasonCode === "better_fit" || candidate.reasonCode === "handoff"));
+      if (!target?.observedAt) return { ok: false as const, code: "DELEGATE_NOT_REQUESTED" };
+      const targetPolicy = (await tx.select().from(schema.agents).where(and(
+        eq(schema.agents.id, o.delegateToAgentId!),
+        eq(schema.agents.serverId, o.serverId),
+        isNull(schema.agents.deletedAt),
+      )).for("update"))[0];
+      if (!targetPolicy || !inputSenderAllowed(targetPolicy, "agent", o.agentId)) {
+        return { ok: false as const, code: "INPUT_SOURCE_REJECTED" };
+      }
       await tx.update(schema.agentMessageDecisions).set({ decision: "delegated", grantStatus: "released", decidedAt: now, updatedAt: now })
         .where(and(eq(schema.agentMessageDecisions.messageId, o.messageId), eq(schema.agentMessageDecisions.agentId, o.agentId), eq(schema.agentMessageDecisions.grantStatus, "active")));
       const [granted] = await tx.update(schema.agentMessageDecisions).set({

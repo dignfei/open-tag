@@ -450,6 +450,31 @@ async function main() {
       && rejectedCoordinationRow.decision === "pending"
       && rejectedCoordinationRow.reasonCode === null
       && rejectedCoordinationRow.summary === null);
+    await db.update(schema.agentMessageDecisions).set({
+      decision: "requested", reasonCode: "better_fit", summary: "prior request", decidedAt: new Date(),
+    }).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationMessage.id),
+      eq(schema.agentMessageDecisions.agentId, blocked.id),
+    ));
+    await db.update(schema.agents).set({ incomingMode: "sealed", commandWhitelist: [] })
+      .where(eq(schema.agents.id, blocked.id));
+    const rejectedDelegation = await decideReply({
+      serverId: server.id,
+      agentId: target.id,
+      messageId: coordinationMessage.id,
+      decision: "delegate",
+      delegateToAgentId: blocked.id,
+    });
+    const delegationRows = await db.select().from(schema.agentMessageDecisions)
+      .where(eq(schema.agentMessageDecisions.messageId, coordinationMessage.id));
+    const delegationOwner = delegationRows.find((row) => row.agentId === target.id)!;
+    const delegationTarget = delegationRows.find((row) => row.agentId === blocked.id)!;
+    check("protected delegate target keeps coordination ownership unchanged", !rejectedDelegation.ok
+      && rejectedDelegation.code === "INPUT_SOURCE_REJECTED"
+      && delegationOwner.grantStatus === "active"
+      && delegationOwner.decision === "pending"
+      && delegationTarget.grantStatus === "none"
+      && delegationTarget.delegatedByAgentId === null);
     const deniedThread = await agentApi({
       method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
       token: targetToken, agentId: target.id,
