@@ -73,6 +73,8 @@ export const agents = pgTable("agents", {
   projectPath: text("project_path"),               // canonical absolute cwd on machineId; null = use isolated agent state dir
   runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().default({}).notNull(),
   executionMode: text("execution_mode").default("auto").notNull(),
+  incomingMode: text("incoming_mode").default("open").notNull(), // open | sealed
+  commandWhitelist: jsonb("command_whitelist").$type<string[]>().default([]).notNull(),
 
   envVars: jsonb("env_vars").$type<Record<string, string>>().default({}).notNull(),
   agentTokenHash: text("agent_token_hash"),       // hash of sk_agent_* token (used for CLI auth)
