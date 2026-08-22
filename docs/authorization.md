@@ -108,6 +108,8 @@ rows therefore cannot be used as reaction, reply, claim, update, assignment, or 
 404 for rejected input that it returns for missing or channel-inaccessible messages.
 Agent search over-fetches a bounded candidate set, applies the protected input view, and returns at most 20
 allowed rows. Agent-attributed system audits cannot reintroduce a rejected source's matching task text.
+Task listing applies the input view to task rows before serialization. Removing a source from the whitelist
+therefore prevents its task title from re-entering the target's context through the task projection.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.

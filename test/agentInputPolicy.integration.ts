@@ -345,6 +345,18 @@ async function main() {
     check("search omits rejected agent rows and attributed audits", protectedSearch.status === 200
       && protectedSearch.body.results.length === 0
       && !JSON.stringify(protectedSearch.body).includes("protected task handoff"));
+    const humanTask = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "user", senderId: owner.id,
+      senderName: owner.name, content: "trusted human task", asTask: true,
+    });
+    const protectedTasks = await agentApi({
+      method: "GET", path: `/agent-api/task/list?channel=${encodeURIComponent(`#${channel!.name}`)}`,
+      token: targetToken, agentId: target.id,
+    });
+    const taskListText = JSON.stringify(protectedTasks.body);
+    check("task list hides rejected agent tasks", protectedTasks.status === 200
+      && !taskListText.includes("protected task handoff")
+      && taskListText.includes(humanTask.content));
 
     const [freshnessChannel] = await db.insert(schema.channels).values({
       serverId: server.id, name: `policy-fresh-${suffix}`, type: "channel",

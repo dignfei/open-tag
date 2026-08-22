@@ -615,7 +615,8 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const tgt = await resolveTarget(serverId, url.searchParams.get("channel") ?? "", agent.id);
     if (!tgt) return (sendErr(res, 404, "channel not found"), true);
     const tasks = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, tgt.channelId))).orderBy(asc(schema.messages.taskNumber));
-    return (sendJson(res, 200, { tasks: tasks.filter((m) => m.taskStatus).map((m) => ({ number: m.taskNumber, status: m.taskStatus, content: m.content, id: m.id, assigneeId: m.taskAssigneeId })) }), true);
+    const visibleTasks = await filterAgentInputView(agent, tasks.filter((message) => !!message.taskStatus));
+    return (sendJson(res, 200, { tasks: visibleTasks.map((m) => ({ number: m.taskNumber, status: m.taskStatus, content: m.content, id: m.id, assigneeId: m.taskAssigneeId })) }), true);
   }
   if (p === "/agent-api/task/claim" && method === "POST") {
     const b = await readJson(req);
