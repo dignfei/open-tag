@@ -362,6 +362,14 @@ async function main() {
     ))).length;
     check("task claim by number hides rejected input", deniedClaimByNumber.status === 404
       && auditsAfterDeniedClaim === auditsBeforeDeniedClaim);
+    const deniedUpdateByNumber = await agentApi({
+      method: "POST", path: "/agent-api/task/update", token: targetToken, agentId: target.id,
+      body: { channel: `#${channel!.name}`, number: task.taskNumber, status: "done" },
+    });
+    const taskAfterDeniedUpdate = (await db.select().from(schema.messages)
+      .where(eq(schema.messages.id, task.id)))[0]!;
+    check("task update by number hides rejected input", deniedUpdateByNumber.status === 404
+      && taskAfterDeniedUpdate.taskStatus === "in_progress");
     const deniedThread = await agentApi({
       method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
       token: targetToken, agentId: target.id,
