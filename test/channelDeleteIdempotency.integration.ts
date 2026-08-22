@@ -1,9 +1,10 @@
-// Real PostgreSQL integration for channel deletion compare-and-set behavior.
-// Run: npx tsx test/channelDeleteIdempotency.integration.ts
+// Real PostgreSQL + Redis integration for channel deletion compare-and-set behavior.
+// Run: JWT_SECRET=x DAEMON_BOOTSTRAP_KEY=y npx tsx test/channelDeleteIdempotency.integration.ts
 import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
 import { db, schema, sql } from "../src/db/index.ts";
-import { softDeleteChannelOnce } from "../src/server/channelDeletion.ts";
+import { pub, redis, sub } from "../src/redis.ts";
+import { deleteChannelWithAgentNotice } from "../src/server/channelDeletion.ts";
 
 const runId = Date.now();
 let userId = "";
@@ -41,10 +42,10 @@ async function main(): Promise<void> {
   await setup();
   const outcomes = await Promise.all(Array.from(
     { length: 8 },
-    () => softDeleteChannelOnce(serverId, channelId),
+    () => deleteChannelWithAgentNotice(serverId, channelId),
   ));
-  assert.equal(outcomes.filter(Boolean).length, 1);
-  assert.equal(await softDeleteChannelOnce(serverId, channelId), false);
+  assert.equal(outcomes.filter((outcome) => outcome.deleted).length, 1);
+  assert.deepEqual(await deleteChannelWithAgentNotice(serverId, channelId), { deleted: false });
   const [channel] = await db.select({ deletedAt: schema.channels.deletedAt })
     .from(schema.channels).where(eq(schema.channels.id, channelId));
   assert.ok(channel?.deletedAt instanceof Date);
@@ -54,11 +55,13 @@ async function main(): Promise<void> {
 main()
   .then(async () => {
     await cleanup();
+    await Promise.all([redis.quit(), pub.quit(), sub.quit()]);
     await sql.end();
   })
   .catch(async (error) => {
     console.error(error);
     try { await cleanup(); } catch (cleanupError) { console.error(cleanupError); }
+    try { await Promise.all([redis.quit(), pub.quit(), sub.quit()]); } catch (closeError) { console.error(closeError); }
     await sql.end();
     process.exit(1);
   });
