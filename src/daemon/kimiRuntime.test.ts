@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildKimiPrompt, handleKimiEvent } from "./kimiRuntime.js";
+import { buildKimiPrompt, handleKimiEvent, isMissingKimiSession } from "./kimiRuntime.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 function fixtureEvents(name: string): any[] {
@@ -55,4 +55,12 @@ test("Kimi compatibility mode composes standing instructions on every turn", () 
   const prompt = buildKimiPrompt("open-tag standing instructions", "user turn");
   assert.match(prompt, /open-tag standing instructions/);
   assert.match(prompt, /user turn/);
+});
+
+test("Kimi stale-session detection is bound to the resumed session id", () => {
+  assert.equal(isMissingKimiSession('Session "session_stale" not found', "session_stale"), true);
+  assert.equal(isMissingKimiSession('Session "session_stale" was not found', "session_stale"), true);
+  assert.equal(isMissingKimiSession('Session "session_stale" state.json was not found', "session_stale"), true);
+  assert.equal(isMissingKimiSession('Session "another_session" not found', "session_stale"), false);
+  assert.equal(isMissingKimiSession("Model not found", "session_stale"), false);
 });
