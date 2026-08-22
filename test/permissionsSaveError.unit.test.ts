@@ -111,3 +111,30 @@ test("permission saves adopt only the expected success envelope", () => {
     "local state and Saved must follow validation of every consumed response field",
   );
 });
+
+test("permission state and confirmation timers stay with the selected agent", () => {
+  assert.match(
+    src,
+    /tab === "permissions"\s*\?\s*<PermissionsTab\s+key=\{id\}\s+id=\{id\}\s*\/>/,
+    "switching agents must remount the permissions panel",
+  );
+  assert.match(
+    permissions,
+    /const savedTimerRef = useRef<ReturnType<typeof setTimeout> \| null>\(null\)/,
+  );
+  assert.match(
+    permissions,
+    /useEffect\(\(\) => \(\) => \{ if \(savedTimerRef\.current\) clearTimeout\(savedTimerRef\.current\); \}, \[\]\)/,
+    "unmounting the panel must clear its pending confirmation timer",
+  );
+
+  const saveStart = permissions.indexOf("const save = async");
+  const saveEnd = permissions.indexOf("const groups", saveStart);
+  const save = permissions.slice(saveStart, saveEnd);
+  const clearAt = save.indexOf("clearTimeout(savedTimerRef.current)");
+  const requestAt = save.indexOf('await api("PUT"');
+  const scheduleAt = save.indexOf("savedTimerRef.current = setTimeout", requestAt);
+
+  assert.ok(clearAt >= 0 && clearAt < requestAt, "a new save must clear the previous confirmation timer");
+  assert.ok(scheduleAt > requestAt, "a successful save must retain its confirmation timer for cleanup");
+});
