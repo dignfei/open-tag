@@ -37,7 +37,7 @@ export function createUnreadRefresh(load: () => Promise<unknown>, commit: (value
         const target = requested;
         try {
           const values = parseUnreadValues(await load());
-          if (active && values && target === requested) commit(values);
+          if (active && values) commit(values);
         } catch { /* keep the current badge map */ }
         completed = target;
         settleWaiters();

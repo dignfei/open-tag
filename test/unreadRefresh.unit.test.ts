@@ -31,15 +31,15 @@ test("overlapping badge refreshes run one trailing load", async () => {
   first.resolve({ channel: 1 });
   await nextTurn();
   assert.equal(loadCount, 2);
-  assert.deepEqual(commits, []);
+  assert.deepEqual(commits, [{ channel: 1 }]);
 
   trailing.resolve({ channel: 4 });
   await Promise.all(requests);
-  assert.deepEqual(commits, [{ channel: 4 }]);
+  assert.deepEqual(commits, [{ channel: 1 }, { channel: 4 }]);
   assert.equal(loadCount, 2);
 });
 
-test("a failed trailing load does not expose its superseded snapshot", async () => {
+test("a completed snapshot remains usable when its trailing load fails", async () => {
   const first = deferred<unknown>();
   const trailing = deferred<unknown>();
   const loads = [first, trailing];
@@ -53,12 +53,41 @@ test("a failed trailing load does not expose its superseded snapshot", async () 
   const requests = [refresh.request()];
   await nextTurn();
   requests.push(refresh.request());
-  first.resolve({ stale: 8 });
+  first.resolve({ channel: 8 });
   await nextTurn();
   trailing.reject(new Error("offline"));
   await Promise.all(requests);
 
-  assert.deepEqual(commits, []);
+  assert.deepEqual(commits, [{ channel: 8 }]);
+});
+
+test("slow refreshes still commit during a steady event stream", async () => {
+  const first = deferred<unknown>();
+  const second = deferred<unknown>();
+  const third = deferred<unknown>();
+  const loads = [first, second, third];
+  const commits: unknown[] = [];
+  let loadCount = 0;
+  const refresh = createUnreadRefresh(
+    () => loads[loadCount++]!.promise,
+    (values) => commits.push(values),
+  );
+
+  const requests = [refresh.request()];
+  await nextTurn();
+  requests.push(refresh.request());
+  first.resolve({ channel: 1 });
+  await nextTurn();
+  assert.deepEqual(commits, [{ channel: 1 }]);
+
+  requests.push(refresh.request());
+  second.resolve({ channel: 2 });
+  await nextTurn();
+  assert.deepEqual(commits, [{ channel: 1 }, { channel: 2 }]);
+
+  third.resolve({ channel: 3 });
+  await Promise.all(requests);
+  assert.deepEqual(commits, [{ channel: 1 }, { channel: 2 }, { channel: 3 }]);
 });
 
 test("a completed request resolves while a trailing load remains pending", async () => {
@@ -77,7 +106,7 @@ test("a completed request resolves while a trailing load remains pending", async
   let trailingDone = false;
   void trailingRequest.then(() => { trailingDone = true; });
 
-  first.resolve({ stale: 1 });
+  first.resolve({ current: 1 });
   await firstRequest;
   await nextTurn();
   assert.equal(loadCount, 2);
