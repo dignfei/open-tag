@@ -342,7 +342,7 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       }
       // Persisted observation de-duplicates stable messages beyond a collecting gap. The scalar channel
       // cursor advances only through the contiguous prefix, so the hidden Turn cannot be skipped forever.
-      if (visibility.cursorPrefix.length) await db.update(schema.channelMembers).set({ lastReadSeq: visibility.cursorPrefix.at(-1)!.seq })
+      if (visibility.cursorPrefix.length) await db.update(schema.channelMembers).set({ lastReadSeq: sql<number>`greatest(${schema.channelMembers.lastReadSeq}, ${visibility.cursorPrefix.at(-1)!.seq})` })
         .where(and(eq(schema.channelMembers.channelId, cm.channelId), eq(schema.channelMembers.memberType, "agent"), eq(schema.channelMembers.memberId, agent.id)));
     }
     const coordination: any[] = [];
