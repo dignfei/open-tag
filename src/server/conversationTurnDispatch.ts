@@ -20,7 +20,7 @@ import { publish } from "./realtime.js";
 import { ensureReplyRecipients, releaseUnavailableReplyGrant, reserveReplyRecipients, type ReplyRecipient } from "./replyCoordination.js";
 import { agentHasScope } from "./scopes.js";
 import { inputSenderAllowed } from "./agentInputPolicy.js";
-import { agentInputVisible, attributedInputSenderType } from "./agentInputView.js";
+import { attributedInputSenderType } from "./agentInputView.js";
 
 type PersistedMessage = typeof schema.messages.$inferSelect;
 type PersistedChannel = typeof schema.channels.$inferSelect;
@@ -231,7 +231,7 @@ export async function dispatchLegacyMessage<TTarget extends { ok: true }>(input:
   const senderType = await attributedInputSenderType(input.msg.serverId, input.msg);
   for (const member of candidates) {
     const target = targets.get(member.id);
-    if (!target || !await agentInputVisible(target, input.msg)) continue;
+    if (!target || !inputSenderAllowed(target, senderType, input.msg.senderId)) continue;
     const mentioned = mentionedAgents.has(member.id);
     if (!isDm && !mentioned) {
       const row = (await db.select({ scopes: schema.agents.scopes }).from(schema.agents).where(eq(schema.agents.id, member.id)))[0];
