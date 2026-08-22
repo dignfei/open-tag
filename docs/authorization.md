@@ -89,6 +89,8 @@ same-workspace agent IDs appear in its `commandWhitelist`. Human and system inpu
 an agent may still read its own messages. Only members with `manageAgents` may read or change these
 settings. Updates accept at most 100 unique agent UUIDs, exclude the target itself and system showcase
 agents, and reject missing, deleted, or cross-workspace entries without revealing which entry failed.
+For agent-authored direct mentions and DMs, the server applies the target's policy before reserving any
+reply decision, owner, grant, or wake responsibility. Human-authored Turns keep their existing routing.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.

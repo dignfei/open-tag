@@ -5,10 +5,14 @@ import "../src/env.js";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db, schema, sql } from "../src/db/index.ts";
 import { signUser } from "../src/server/auth.ts";
-import { handleApi } from "../src/server/routes-api/index.ts";
+
+process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
+const { createMessage, parseMentions } = await import("../src/server/core.ts");
+const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
+const { handleApi } = await import("../src/server/routes-api/index.ts");
 
 const suffix = Date.now().toString(36);
 let failures = 0;
@@ -72,13 +76,15 @@ async function main() {
   const localAgents = await db.insert(schema.agents).values([
     { serverId: server.id, name: `target-${suffix}`, displayName: "Target" },
     { serverId: server.id, name: `peer-${suffix}`, displayName: "Peer" },
+    { serverId: server.id, name: `blocked-${suffix}`, displayName: "Blocked" },
     { serverId: server.id, name: `showcase-${suffix}`, displayName: "Showcase", creatorType: "system" },
     { serverId: server.id, name: `deleted-${suffix}`, displayName: "Deleted", deletedAt: new Date() },
   ]).returning();
   const target = localAgents[0]!;
   const peer = localAgents[1]!;
-  const showcase = localAgents[2]!;
-  const deleted = localAgents[3]!;
+  const blocked = localAgents[2]!;
+  const showcase = localAgents[3]!;
+  const deleted = localAgents[4]!;
   const [foreign] = await db.insert(schema.agents).values({
     serverId: foreignServer.id, name: `foreign-${suffix}`, displayName: "Foreign",
   }).returning();
@@ -129,7 +135,82 @@ async function main() {
     const stored = (await db.select().from(schema.agents).where(eq(schema.agents.id, target.id)))[0]!;
     check("rejected updates do not replace the saved policy", stored.incomingMode === "sealed"
       && stored.commandWhitelist.length === 1 && stored.commandWhitelist[0] === peer.id);
+
+    const [channel] = await db.insert(schema.channels).values({
+      serverId: server.id, name: `policy-turn-${suffix}`, type: "channel",
+    }).returning();
+    await db.insert(schema.channelMembers).values([target, peer, blocked].map((agent) => ({
+      channelId: channel!.id, memberType: "agent", memberId: agent.id,
+    })));
+    const blockedMessage = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: blocked.id,
+      senderName: blocked.name, content: `@${target.name} blocked request`,
+    });
+    const blockedDecision = await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, blockedMessage.id),
+      eq(schema.agentMessageDecisions.agentId, target.id),
+    ));
+    check("sealed target receives no responsibility from an unlisted agent", blockedDecision.length === 0);
+    const persistedBlocked = (await db.select().from(schema.messages).where(eq(schema.messages.id, blockedMessage.id)))[0]!;
+    await db.update(schema.conversationTurns).set({ dispatchAfter: new Date(0) })
+      .where(eq(schema.conversationTurns.id, persistedBlocked.conversationTurnId!));
+    let blockedStarts = 0;
+    let blockedDeliveries = 0;
+    const dispatchMembers = [target, peer, blocked].map((agent) => ({
+      type: "agent" as const, id: agent.id, name: agent.name, displayName: agent.displayName,
+    }));
+    await dispatchConversationTurn(persistedBlocked.conversationTurnId!, {
+      channelMembers: async () => dispatchMembers,
+      parseMentions,
+      agentStartTarget: async () => { blockedStarts++; return { ok: true as const }; },
+      agentStartPreflight: async () => ({ ok: true as const }),
+      sendAgentStart: () => { blockedStarts++; return true; },
+      sendAgentDeliver: () => { blockedDeliveries++; return true; },
+      markAgentUnavailable: async () => {},
+      finalizeAgentActivityRun: async () => {},
+    });
+    const dispatchedBlocked = (await db.select().from(schema.conversationTurns)
+      .where(eq(schema.conversationTurns.id, persistedBlocked.conversationTurnId!)))[0]!;
+    const blockedEdges = await db.select().from(schema.causalEdges).where(and(
+      eq(schema.causalEdges.rootTurnId, persistedBlocked.conversationTurnId!),
+      eq(schema.causalEdges.targetAgentId, target.id),
+    ));
+    check("dispatch completes a rejected command without starting or delivering", blockedStarts === 0
+      && blockedDeliveries === 0 && blockedEdges.length === 0
+      && dispatchedBlocked.state === "dispatched" && dispatchedBlocked.responsibilityState === "completed");
+
+    const allowedMessage = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: peer.id,
+      senderName: peer.name, content: `@${target.name} listed request`,
+    });
+    const allowedDecision = await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, allowedMessage.id),
+      eq(schema.agentMessageDecisions.agentId, target.id),
+    ));
+    check("listed agent may reserve target responsibility", allowedDecision.length === 1);
+
+    const humanMessage = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "user", senderId: owner.id,
+      senderName: owner.name, content: `@${target.name} human request`,
+    });
+    const humanDecision = await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, humanMessage.id),
+      eq(schema.agentMessageDecisions.agentId, target.id),
+    ));
+    check("human input may reserve sealed target responsibility", humanDecision.length === 1);
   } finally {
+    await db.delete(schema.causalEdges).where(eq(schema.causalEdges.serverId, server.id));
+    await db.delete(schema.agentMessageObservations).where(eq(schema.agentMessageObservations.serverId, server.id));
+    await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.serverId, server.id));
+    const messageIds = (await db.select({ id: schema.messages.id }).from(schema.messages)
+      .where(eq(schema.messages.serverId, server.id))).map((message) => message.id);
+    if (messageIds.length) await db.delete(schema.messageMentions).where(inArray(schema.messageMentions.messageId, messageIds));
+    await db.delete(schema.messages).where(eq(schema.messages.serverId, server.id));
+    await db.delete(schema.conversationTurns).where(eq(schema.conversationTurns.serverId, server.id));
+    const channelIds = (await db.select({ id: schema.channels.id }).from(schema.channels)
+      .where(eq(schema.channels.serverId, server.id))).map((channel) => channel.id);
+    if (channelIds.length) await db.delete(schema.channelMembers).where(inArray(schema.channelMembers.channelId, channelIds));
+    await db.delete(schema.channels).where(eq(schema.channels.serverId, server.id));
     await db.delete(schema.agents).where(inArray(schema.agents.serverId, [server.id, foreignServer.id]));
     await db.delete(schema.serverMembers).where(inArray(schema.serverMembers.serverId, [server.id, foreignServer.id]));
     await db.delete(schema.servers).where(inArray(schema.servers.id, [server.id, foreignServer.id]));
