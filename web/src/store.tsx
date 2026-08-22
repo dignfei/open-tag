@@ -332,10 +332,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           const r = await api("GET", `/api/messages/sync?since=${lastSeq}`);
           for (const msg of (r?.messages || [])) {
-            if (msg.senderId !== myId && msg.channelId) setUnread((u) => ({ ...u, [msg.channelId]: (u[msg.channelId] || 0) + 1 }));
             dispatch({ type: "message", channelId: msg.channelId, message: msg });
           }
-          syncUnread(); // correct badge after catch-up (prevent double-count inflation)
+          syncUnread(); // content catch-up and badges converge from their independent server sources
           if (r?.maxSeq) lastSeq = Math.max(lastSeq, r.maxSeq);
         } catch { /* */ }
       });
