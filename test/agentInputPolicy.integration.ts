@@ -10,7 +10,7 @@ import { db, schema, sql } from "../src/db/index.ts";
 import { hashToken, signUser } from "../src/server/auth.ts";
 
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
-const { createMessage, getOrCreateThread, parseMentions, resolveMessageId } = await import("../src/server/core.ts");
+const { createMessage, getOrCreateThread, parseMentions, resolveMessageId, setTaskStatus } = await import("../src/server/core.ts");
 const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
 const { handleAgentApi } = await import("../src/server/routes-agent.ts");
@@ -395,6 +395,27 @@ async function main() {
       .where(eq(schema.messages.id, task.id)))[0]!;
     check("task assignment by number hides rejected input", deniedAssignmentByNumber.status === 404
       && taskAfterDeniedAssignment.taskAssigneeId === target.id);
+
+    const blockedStatusTask = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "agent", senderId: blocked.id,
+      senderName: blocked.name, content: "protected status update", asTask: true,
+    });
+    await db.update(schema.messages).set({ taskAssigneeType: "agent", taskAssigneeId: target.id })
+      .where(eq(schema.messages.id, blockedStatusTask.id));
+    const statusUpdate = await setTaskStatus(server.id, blockedStatusTask.id, "in_review", {
+      type: "agent", id: blocked.id,
+    });
+    const blockedStatusMembers = await db.select().from(schema.channelMembers).where(and(
+      eq(schema.channelMembers.channelId, blockedStatusTask.threadId!),
+      eq(schema.channelMembers.memberType, "agent"),
+      eq(schema.channelMembers.memberId, target.id),
+    ));
+    const blockedStatusDecisions = await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.channelId, blockedStatusTask.threadId!),
+      eq(schema.agentMessageDecisions.agentId, target.id),
+    ));
+    check("blocked task status source cannot wake the assignee", statusUpdate?.taskStatus === "in_review"
+      && blockedStatusMembers.length === 0 && blockedStatusDecisions.length === 0);
     const deniedThread = await agentApi({
       method: "GET", path: `/agent-api/thread/read?parent=${task.id.slice(0, 8)}`,
       token: targetToken, agentId: target.id,

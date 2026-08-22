@@ -947,8 +947,17 @@ export async function setTaskStatus(serverId: string, messageId: string, status:
   const label = STATUS_LABEL[status] ?? status;
   const emoji = STATUS_EMOJI[status] ? STATUS_EMOJI[status] + " " : ""; // confirmed for in_progress/in_review; others pending confirmation, no guessing
   const sysMsg = await sysTaskMsg(serverId, threadCh, `${emoji}${actor} moved #${upd.taskNumber} "${taskTitle(upd.content)}" to ${label}`, by);
+  let assigneeAcceptsSource = true;
+  if (by?.type === "agent" && upd.taskAssigneeId) {
+    const target = (await db.select().from(schema.agents).where(and(
+      eq(schema.agents.id, upd.taskAssigneeId),
+      eq(schema.agents.serverId, serverId),
+      isNull(schema.agents.deletedAt),
+    )))[0];
+    assigneeAcceptsSource = !!target && inputSenderAllowed(target, "agent", by.id);
+  }
   // Wake the assigned agent (only when changed by someone else). Verified: human changes status → assignee agent fires agent:activity working detail="Message received".
-  if (upd.taskAssigneeType === "agent" && upd.taskAssigneeId && by?.id !== upd.taskAssigneeId) {
+  if (upd.taskAssigneeType === "agent" && upd.taskAssigneeId && by?.id !== upd.taskAssigneeId && assigneeAcceptsSource) {
     await db.insert(schema.channelMembers).values({ channelId: threadCh, memberType: "agent", memberId: upd.taskAssigneeId }).onConflictDoNothing(); // ensure assignee is a thread member, otherwise message check cannot see this system message
     const target = await agentStartTarget(serverId, upd.taskAssigneeId);
     await ensureReplyRecipients({ serverId, channelId: threadCh, messageId: sysMsg.id, recipients: [{ agentId: upd.taskAssigneeId, attention: "assigned" }] });
