@@ -323,7 +323,10 @@ function AgentInputPolicyCard({
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const toggleAgent = (id: string) => setWhitelist((current) => {
     const next = new Set(current);
     next.has(id) ? next.delete(id) : next.add(id);

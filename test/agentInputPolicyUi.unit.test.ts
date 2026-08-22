@@ -53,7 +53,11 @@ test("agent input failures retain selections and use localized feedback", () => 
 
 test("late agent input save responses stay silent after profile close", () => {
   assert.match(editor, /const mountedRef = useRef\(true\)/);
-  assert.match(editor, /useEffect\(\(\) => \(\) => \{ mountedRef\.current = false; \}, \[\]\)/);
+  assert.match(
+    editor,
+    /useEffect\(\(\) => \{\s*mountedRef\.current = true;\s*return \(\) => \{ mountedRef\.current = false; \};\s*\}, \[\]\)/,
+    "Strict Mode effect replay must reactivate the mounted guard",
+  );
   const requestAt = editor.indexOf('await api("PATCH"');
   const inactiveAt = editor.indexOf("if (!mountedRef.current) return", requestAt);
   const validateAt = editor.indexOf("const validMode", requestAt);
