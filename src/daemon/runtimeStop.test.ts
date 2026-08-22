@@ -168,7 +168,7 @@ const count = (fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0) 
 fs.writeFileSync(file, String(count));
 if (count === 2) { console.error("accepted turn failed"); process.exit(1); }
 `;
-  for (const runtime of [copilotRuntime, cursorRuntime, hermesRuntime, opencodeRuntime, piRuntime]) {
+  for (const runtime of [copilotRuntime, cursorRuntime, hermesRuntime, kimiRuntime, opencodeRuntime, piRuntime]) {
     const adapter = adapters.find((candidate) => candidate.runtime === runtime)!;
     await t.test(runtime.name, () => assertAcceptedFailureKeepsSessionReusable(adapter, source));
   }
