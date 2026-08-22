@@ -771,7 +771,8 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
     const tstr = `thread:${parent.id.slice(0, 8)}`;
     if (!th) return (sendJson(res, 200, { parent: { senderName: parent.senderName, content: parent.content }, messages: [] }), true);
     const msgs = await db.select().from(schema.messages).where(and(eq(schema.messages.channelId, th.id), ne(schema.messages.messageType, "agent_activity_receipt"))).orderBy(asc(schema.messages.seq)).limit(100);
-    return (sendJson(res, 200, { parent: { senderName: parent.senderName, content: parent.content }, messages: msgs.map((m) => ({ ...serialize(m), text: fmt(m, tstr) })) }), true);
+    const visible = await filterAgentInputView(agent, msgs);
+    return (sendJson(res, 200, { parent: { senderName: parent.senderName, content: parent.content }, messages: visible.map((m) => ({ ...serialize(m), text: fmt(m, tstr) })) }), true);
   }
   // Full-text search (agent self-queries context): searches only channels the agent belongs to, ilike substring match
   if (p === "/agent-api/search" && method === "GET") {

@@ -10,7 +10,7 @@ import { db, schema, sql } from "../src/db/index.ts";
 import { hashToken, signUser } from "../src/server/auth.ts";
 
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
-const { createMessage, parseMentions, resolveMessageId } = await import("../src/server/core.ts");
+const { createMessage, getOrCreateThread, parseMentions, resolveMessageId } = await import("../src/server/core.ts");
 const { dispatchConversationTurn } = await import("../src/server/conversationTurnDispatch.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
 const { handleAgentApi } = await import("../src/server/routes-agent.ts");
@@ -363,6 +363,30 @@ async function main() {
     check("task list hides rejected agent tasks", protectedTasks.status === 200
       && !taskListText.includes("protected task handoff")
       && taskListText.includes(humanTask.content));
+
+    const threadParent = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "user", senderId: owner.id,
+      senderName: owner.name, content: "trusted thread parent",
+    });
+    const thread = await getOrCreateThread(server.id, threadParent.id);
+    const blockedReply = `blocked-thread-reply-${suffix}`;
+    await createMessage({
+      serverId: server.id, channelId: thread.id, senderType: "agent", senderId: blocked.id,
+      senderName: blocked.name, content: blockedReply,
+    });
+    const trustedReply = `trusted-thread-reply-${suffix}`;
+    await createMessage({
+      serverId: server.id, channelId: thread.id, senderType: "user", senderId: owner.id,
+      senderName: owner.name, content: trustedReply,
+    });
+    const protectedThread = await agentApi({
+      method: "GET", path: `/agent-api/thread/read?parent=${threadParent.id.slice(0, 8)}`,
+      token: targetToken, agentId: target.id,
+    });
+    const threadText = JSON.stringify(protectedThread.body);
+    check("thread read filters rejected replies under an allowed parent", protectedThread.status === 200
+      && threadText.includes("trusted thread parent") && threadText.includes(trustedReply)
+      && !threadText.includes(blockedReply));
 
     const [freshnessChannel] = await db.insert(schema.channels).values({
       serverId: server.id, name: `policy-fresh-${suffix}`, type: "channel",

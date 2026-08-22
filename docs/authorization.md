@@ -112,6 +112,8 @@ Task listing applies the input view to task rows before serialization. Removing 
 therefore prevents its task title from re-entering the target's context through the task projection.
 Thread parent resolution applies the input view after channel access. A rejected parent returns 404 for both
 thread read and reply, even when the target remains a member of the previously created task thread.
+When the parent is allowed, thread read applies the same view independently to its bounded reply list. A
+rejected reply cannot enter context through an otherwise trusted human-owned thread.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
