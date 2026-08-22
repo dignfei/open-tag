@@ -87,8 +87,8 @@ async function main() {
   ]);
   const localAgents = await db.insert(schema.agents).values([
     { serverId: server.id, name: `target-${suffix}`, displayName: "Target", agentTokenHash: hashToken(targetToken) },
-    { serverId: server.id, name: `peer-${suffix}`, displayName: "Peer" },
-    { serverId: server.id, name: `blocked-${suffix}`, displayName: "Blocked", agentTokenHash: hashToken(blockedToken) },
+    { serverId: server.id, name: `peer-${suffix}`, displayName: "Peer", description: `allowed-description-${suffix}` },
+    { serverId: server.id, name: `blocked-${suffix}`, displayName: "Blocked", description: `blocked-description-${suffix}`, agentTokenHash: hashToken(blockedToken) },
     { serverId: server.id, name: `showcase-${suffix}`, displayName: "Showcase", creatorType: "system" },
     { serverId: server.id, name: `deleted-${suffix}`, displayName: "Deleted", deletedAt: new Date() },
   ]).returning();
@@ -157,6 +157,15 @@ async function main() {
     const stored = (await db.select().from(schema.agents).where(eq(schema.agents.id, target.id)))[0]!;
     check("rejected updates do not replace the saved policy", stored.incomingMode === "sealed"
       && stored.commandWhitelist.length === 1 && stored.commandWhitelist[0] === peer.id);
+    const protectedDirectory = await agentApi({
+      method: "GET", path: "/agent-api/server/info", token: targetToken, agentId: target.id,
+    });
+    const directoryPeer = protectedDirectory.body.agents.find((entry: any) => entry.name === peer.name);
+    const directoryBlocked = protectedDirectory.body.agents.find((entry: any) => entry.name === blocked.name);
+    check("agent directory hides rejected profile text", protectedDirectory.status === 200
+      && directoryPeer?.description === peer.description
+      && directoryBlocked?.status === blocked.status
+      && directoryBlocked?.description === null);
 
     const [autoJoinChannel] = await db.insert(schema.channels).values({
       serverId: server.id, name: `policy-join-${suffix}`, type: "channel",
