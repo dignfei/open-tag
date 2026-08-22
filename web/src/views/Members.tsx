@@ -20,7 +20,11 @@ import i18n from "../i18n";
 import { ProjectDirectoryField } from "./ProjectDirectoryPicker.tsx";
 import { copyText } from "../lib/clipboard.ts";
 import { isCurrentAgentProfileResponse } from "../lib/agentProfileLoad.ts";
-import { filterAvailableAgentIds } from "../lib/agentInputPolicy.ts";
+import {
+  filterAvailableAgentIds,
+  MAX_AGENT_INPUT_SOURCES,
+  toggleAgentInputSource,
+} from "../lib/agentInputPolicy.ts";
 
 // Unified agent status label: fine-grained activity (working/thinking/online) takes priority;
 // offline/absent falls back to lifecycle status (active/sleeping/inactive).
@@ -345,15 +349,16 @@ function AgentInputPolicyCard({
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
+  const activeWhitelist = filterAvailableAgentIds(whitelist, candidateIds);
+  const whitelistFull = activeWhitelist.length >= MAX_AGENT_INPUT_SOURCES;
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
-  const toggleAgent = (id: string) => setWhitelist((current) => {
-    const next = new Set(current);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
+  const toggleAgent = (id: string) => setWhitelist((current) => toggleAgentInputSource(
+    filterAvailableAgentIds(current, candidateIds),
+    id,
+  ));
   const save = async () => {
     if (savingRef.current) return;
     savingRef.current = true;
@@ -398,9 +403,10 @@ function AgentInputPolicyCard({
       </label>
       {sealed && <>
         <div className="sec sec-sub">{t("members.inputPolicyWhitelist")}</div>
+        <div className="meta">{t("members.inputPolicyWhitelistLimit", { count: MAX_AGENT_INPUT_SOURCES })}</div>
         {candidates.length === 0 ? <div className="meta">{t("members.inputPolicyWhitelistEmpty")}</div>
           : candidates.map((candidate) => <label key={candidate.id} className="perm-row">
-              <input type="checkbox" checked={whitelist.has(candidate.id)} disabled={saving} onChange={() => toggleAgent(candidate.id)} />
+              <input type="checkbox" checked={whitelist.has(candidate.id)} disabled={saving || (!whitelist.has(candidate.id) && whitelistFull)} onChange={() => toggleAgent(candidate.id)} />
               <span className="grow"><span className="who">{candidate.displayName || candidate.name}</span> <span className="meta">@{candidate.name}</span></span>
             </label>)}
       </>}

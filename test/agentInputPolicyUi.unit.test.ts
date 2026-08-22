@@ -48,8 +48,12 @@ test("agent input saves acquire one gate and lock every control", () => {
   const acquireRefAt = editor.indexOf("savingRef.current = true", saveStart);
   const acquireUiAt = editor.indexOf("setSaving(true)", saveStart);
   assert.ok(guardAt >= 0 && acquireRefAt > guardAt && acquireUiAt > guardAt && requestAt > acquireUiAt);
-  assert.equal(editor.match(/disabled=\{saving\}/g)?.length, 3, "mode, allowlist, and Save must all lock in flight");
+  assert.equal(editor.match(/disabled=\{saving\}/g)?.length, 2, "mode and Save must lock in flight");
+  assert.match(editor, /disabled=\{saving \|\| \(!whitelist\.has\(candidate\.id\) && whitelistFull\)\}/);
   assert.match(editor, /<div className="perm-head"[^>]*>\s*<button className="ok" disabled=\{saving\}/);
+  assert.match(editor, /inputPolicyWhitelistLimit", \{ count: MAX_AGENT_INPUT_SOURCES \}/);
+  assert.equal(en.members.inputPolicyWhitelistLimit, "Select up to {{count}} agents.");
+  assert.equal(zh.members.inputPolicyWhitelistLimit, "最多选择 {{count}} 个 agent。");
 });
 
 test("agent input saves validate the complete response before adopting it", () => {
