@@ -1,6 +1,6 @@
-// Deterministic integration coverage for overlapping agent inbox checks:
-// a request that read an older snapshot must not overwrite a newer channel-member cursor
-// when its UPDATE resumes after the newer cursor commits.
+// Deterministic integration coverage for overlapping agent read paths: a request that
+// read an older snapshot must not overwrite a newer channel-member cursor when its
+// UPDATE resumes after the newer cursor commits.
 //
 // Requires dev PostgreSQL. Run:
 //   JWT_SECRET=x DAEMON_BOOTSTRAP_KEY=y npx tsx test/agentReadCursorMonotonic.integration.ts
@@ -29,6 +29,7 @@ type Fixture = {
   agentId: string;
   agentToken: string;
   channelId: string;
+  channelName: string;
 };
 
 const databaseUrl = process.env.DATABASE_URL ?? "postgres://opentag:opentag@localhost:5433/opentag";
@@ -60,13 +61,15 @@ async function waitForBlockedCursorUpdate(blockerPid: number, timeoutMs = 5_000)
   throw new Error("timed out waiting for the stale route UPDATE to block on channel_members");
 }
 
-function makeRequest(fixture: Fixture): IncomingMessage {
-  return Object.assign(Readable.from([] as Buffer[]), {
-    method: "GET",
-    url: "/agent-api/message/check",
+function makeRequest(fixture: Fixture, method: string, path: string, body?: object): IncomingMessage {
+  const raw = body ? JSON.stringify(body) : "";
+  return Object.assign(Readable.from(raw ? [Buffer.from(raw)] : []), {
+    method,
+    url: path,
     headers: {
       authorization: `Bearer ${fixture.agentToken}`,
       "x-agent-id": fixture.agentId,
+      "content-type": "application/json",
     },
   }) as unknown as IncomingMessage;
 }
@@ -96,18 +99,24 @@ function makeResponse(): {
   };
 }
 
-async function messageCheck(fixture: Fixture) {
-  const req = makeRequest(fixture);
+async function agentRequest(fixture: Fixture, method: string, path: string, body?: object) {
+  const req = makeRequest(fixture, method, path, body);
   const response = makeResponse();
   const handled = await handleAgentApi(
     req,
     response.res,
-    new URL("http://localhost/agent-api/message/check"),
-    "GET",
+    new URL(path, "http://localhost"),
+    method,
   );
   assert.equal(handled, true);
   return { status: response.status(), body: response.body() };
 }
+
+const messageCheck = (fixture: Fixture) => agentRequest(fixture, "GET", "/agent-api/message/check");
+const freshnessSend = (fixture: Fixture) => agentRequest(fixture, "POST", "/agent-api/message/send", {
+  target: `#${fixture.channelName}`,
+  content: "draft reply",
+});
 
 async function setup(): Promise<Fixture> {
   const suffix = randomUUID().slice(0, 8);
@@ -150,6 +159,7 @@ async function setup(): Promise<Fixture> {
       agentId: agent!.id,
       agentToken,
       channelId: channel!.id,
+      channelName,
     };
   });
 }
@@ -192,58 +202,98 @@ async function cleanup(fixture: Fixture): Promise<void> {
   await db.delete(schema.users).where(eq(schema.users.id, fixture.ownerId));
 }
 
+async function completeBehindNewerCursor(
+  fixture: Fixture,
+  startRequest: () => ReturnType<typeof agentRequest>,
+  createNewerCursor: () => Promise<number>,
+) {
+  const blockerReady = deferred<number>();
+  const advanceCursor = deferred<number>();
+  const transaction = blockerSql.begin(async (tx) => {
+    const [session] = await tx<{ pid: number }[]>`select pg_backend_pid()::int as pid`;
+    await tx`
+      select 1
+      from channel_members
+      where channel_id = ${fixture.channelId}
+        and member_type = 'agent'
+        and member_id = ${fixture.agentId}
+      for update
+    `;
+    blockerReady.resolve(session!.pid);
+    const newerSeq = await advanceCursor.promise;
+    await tx`
+      update channel_members
+      set last_read_seq = ${newerSeq}
+      where channel_id = ${fixture.channelId}
+        and member_type = 'agent'
+        and member_id = ${fixture.agentId}
+    `;
+  }).catch((error) => {
+    blockerReady.reject(error);
+    throw error;
+  });
+  void transaction.catch(() => {});
+
+  const blockerPid = await blockerReady.promise;
+  const staleRequest = startRequest();
+  try {
+    await waitForBlockedCursorUpdate(blockerPid);
+    const newerSeq = await createNewerCursor();
+    advanceCursor.resolve(newerSeq);
+    await transaction;
+    return { response: await staleRequest, newerSeq };
+  } catch (error) {
+    advanceCursor.reject(error);
+    await transaction.catch(() => {});
+    await staleRequest.catch(() => {});
+    throw error;
+  }
+}
+
 async function main(): Promise<void> {
   let fixture: Fixture | undefined;
   try {
     fixture = await setup();
     const older = await insertHumanMessage(fixture, 1, "older inbox message");
-    const blockerReady = deferred<number>();
-    const advanceCursor = deferred<number>();
-    const transaction = blockerSql.begin(async (tx) => {
-      const [session] = await tx<{ pid: number }[]>`select pg_backend_pid()::int as pid`;
-      await tx`
-        select 1
-        from channel_members
-        where channel_id = ${fixture.channelId}
-          and member_type = 'agent'
-          and member_id = ${fixture.agentId}
-        for update
-      `;
-      blockerReady.resolve(session!.pid);
-      const newerSeq = await advanceCursor.promise;
-      await tx`
-        update channel_members
-        set last_read_seq = ${newerSeq}
-        where channel_id = ${fixture.channelId}
-          and member_type = 'agent'
-          and member_id = ${fixture.agentId}
-      `;
-    }).catch((error) => {
-      blockerReady.reject(error);
-      throw error;
-    });
-    void transaction.catch(() => {});
-
-    const blockerPid = await blockerReady.promise;
-    const staleCheck = messageCheck(fixture);
-    try {
-      await waitForBlockedCursorUpdate(blockerPid);
-      const newer = await insertHumanMessage(fixture, 2, "newer inbox message");
-      advanceCursor.resolve(newer.seq);
-      await transaction;
-
-      const response = await staleCheck;
-      assert.equal(response.status, 200, JSON.stringify(response.body));
-      assert.deepEqual(response.body.messages.map((message: any) => message.id), [older.id], "the blocked request must have read only the older snapshot");
-      assert.equal(await cursor(fixture), newer.seq, "the stale message/check completion must retain the newer cursor");
-    } catch (error) {
-      advanceCursor.reject(error);
-      await transaction.catch(() => {});
-      await staleCheck.catch(() => {});
-      throw error;
-    }
+    const inboxRace = await completeBehindNewerCursor(
+      fixture,
+      () => messageCheck(fixture!),
+      async () => {
+        const newer = await insertHumanMessage(fixture, 2, "newer inbox message");
+        return newer.seq;
+      },
+    );
+    assert.equal(inboxRace.response.status, 200, JSON.stringify(inboxRace.response.body));
+    assert.deepEqual(inboxRace.response.body.messages.map((message: any) => message.id), [older.id], "the blocked request must have read only the older snapshot");
+    assert.equal(await cursor(fixture), inboxRace.newerSeq, "the stale message/check completion must retain the newer cursor");
 
     console.log("\u2713 message/check retains a newer cursor after a stale request resumes");
+
+    await db.delete(schema.agentMessageObservations).where(eq(schema.agentMessageObservations.serverId, fixture.serverId));
+    await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.serverId, fixture.serverId));
+    await db.delete(schema.messages).where(eq(schema.messages.serverId, fixture.serverId));
+    await db.update(schema.channelMembers).set({ lastReadSeq: 0 }).where(and(
+      eq(schema.channelMembers.channelId, fixture.channelId),
+      eq(schema.channelMembers.memberType, "agent"),
+      eq(schema.channelMembers.memberId, fixture.agentId),
+    ));
+
+    const freshnessOlder = await insertHumanMessage(fixture, 3, "older freshness message");
+    const freshnessRace = await completeBehindNewerCursor(
+      fixture,
+      () => freshnessSend(fixture!),
+      async () => {
+        const newer = await insertHumanMessage(fixture, 4, "newer freshness message");
+        return newer.seq;
+      },
+    );
+    assert.equal(freshnessRace.response.status, 200, JSON.stringify(freshnessRace.response.body));
+    assert.equal(freshnessRace.response.body.held, true, "the older snapshot must enter freshness hold");
+    assert.equal(freshnessRace.response.body.newerCount, 1);
+    assert.deepEqual(freshnessRace.response.body.messages.map((message: any) => message.id), [freshnessOlder.id], "the freshness response must contain only its older snapshot");
+    assert.equal(await cursor(fixture), freshnessRace.newerSeq, "the stale freshness completion must retain the newer cursor");
+
+    console.log("\u2713 freshness hold retains a newer cursor after a stale request resumes");
   } finally {
     if (fixture) await cleanup(fixture);
     redis.disconnect();
