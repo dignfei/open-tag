@@ -185,6 +185,8 @@
     "removeMemberMessage": "该成员将失去对本工作区的访问;其历史消息保留。可重新邀请加入。",
     "remove": "移除",
     "removeMember": "移除成员",
+    "clearSession": "清会话",
+    "clearSessionTitle": "清除 {{name}} 的会话并重启?",
     "restartTitle": "重启 {{name}}",
     "restartDesc": "停止并重启 agent 进程,保留运行 session 和工作区文件。",
     "resetDesc": "清除运行 session 后重启,工作区文件(MEMORY.md、notes/)保留。",

@@ -185,6 +185,8 @@
     "removeMemberMessage": "This member will lose access to the workspace; their message history is preserved. They can be re-invited later.",
     "remove": "Remove",
     "removeMember": "Remove member",
+    "clearSession": "Clear session",
+    "clearSessionTitle": "Clear {{name}}'s session and restart?",
     "restartTitle": "Restart {{name}}",
     "restartDesc": "Stop and restart the agent process, keeping the current session and workspace files.",
     "resetDesc": "Clear the running session and restart; workspace files (MEMORY.md, notes/) are preserved.",

@@ -196,6 +196,10 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
     if (r?.error) startFail(r); // lifecycle RPCs settle before return; a failed reset/stop returns 503 and aborts the restart phase
     setTimeout(refetch, 500);
   };
+  const clearSession = async () => {
+    if (!(await confirm({ title: t("members.clearSessionTitle", { name: a.displayName || a.name }), message: t("members.resetDesc"), confirmLabel: t("members.clearSession"), danger: true }))) return;
+    await doRestart("reset");
+  };
   const del = async () => { if (!(await confirm({ title: t("members.deleteAgentTitle", { name: a.name }), message: t("members.deleteAgentMessage"), confirmLabel: t("members.delete"), danger: true }))) return; await api("DELETE", "/api/agents/" + id); await reload(); onDeleted(); };
   const startEdit = () => { setDn(a.displayName || a.name); setDs(a.description || ""); setProjectPath(a.projectPath || ""); setProjectPickerOpen(false); setEdit(true); };
   const saveProfile = async () => {
@@ -215,6 +219,7 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
         <button className="joinbtn" onClick={() => ctl(a.status === "active" ? "stop" : "start")}>{a.status === "active" ? t("members.stop") : t("members.start")}</button>
         {a.status === "queued" && <button className="joinbtn" style={{ color: "var(--status-orange)" }} onClick={() => api("POST", `/api/agents/${id}/dequeue`).then(() => setTimeout(refetch, 300)).catch(() => {})}>✕</button>}
         <button className="joinbtn" onClick={() => setShowRestart(true)}>{t("members.restart")}</button>
+        <button className="joinbtn" onClick={clearSession}>{t("members.clearSession")}</button>
         <button className="joinbtn" style={{ color: "var(--error)" }} onClick={del}>{t("members.delete")}</button>
       </>}
     </div>
