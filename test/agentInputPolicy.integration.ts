@@ -450,6 +450,38 @@ async function main() {
       && rejectedCoordinationRow.decision === "pending"
       && rejectedCoordinationRow.reasonCode === null
       && rejectedCoordinationRow.summary === null);
+    const coordinationApiMessage = await createMessage({
+      serverId: server.id, channelId: channel!.id, senderType: "user", senderId: owner.id,
+      senderName: owner.name, content: "coordination API policy check",
+    });
+    await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.messageId, coordinationApiMessage.id));
+    await db.insert(schema.agentMessageDecisions).values([
+      {
+        serverId: server.id, channelId: channel!.id, messageId: coordinationApiMessage.id,
+        agentId: target.id, attention: "direct", observedAt: new Date(), grantSlot: "primary", grantStatus: "active",
+      },
+      {
+        serverId: server.id, channelId: channel!.id, messageId: coordinationApiMessage.id,
+        agentId: blocked.id, attention: "direct", observedAt: new Date(), deliveryAdmittedAt: new Date(),
+      },
+    ]);
+    const rejectedCoordinationApi = await agentApi({
+      method: "POST", path: "/agent-api/message/decide", token: blockedToken, agentId: blocked.id,
+      body: {
+        messageId: coordinationApiMessage.id,
+        decision: "request_reply",
+        reason: "better_fit",
+        summary: `blocked-api-coordination-${suffix}`,
+      },
+    });
+    const rejectedCoordinationApiRow = (await db.select().from(schema.agentMessageDecisions).where(and(
+      eq(schema.agentMessageDecisions.messageId, coordinationApiMessage.id),
+      eq(schema.agentMessageDecisions.agentId, blocked.id),
+    )))[0]!;
+    check("reply decision API returns 403 without saving rejected input", rejectedCoordinationApi.status === 403
+      && rejectedCoordinationApi.body.code === "INPUT_SOURCE_REJECTED"
+      && rejectedCoordinationApiRow.decision === "pending"
+      && rejectedCoordinationApiRow.summary === null);
     await db.update(schema.agentMessageDecisions).set({
       decision: "requested", reasonCode: "better_fit", summary: "prior request", decidedAt: new Date(),
     }).where(and(

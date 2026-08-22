@@ -396,7 +396,10 @@ export async function handleAgentApi(req: IncomingMessage, res: ServerResponse, 
       reason: valid.reason, summary: typeof b.summary === "string" ? b.summary : undefined,
       delegateToAgentId,
     });
-    if (!result.ok) return (sendErr(res, 409, "reply decision rejected", { code: result.code }), true);
+    if (!result.ok) {
+      const status = result.code === "INPUT_SOURCE_REJECTED" ? 403 : 409;
+      return (sendErr(res, status, "reply decision rejected", { code: result.code }), true);
+    }
     if (result.notifyAgentId) await wakeAgentForReplyCoordination(serverId, result.notifyAgentId, messageId, agent.name);
     if (result.promotedAgentId) await wakeAgentForReplyCoordination(serverId, result.promotedAgentId, messageId, agent.name);
     return (sendJson(res, 200, {
