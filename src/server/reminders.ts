@@ -20,10 +20,10 @@ export function startReminderScheduler(): void {
 
 async function tick(): Promise<void> {
   const due = await db.select().from(schema.reminders).where(and(eq(schema.reminders.status, "scheduled"), lte(schema.reminders.remindAt, new Date())));
-  for (const r of due) await fire(r).catch((e) => log.warn("fire failed", { id: r.id, detail: String(e?.message ?? e) }));
+  for (const r of due) await fireReminder(r).catch((e) => log.warn("fire failed", { id: r.id, detail: String(e?.message ?? e) }));
 }
 
-async function fire(r: typeof schema.reminders.$inferSelect): Promise<void> {
+export async function fireReminder(r: typeof schema.reminders.$inferSelect): Promise<void> {
   const now = new Date();
   const sec = r.recurrence ? Number(r.recurrence) : 0;
   // Atomic claim: grab reminders that are "due and still scheduled" in one shot (recurring → push to next, stays scheduled; one-shot → mark fired).
@@ -52,7 +52,7 @@ async function fire(r: typeof schema.reminders.$inferSelect): Promise<void> {
   if (!channelId) return; // already atomically claimed above; if there's nowhere to deliver, just end (don't re-update status)
   // system reminder, @author (@mention wakes the author agent; if the author is human it's just a visible reminder)
   const mention = ownerName ? `@${ownerName} ` : "";
-  await createMessage({ serverId: r.serverId, channelId, senderType: "system", senderId: null, senderName: "reminder", content: `⏰ ${mention}reminder: ${r.content}` });
+  await createMessage({ serverId: r.serverId, channelId, senderType: "system", senderId: r.ownerId, senderName: "reminder", content: `⏰ ${mention}reminder: ${r.content}` });
   log.info("reminder fired", { id: r.id, owner: ownerName, recurring: sec > 0 });
   // the status transition (fired / reschedule) was done in the atomic claim above; no repeat update here
 }

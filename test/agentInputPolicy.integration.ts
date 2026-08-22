@@ -12,6 +12,7 @@ import { hashToken, signUser } from "../src/server/auth.ts";
 process.env.OPEN_TAG_DIRECT_TURN_DEBOUNCE_MS = "30000";
 const { createMessage, getOrCreateThread, parseMentions, resolveMessageId, setTaskStatus } = await import("../src/server/core.ts");
 const { dispatchConversationTurn, dispatchLegacyMessage } = await import("../src/server/conversationTurnDispatch.ts");
+const { fireReminder } = await import("../src/server/reminders.ts");
 const { claimReplyCoordination, decideReply } = await import("../src/server/replyCoordination.ts");
 const { handleApi } = await import("../src/server/routes-api/index.ts");
 const { handleAgentApi } = await import("../src/server/routes-agent.ts");
@@ -254,14 +255,23 @@ async function main() {
     const dispatchMembers = [target, peer, blocked].map((agent) => ({
       type: "agent" as const, id: agent.id, name: agent.name, displayName: agent.displayName,
     }));
-    const attributedSystemMessage = await createMessage({
+    const reminderContent = `@${target.name} attributed reminder`;
+    const [agentReminder] = await db.insert(schema.reminders).values({
       serverId: server.id,
+      ownerType: "agent",
+      ownerId: blocked.id,
       channelId: channel!.id,
-      senderType: "system",
-      senderId: blocked.id,
-      senderName: "reminder",
-      content: `@${target.name} @${blocked.name} attributed reminder`,
-    });
+      content: reminderContent,
+      remindAt: new Date(0),
+    }).returning();
+    await fireReminder(agentReminder!);
+    const attributedSystemMessage = (await db.select().from(schema.messages).where(and(
+      eq(schema.messages.serverId, server.id),
+      eq(schema.messages.senderType, "system"),
+      eq(schema.messages.senderId, blocked.id),
+      eq(schema.messages.content, `⏰ @${blocked.name} reminder: ${reminderContent}`),
+    )))[0]!;
+    check("agent reminder preserves its source identity", attributedSystemMessage.senderName === "reminder");
     const legacyRecipients: string[] = [];
     await dispatchLegacyMessage({
       msg: attributedSystemMessage,
@@ -711,6 +721,7 @@ async function main() {
       && freshnessSend.body.ok === true && freshnessSend.body.held === undefined
       && !JSON.stringify(freshnessSend.body).includes(freshnessSentinel));
   } finally {
+    await db.delete(schema.reminders).where(eq(schema.reminders.serverId, server.id));
     await db.delete(schema.causalEdges).where(eq(schema.causalEdges.serverId, server.id));
     await db.delete(schema.agentMessageObservations).where(eq(schema.agentMessageObservations.serverId, server.id));
     await db.delete(schema.agentMessageDecisions).where(eq(schema.agentMessageDecisions.serverId, server.id));

@@ -124,6 +124,8 @@ while leaving trusted human labels and accepted agent labels unchanged.
 Legacy system-message delivery resolves every non-null actor against workspace human membership, treats all
 other actor IDs as agent sources, and applies the protected view before creating recipient work or waking a
 daemon. An actor-attributed system message may still wake its own agent when explicitly addressed.
+Fired reminders persist their owner ID on the system message, so an agent-authored reminder cannot launder
+its content through the trusted platform-source path; human-owned reminders remain trusted.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.
