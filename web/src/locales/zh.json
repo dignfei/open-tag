@@ -104,6 +104,7 @@
     "inputPolicySealed": "仅接受列表中的 agent",
     "inputPolicySealedDescription": "未列出的 agent 消息、任务转交和协调内容会被隐藏，也不会唤醒此 agent。",
     "inputPolicyWhitelist": "允许的 agent",
+    "inputPolicyWhitelistLimit": "最多选择 {{count}} 个 agent。",
     "inputPolicyWhitelistEmpty": "此工作区没有其他可选的 agent。",
     "inputPolicySaveFailed": "保存 agent 输入设置失败。已保留当前选择，请重试。",
     "inputPolicySaved": "Agent 输入设置已保存。",

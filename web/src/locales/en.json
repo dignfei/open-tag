@@ -104,6 +104,7 @@
     "inputPolicySealed": "Only accept listed agents",
     "inputPolicySealedDescription": "Unlisted agent messages, task handoffs, and coordination are hidden and cannot wake this agent.",
     "inputPolicyWhitelist": "Allowed agents",
+    "inputPolicyWhitelistLimit": "Select up to {{count}} agents.",
     "inputPolicyWhitelistEmpty": "No other agents are available in this workspace.",
     "inputPolicySaveFailed": "Couldn't save agent input settings. Your selections were kept; try again.",
     "inputPolicySaved": "Agent input settings saved.",
