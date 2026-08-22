@@ -152,7 +152,7 @@ function Roster({ agents, humans, onCreate, canCreate }: { agents: any[]; humans
 
 export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string; onDeleted: () => void; onClose?: () => void; onMessage?: () => void }) {
   const { t } = useTranslation();
-  const { api, machines, reload, onEvent, capabilities, openDM, slug, uploadAgentAvatar, attachmentUrl } = useStore();
+  const { api, machines, visibleAgents, reload, onEvent, capabilities, openDM, slug, uploadAgentAvatar, attachmentUrl } = useStore();
   const confirm = useConfirm();
   const toast = useToast();
   const nav = useNavigate();
@@ -281,6 +281,11 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
                 </div>}
               </>)}
             </div>
+            {capabilities.manageAgents && a.creatorType !== "system" && <AgentInputPolicyCard
+              key={id}
+              agent={a}
+              candidates={visibleAgents.filter((candidate) => candidate.id !== id)}
+            />}
             <div className="card">
               <h3>{t("members.personalityTitle")} <small className="meta">{perContent ? "(personality.md)" : ""}</small></h3>
               {perContent ? <div className="meta" style={{ whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto", marginBottom: 8 }}>{perContent}</div> : <div className="meta" style={{ opacity: .6 }}>{t("members.personalityEmpty")}</div>}
@@ -294,6 +299,32 @@ export function AgentProfile({ id, onDeleted, onClose, onMessage }: { id: string
         )}
       {showRestart && <RestartModal name={a.displayName || a.name} onClose={() => setShowRestart(false)} onPick={doRestart} />}
     </>
+  );
+}
+
+function AgentInputPolicyCard({ agent, candidates }: { agent: any; candidates: any[] }) {
+  const { t } = useTranslation();
+  const sealed = agent.incomingMode !== "open";
+  const whitelist = new Set(Array.isArray(agent.commandWhitelist)
+    ? agent.commandWhitelist.filter((id: unknown): id is string => typeof id === "string")
+    : []);
+  return (
+    <div className="card" data-agent-input-policy>
+      <h3>{t("members.inputPolicyTitle")}</h3>
+      <div className="meta" style={{ marginBottom: 8 }}>{t("members.inputPolicyDescription")}</div>
+      <label className="perm-row">
+        <input type="checkbox" checked={sealed} disabled readOnly />
+        <span className="grow"><span className="who">{t("members.inputPolicySealed")}</span><div className="meta">{t("members.inputPolicySealedDescription")}</div></span>
+      </label>
+      {sealed && <>
+        <div className="sec sec-sub">{t("members.inputPolicyWhitelist")}</div>
+        {candidates.length === 0 ? <div className="meta">{t("members.inputPolicyWhitelistEmpty")}</div>
+          : candidates.map((candidate) => <label key={candidate.id} className="perm-row">
+              <input type="checkbox" checked={whitelist.has(candidate.id)} disabled readOnly />
+              <span className="grow"><span className="who">{candidate.displayName || candidate.name}</span> <span className="meta">@{candidate.name}</span></span>
+            </label>)}
+      </>}
+    </div>
   );
 }
 
