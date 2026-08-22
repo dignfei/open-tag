@@ -9,6 +9,14 @@ from `main`; see commit history for fine-grained server/web changes.
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-08-22
+
+### Fixed
+
+- Reusable runtime sessions now release the per-agent FIFO after an admitted Turn fails terminally,
+  while preserving the visible error state. Copilot, OpenCode, Pi, Cursor, Hermes, and Codex allow
+  later queued Turns to continue; Codex also rejects stale, duplicate, id-less, and nonterminal events.
+
 ## [0.14.1] — 2026-08-21
 
 ### Fixed
