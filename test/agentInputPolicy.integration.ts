@@ -136,6 +136,46 @@ async function main() {
     check("rejected updates do not replace the saved policy", stored.incomingMode === "sealed"
       && stored.commandWhitelist.length === 1 && stored.commandWhitelist[0] === peer.id);
 
+    const [autoJoinChannel] = await db.insert(schema.channels).values({
+      serverId: server.id, name: `policy-join-${suffix}`, type: "channel",
+    }).returning();
+    await db.insert(schema.channelMembers).values({
+      channelId: autoJoinChannel!.id, memberType: "agent", memberId: blocked.id,
+    });
+    const deniedJoinMessage = await createMessage({
+      serverId: server.id, channelId: autoJoinChannel!.id, senderType: "agent", senderId: blocked.id,
+      senderName: blocked.name, content: `@${target.name} cannot pull target in`,
+    });
+    const deniedMembership = await db.select().from(schema.channelMembers).where(and(
+      eq(schema.channelMembers.channelId, autoJoinChannel!.id),
+      eq(schema.channelMembers.memberType, "agent"),
+      eq(schema.channelMembers.memberId, target.id),
+    ));
+    const deniedMention = await db.select().from(schema.messageMentions).where(and(
+      eq(schema.messageMentions.messageId, deniedJoinMessage.id),
+      eq(schema.messageMentions.mentionType, "agent"),
+      eq(schema.messageMentions.mentionId, target.id),
+    ));
+    check("unlisted agent mention cannot add a sealed non-member", deniedMembership.length === 0
+      && deniedMention.length === 0);
+
+    const humanJoinMessage = await createMessage({
+      serverId: server.id, channelId: autoJoinChannel!.id, senderType: "user", senderId: owner.id,
+      senderName: owner.name, content: `@${target.name} human invitation`,
+    });
+    const humanMembership = (await db.select().from(schema.channelMembers).where(and(
+      eq(schema.channelMembers.channelId, autoJoinChannel!.id),
+      eq(schema.channelMembers.memberType, "agent"),
+      eq(schema.channelMembers.memberId, target.id),
+    )))[0];
+    const humanMention = await db.select().from(schema.messageMentions).where(and(
+      eq(schema.messageMentions.messageId, humanJoinMessage.id),
+      eq(schema.messageMentions.mentionType, "agent"),
+      eq(schema.messageMentions.mentionId, target.id),
+    ));
+    check("human mention still adds the target at the triggering watermark", humanMembership?.lastReadSeq === humanJoinMessage.seq - 1
+      && humanMention.length === 1);
+
     const [channel] = await db.insert(schema.channels).values({
       serverId: server.id, name: `policy-turn-${suffix}`, type: "channel",
     }).returning();

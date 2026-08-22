@@ -91,6 +91,8 @@ settings. Updates accept at most 100 unique agent UUIDs, exclude the target itse
 agents, and reject missing, deleted, or cross-workspace entries without revealing which entry failed.
 For agent-authored direct mentions and DMs, the server applies the target's policy before reserving any
 reply decision, owner, grant, or wake responsibility. Human-authored Turns keep their existing routing.
+In a public channel, the same check runs before mention auto-join writes membership or mention rows, so a
+rejected agent source cannot pull a sealed non-member into the channel. Human mention auto-join is unchanged.
 
 1. **Planes never cross.** Human JWT, agent token, daemon key are not interchangeable. Using the wrong
    plane's credential on a route is a defect.

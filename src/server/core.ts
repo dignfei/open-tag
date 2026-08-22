@@ -6,7 +6,7 @@ import { nextTaskNumber } from "../redis.js";
 import { agentControlBlockReason, broadcastToDaemons, conversationTurnDeliveryBlockReason, daemonCount, isMachineConnected, projectDirectoryBlockReason, requestDaemon, requestDaemonByMachine, sendToMachine } from "./daemonHub.js";
 import { createLogger } from "../log.js";
 import { canUserReadChannel } from "./channelAccess.js";
-import { canAutoJoinMentionedMembers } from "./agentWakePolicy.js";
+import { canAutoJoinMentionedMembers, type MessageSenderType } from "./agentWakePolicy.js";
 import { UUID_RE } from "./util.js";
 import { ensureReplyRecipients, releaseUnavailableReplyGrant } from "./replyCoordination.js";
 import type { ReplySlot } from "./replyCoordinationPolicy.js";
@@ -15,6 +15,7 @@ import { agentConfig } from "./agentConfig.js";
 import { attachMessageToConversationTurn, scheduleConversationTurn, type ConversationBoundaryKind } from "./conversationTurns.js";
 import { dispatchConversationTurn as dispatchConversationTurnWithDeps, dispatchLegacyMessage, prepareConversationTurnResponsibility, type ConversationTurnDispatchDeps } from "./conversationTurnDispatch.js";
 import { AGENT_CONTROL_ACK_CAPABILITY, DELIVERY_ADMISSION_CAPABILITY, PROJECT_DIRECTORY_CAPABILITY } from "../daemonProtocol.js";
+import { inputSenderAllowed } from "./agentInputPolicy.js";
 
 const log = createLogger("server:core");
 const ERROR_RECEIPT_WINDOW_MS = 10 * 60 * 1000;
@@ -176,6 +177,29 @@ async function mentionAutoJoinPool(serverId: string, ch: typeof schema.channels.
     else log.warn("thread parent channel unresolved; @-mention reach falls back to thread members", { channelId: ch.id, parentMessageId: ch.parentMessageId });
   }
   return target.type === "channel" ? await workspaceMembers(serverId) : await channelMembers(target.id);
+}
+
+async function allowedMentionAutoJoinPool(
+  serverId: string,
+  senderType: MessageSenderType,
+  senderId: string | null,
+  pool: Member[],
+): Promise<Member[]> {
+  if (senderType !== "agent") return pool;
+  const agentIds = pool.filter((member) => member.type === "agent").map((member) => member.id);
+  const targets = agentIds.length ? await db.select({
+    id: schema.agents.id,
+    incomingMode: schema.agents.incomingMode,
+    commandWhitelist: schema.agents.commandWhitelist,
+  }).from(schema.agents).where(and(
+    eq(schema.agents.serverId, serverId),
+    isNull(schema.agents.deletedAt),
+    inArray(schema.agents.id, agentIds),
+  )) : [];
+  const allowedAgents = new Set(targets
+    .filter((target) => inputSenderAllowed(target, senderType, senderId))
+    .map((target) => target.id));
+  return pool.filter((member) => member.type === "user" || allowedAgents.has(member.id));
 }
 
 /** Add @-mentioned non-members to a channel, drawn from `pool` (its @-reach — see mentionAutoJoinPool); returns
@@ -420,7 +444,13 @@ export async function createMessage(opts: {
   // A resolvable mention is an active work edge for human and agent senders. The reach pool still preserves
   // the channel boundary: public spaces may pull in workspace peers; private/DM spaces never pull outsiders.
   if (ch && canAutoJoinMentionedMembers(opts.senderType) && opts.content.includes("@")) {
-    const joined = await autoJoinMentioned(opts.serverId, opts.channelId, opts.content, members, await mentionAutoJoinPool(opts.serverId, ch), seq - 1);
+    const reach = await allowedMentionAutoJoinPool(
+      opts.serverId,
+      opts.senderType,
+      opts.senderId,
+      await mentionAutoJoinPool(opts.serverId, ch),
+    );
+    const joined = await autoJoinMentioned(opts.serverId, opts.channelId, opts.content, members, reach, seq - 1);
     if (joined.length) members = [...members, ...joined];
   }
   const mentions = parseMentions(opts.content, members);
