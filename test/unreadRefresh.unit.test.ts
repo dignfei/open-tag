@@ -95,3 +95,14 @@ test("workspace activation owns its badge refresh lifecycle", () => {
   assert.match(src, /const unreadRefresh = createUnreadRefresh\([\s\S]*api\("GET", "\/api\/channels\/unread"\)[\s\S]*setUnread\(values\)/);
   assert.match(src, /unreadRefresh\.dispose\(\);[\s\S]*unreadRefreshRef\.current === unreadRefresh/);
 });
+
+test("read confirmation refreshes only its active workspace", () => {
+  const src = fs.readFileSync(new URL("../web/src/store.tsx", import.meta.url), "utf8");
+  const markRead = src.slice(src.indexOf("const markRead"), src.indexOf("const uploadFiles"));
+  const owner = markRead.indexOf("const unreadRefresh = unreadRefreshRef.current;");
+  const request = markRead.indexOf('api("POST", `/api/channels/${id}/read`');
+  assert.ok(owner >= 0 && request > owner);
+  assert.match(markRead, /r\?\.ok !== true \|\| typeof r\?\.channelId !== "string"/);
+  assert.match(markRead, /unreadRefreshRef\.current === unreadRefresh[\s\S]*unreadRefresh\.request\(\)/);
+  assert.doesNotMatch(markRead, /r\.unread|setUnread/);
+});
